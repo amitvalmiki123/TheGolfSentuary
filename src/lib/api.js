@@ -234,7 +234,9 @@ export async function unifiedSearch(query, limit=24, offset=0){
   if(BACKEND_URL || SELF_HOSTED || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV)){
     try{
       const base = BACKEND_URL ? `${BACKEND_URL}/api/search` : `/api/search`
-      const r = await fetch(`${base}?q=${encodeURIComponent(query)}&limit=${limit}`, { headers: { 'Accept':'application/json' } })
+      const ac = new AbortController(); const tm = setTimeout(()=> ac.abort(), 2400)
+      const r = await fetch(`${base}?q=${encodeURIComponent(query)}&limit=${limit}`, { headers: { 'Accept':'application/json' }, signal: ac.signal })
+      clearTimeout(tm)
       if(r.ok){
         const data = await r.json()
         if(data.tracks && data.tracks.length){
@@ -325,17 +327,22 @@ export async function unifiedSearchPaginated(query, limit=20, nextpage=null){
   return { tracks: tracks.slice(0, limit), nextpage: res.nextpage }
 }
 
+const _catCache = new Map()
 export async function trendingByCategory(cat, limit=20, offset=0){
-  // Try backend first (DB + live) — fast like JioSaavn
+  // 5-min session cache — re-click karte hi instant
+  try{ const cc = _catCache.get(`${cat}|${limit}`); if(cc && Date.now()-cc.at < 5*60*1000) return cc.val }catch{}
+  // Try backend first (DB + live) — fast like JioSaavn; 2.6s to-out = direct path le lagega
   if(BACKEND_URL || SELF_HOSTED || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV)){
     try{
       const base = BACKEND_URL ? `${BACKEND_URL}/api/tracks` : `/api/tracks`
-      const r = await fetch(`${base}?category=${encodeURIComponent(cat)}&limit=${limit}`, { headers: { 'Accept':'application/json' } })
+      const ac = new AbortController(); const tm = setTimeout(()=> ac.abort(), 2600)
+      const r = await fetch(`${base}?category=${encodeURIComponent(cat)}&limit=${limit}`, { headers: { 'Accept':'application/json' }, signal: ac.signal })
+      clearTimeout(tm)
       if(r.ok){
         const data = await r.json()
         if(data.tracks && data.tracks.length){
           const real = data.tracks.filter(x=> x && !String(x.id||'').startsWith('fallback-') && (x.videoId || (typeof x.audio==='string' && x.audio.startsWith('http') && !x.audio.includes('...'))))
-          if(real.length >= 6) return real.slice(0, limit)
+          if(real.length >= 6){ try{ _catCache.set(`${cat}|${limit}`, { at: Date.now(), val: real.slice(0,limit) }) }catch{}; return real.slice(0, limit) }
         }
       }
     }catch(e){}

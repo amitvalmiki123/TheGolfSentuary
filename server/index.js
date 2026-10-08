@@ -58,6 +58,24 @@ const fallbackTracks = [
 ]
 
 
+// server-side fetch — NO CORS proxies needed (proxies are a browser thing; they only added latency here)
+async function fetchJson(url, ms=2300){
+  const ctrl = new AbortController()
+  const tm = setTimeout(()=> ctrl.abort(), ms)
+  try{
+    const r = await fetch(url, { signal: ctrl.signal, headers: { 'Accept':'application/json', 'User-Agent':'Mozilla/5.0 (SurSangam)' } })
+    if(!r.ok) throw new Error(`http ${r.status}`)
+    return JSON.parse(await r.text())
+  } finally { clearTimeout(tm) }
+}
+function memoGet(key){
+  const hit = cache.get(key)
+  if(hit && Date.now() - hit.at < CACHE_TTL) return hit.val
+  if(hit) cache.delete(key)
+  return null
+}
+function memoSet(key, val){ try{ if(cache.size>500) cache.clear() }catch{}; cache.set(key, { at: Date.now(), val }) }
+
 async function fetchWithCors(url, ms=4500){
   const attempts = [url, ...CORS_PROXIES.map(fn=>fn(url))]
   for(const u of attempts){
@@ -87,12 +105,12 @@ function decodeStr(s){ if(!s) return s; try{ return decodeURIComponent(s).replac
 
 async function searchPiped(query, limit=20, nextpage=null){
   const filters = ["music_songs"]
-  for(const host of PIPED_HOSTS){
+  for(const host of PIPED_HOSTS.slice(0,3)){
     for(const filter of filters){
       try{
         const filterParam = filter ? `&filter=${filter}` : ""
         const url = `${host}/search?q=${encodeURIComponent(query)}${filterParam}${nextpage? `&nextpage=${encodeURIComponent(nextpage)}`:''}`
-        const data = await fetchWithCors(url, 4000)
+        const data = await fetchJson(url, 2300)
         const items = data.items || data.content || []
         const streams = items.filter(i=>{
           if(!i.title || !(i.type==="stream" || i.type==="video" || i.url)) return false
@@ -149,7 +167,7 @@ async function searchSaavn(query, limit=18){
   for(const buildUrl of SAavn_ENDPOINTS){
     try{
       const url = buildUrl(query, limit)
-      const data = await fetchWithCors(url, 3500)
+      const data = await fetchJson(url, 2600)
       let songs = []
       if(Array.isArray(data?.data?.results)) songs = data.data.results
       else if(Array.isArray(data?.data?.songs)) songs = data.data.songs
@@ -201,6 +219,9 @@ app.get('/api/search', async (req,res)=>{
   const limit = Math.min(parseInt(req.query.limit||'24'), 40)
   const nextpage = req.query.nextpage || null
   if(!q) return res.json({ tracks: [], nextpage: null })
+  const sk = `sr:${q.toLowerCase()}:${limit}`
+  const smemo = memoGet(sk)
+  if(smemo) return res.json(smemo)
   // Try DB first if ready
   if(dbReady && Track){
     try{
@@ -234,12 +255,17 @@ app.get('/api/search', async (req,res)=>{
   if(!tracks.length && process.env.ALLOW_FALLBACK==='1'){
     tracks = fallbackTracks.slice(0, limit)
   }
-  res.json({ tracks: tracks.slice(0,limit), nextpage: null })
+  const sout = { tracks: tracks.slice(0,limit), nextpage: null }
+  if(sout.tracks.length) memoSet(sk, sout)
+  res.json(sout)
 })
 
 app.get('/api/tracks', async (req,res)=>{
   const cat = (req.query.category || 'All').toString()
   const limit = Math.min(parseInt(req.query.limit||'20'), 40)
+  const ck = `tk:${cat}:${limit}`
+  const memo = memoGet(ck)
+  if(memo) return res.json(memo)
   if(dbReady && Track){
     try{
       const filter = cat==='All' ? {} : { category: cat }
@@ -259,23 +285,19 @@ app.get('/api/tracks', async (req,res)=>{
     All: "Top songs India"
   }
   const q = qmap[cat] || cat
-  const isIndianCat = ["Punjabi","Hindi","Love","90s","Bollywood","Indie"].includes(cat)
-  let tracks = []
-  if(isIndianCat){
-    tracks = await searchSaavn(q, limit).catch(()=>[])
-    if(tracks.length < 8){
-      const p = await searchPiped(q, 12).catch(()=>({tracks:[]}))
-      tracks = [...tracks, ...(p.tracks||[])]
-    }
-  } else {
-    const p = await searchPiped(q, limit).catch(()=>({tracks:[]}))
-    tracks = p.tracks || []
+  // Saavn pehle (CDN Mumbai, ~300-600ms), Piped sirf supplement (wo host dead hone pe 2s waste karta tha)
+  let tracks = await searchSaavn(q, limit).catch(()=>[])
+  if(tracks.length < 6){
+    const p = await searchPiped(q, Math.max(12, limit - tracks.length)).catch(()=>({tracks:[]}))
+    tracks = [...tracks, ...(p.tracks||[])]
   }
   if(!tracks.length && process.env.ALLOW_FALLBACK==='1'){
     tracks = fallbackTracks.filter(t=> cat==='All' || (t.category||[]).includes(cat)).slice(0, limit)
     if(!tracks.length) tracks = fallbackTracks.slice(0, limit)
   }
-  res.json({ tracks: tracks.slice(0,limit) })
+  const out = { tracks: tracks.slice(0,limit) }
+  if(out.tracks.length) memoSet(ck, out)
+  res.json(out)
 })
 
 app.post('/api/playlists', auth, async (req,res)=>{

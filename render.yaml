@@ -1,0 +1,22 @@
+# Sur Sangam API — Render blueprint (free tier)
+# Render.com -> New Blueprint -> repo select karo, yeh file sab kuch auto-setup kar degi
+services:
+  - type: web
+    name: sur-sangam-api
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "20"             # Node 20 (global fetch + top-level await ke liye)
+      - key: JWT_SECRET
+        generateValue: true      # Render khud ek strong secret bana dega
+      - key: MONGO_URI
+        sync: false              # ye khod bharna hai: Environment tab me (Atlas ki URI)
+      - key: CORS_ORIGIN
+        value: https://amitvalmiki123.github.io
+      - key: ALLOW_FALLBACK
+        value: "0"

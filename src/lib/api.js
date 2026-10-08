@@ -448,3 +448,38 @@ function formatMs(ms){ if(!ms) return "3:30"; const s=Math.floor(ms/1000); retur
 function formatSec(s){ if(!s) return "3:30"; const sec=Number(s); if(isNaN(sec)) return "3:30"; return `${Math.floor(sec/60)}:${String(Math.floor(sec%60)).padStart(2,'0')}` }
 function decode(s){ if(!s) return s; try{ return decodeURIComponent(s).replace(/&quot;/g,'"').replace(/&amp;/g,'&').replace(/&#039;/g,"'").replace(/&lt;/g,'<').replace(/&gt;/g,'>') }catch{ return s } }
 function pickColor(){ const c=["#C35445","#6A418E","#A154D6","#543551","#572223","#D5AA55","#E9CDC2"]; return c[Math.floor(Math.random()*c.length)] }
+
+// ================= Cloud account (Sur Sangam backend) =================
+const API_ON = !!(BACKEND_URL || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV))
+const API_BASE = BACKEND_URL || ''
+export const getAuthToken = ()=> { try{ return localStorage.getItem('sur_token') }catch{ return null } }
+export const setAuthToken = (tok)=>{ try{ if(tok) localStorage.setItem('sur_token', tok); else localStorage.removeItem('sur_token') }catch{} }
+export const isAuthEnabled = ()=> API_ON
+async function apiFetch(path, opts={}){
+  if(!API_ON) return null
+  try{
+    const tok = getAuthToken()
+    const headers = { 'Content-Type':'application/json', ...(tok? { Authorization: 'Bearer '+tok } : {}) }
+    const ctrl = new AbortController(); const tm = setTimeout(()=> ctrl.abort(), 9000)
+    const r = await fetch(`${API_BASE}${path}`, { ...opts, headers: { ...headers, ...(opts.headers||{}) }, signal: ctrl.signal })
+    clearTimeout(tm)
+    if(!r.ok) return null
+    return await r.json()
+  }catch{ return null }
+}
+export async function apiSignup(name, email, password){
+  const d = await apiFetch('/api/auth/signup', { method:'POST', body: JSON.stringify({ name, email, password }) })
+  if(d && d.token){ setAuthToken(d.token); return d.user }
+  return null
+}
+export async function apiLogin(email, password){
+  const d = await apiFetch('/api/auth/login', { method:'POST', body: JSON.stringify({ email, password }) })
+  if(d && d.token){ setAuthToken(d.token); return d.user }
+  return null
+}
+export async function apiMe(){ const d = await apiFetch('/api/auth/me'); return d && d.user ? d.user : null }
+export function apiLogout(){ setAuthToken(null) }
+export async function apiPushLikes(tracks){ return apiFetch('/api/likes', { method:'PUT', body: JSON.stringify({ tracks }) }) }
+export async function apiPullLikes(){ const d = await apiFetch('/api/likes'); return d && Array.isArray(d.tracks) ? d.tracks : null }
+export async function apiPushPlaylists(playlists){ return apiFetch('/api/playlists/sync', { method:'POST', body: JSON.stringify({ playlists }) }) }
+export async function apiPullPlaylists(){ const d = await apiFetch('/api/playlists/sync'); return d && Array.isArray(d.playlists) ? d.playlists : null }

@@ -334,6 +334,42 @@ app.post('/api/tracks', auth, async (req,res)=>{
   }catch(e){ res.status(500).json({ error: e.message }) }
 })
 
+// ---- Session restore ----
+app.get('/api/auth/me', auth, async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error: 'DB not ready' })
+  try{
+    const u = await User.findById(req.user.id).lean()
+    if(!u) return res.status(404).json({ error: 'no user' })
+    res.json({ user: { id: String(u._id), name: u.name, email: u.email, avatar: u.avatar, plan: u.plan || 'Free', bio: u.bio || '' } })
+  }catch(e){ res.status(400).json({ error: 'invalid token' }) }
+})
+
+// ---- Liked songs (cloud) ----
+app.get('/api/likes', auth, async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error: 'DB not ready' })
+  const u = await User.findById(req.user.id).select('likedMeta').lean()
+  res.json({ tracks: u?.likedMeta || [] })
+})
+app.put('/api/likes', auth, async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error: 'DB not ready' })
+  const tracks = Array.isArray(req.body?.tracks) ? req.body.tracks.filter(x=>x&&x.tid).slice(0,1500) : []
+  await User.findByIdAndUpdate(req.user.id, { likedMeta: tracks })
+  res.json({ ok: true, count: tracks.length })
+})
+
+// ---- Playlists (cloud sync, client shape) ----
+app.get('/api/playlists/sync', auth, async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error: 'DB not ready' })
+  const u = await User.findById(req.user.id).select('rawPlaylists').lean()
+  res.json({ playlists: u?.rawPlaylists || [] })
+})
+app.post('/api/playlists/sync', auth, async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error: 'DB not ready' })
+  const pls = Array.isArray(req.body?.playlists) ? req.body.playlists.filter(x=>x&&x.id).slice(0,200) : []
+  await User.findByIdAndUpdate(req.user.id, { rawPlaylists: pls })
+  res.json({ ok: true, count: pls.length })
+})
+
 // Keep existing YT Music clone routes for backward compat
 app.get('/api/trending', async (req,res)=>{
   const cat = (req.query.cat||'Trending').toString()

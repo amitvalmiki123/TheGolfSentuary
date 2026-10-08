@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
-import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio } from './lib/api.js'
+import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio, apiSignup, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists } from './lib/api.js'
 import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
 
 const BASE = import.meta.env.BASE_URL || '/'
@@ -169,8 +169,44 @@ export default function App(){
 
   // persist
   useEffect(()=>{ localStorage.setItem('sur_liked', JSON.stringify([...liked])) },[liked])
+  // cloud account state (Sur Sangam backend)
+  const [authUser, setAuthUser] = useState(null)
+  const [showAuth, setShowAuth] = useState(false)
+  const [authForm, setAuthForm] = useState({ mode:'login', name:'', email:'', password:'' })
+  const [authBusy, setAuthBusy] = useState(false)
+  const likedMetaRef = useRef((()=>{ try{ return JSON.parse(localStorage.getItem('sur_liked_map')||'{}') }catch{ return {} } })())
+  const likeSyncTimer = useRef(null)
+  const plSyncTimer = useRef(null)
+  const plFirstRun = useRef(true)
   useEffect(()=>{ localStorage.setItem('sur_playlists', JSON.stringify(playlists)) },[playlists])
   useEffect(()=>{ localStorage.setItem('sur_user', JSON.stringify(user)) },[user])
+  // restore cloud session on load
+  useEffect(()=>{ (async()=>{
+    if(!isAuthEnabled() || !getAuthToken()) return
+    const me = await apiMe()
+    if(me){ setAuthUser(me); setUser(prev=> ({ ...prev, name: me.name||prev.name, email: me.email||prev.email, avatar: me.avatar||prev.avatar, plan: me.plan||prev.plan })) }
+  })() },[])
+  // pull liked + playlists when session active
+  useEffect(()=>{ if(!authUser) return; (async()=>{
+    try{
+      const remote = await apiPullLikes()
+      if(remote && remote.length){
+        likedMetaRef.current = { ...likedMetaRef.current }
+        remote.forEach(x=>{ if(x&&x.tid) likedMetaRef.current[x.tid]=x })
+        localStorage.setItem('sur_liked_map', JSON.stringify(likedMetaRef.current))
+        const ids = remote.map(x=>x&&x.tid).filter(Boolean)
+        setLiked(prev=>{ const changed = ids.some(id=> !prev.has(id) && !prev.has(Number(id))); if(!changed) return prev; const s = new Set(prev); ids.forEach(id=> s.add(id)); try{ localStorage.setItem('sur_liked', JSON.stringify([...s])) }catch{}; return s })
+      }
+      const rpl = await apiPullPlaylists()
+      if(rpl && rpl.length){
+        setPlaylists(prev=>{ const ids = new Set(prev.map(x=>x.id)); const add = rpl.filter(x=>x&&x.id&&!ids.has(x.id)); if(!add.length){ plFirstRun.current=false; return prev } plFirstRun.current=false; return [...prev, ...add] })
+      }
+      plFirstRun.current = false
+    }catch{}
+  })() },[authUser])
+  // debounce-push liked + playlists to cloud
+  useEffect(()=>{ if(!authUser) return; clearTimeout(likeSyncTimer.current); likeSyncTimer.current = setTimeout(()=>{ apiPushLikes(Object.values(likedMetaRef.current)) }, 1500) },[liked, authUser])
+  useEffect(()=>{ if(!authUser) return; if(plFirstRun.current){ plFirstRun.current=false; return } clearTimeout(plSyncTimer.current); plSyncTimer.current = setTimeout(()=>{ apiPushPlaylists(playlists) }, 2500) },[playlists, authUser])
   useEffect(()=>{ localStorage.setItem('sur_recent', JSON.stringify(recentlyPlayed.slice(0,30))) },[recentlyPlayed])
   useEffect(()=>{
     getDownloads().then(setDownloaded)
@@ -520,7 +556,26 @@ export default function App(){
     setCurrentIndex(i=> (i-1+queue.length)%queue.length)
   }
   const seek = e=>{ const v=Number(e.target.value); if(current?.videoId && ytPlayerRef.current?.seekTo){ try{ ytPlayerRef.current.seekTo(v, true); setProgress(v) }catch{} return } if(audioRef.current){ audioRef.current.currentTime=v; setProgress(v)} }
-  const toggleLike = id=> setLiked(prev=>{ const n=new Set(prev); if(n.has(id)) n.delete(id); else n.add(id); showToast(n.has(id)? "Added to Liked Songs":"Removed from Liked Songs"); return n })
+  const trackById = (id)=>{ const s=String(id); const pool=[...fallbackTracks, ...localSongs, ...homeTracks, ...queue, ...artistTracks]; return pool.find(x=> String(x.id)===s) || null }
+  const toggleLike = (id, trackArg)=> setLiked(prev=>{ const n=new Set(prev); const had = n.has(id) || n.has(Number(id)) || n.has(String(id)); if(n.has(id)) n.delete(id); else n.add(id); showToast(n.has(id)? "Added to Liked Songs":"Removed from Liked Songs")
+    try{ if(!had){ const tr = trackArg || trackById(id); if(tr) likedMetaRef.current[String(id)] = { tid:String(id), title:tr.title||'', artist:tr.artist||'', album:tr.album||'', cover:tr.cover||'', audio:tr.audio||null, videoId:tr.videoId||null, durationLabel:tr.durationLabel||'', source:tr.source||'' } } else { delete likedMetaRef.current[String(id)] }
+      localStorage.setItem('sur_liked_map', JSON.stringify(likedMetaRef.current)) }catch{}
+    return n })
+  const handleAuthSubmit = async ()=>{
+    const { mode, name, email, password } = authForm
+    if(!email.trim() || password.length < 6){ showToast(mode==='login'? 'Email + 6-char password chahiye' : 'Naam, email + 6-char password chahiye'); return }
+    setAuthBusy(true)
+    try{
+      const u = mode==='login' ? await apiLogin(email.trim(), password) : await apiSignup(name.trim()||email.split('@')[0], email.trim(), password)
+      if(u){
+        setAuthUser(u)
+        setUser(prev=> ({ ...prev, name: u.name||prev.name, email: u.email||email.trim(), avatar: u.avatar||prev.avatar }))
+        setShowAuth(false); setAuthForm({ mode:'login', name:'', email:'', password:'' })
+        showToast(`Welcome ${u.name||''} ☁ liked + playlists ab cloud me save`)
+      } else showToast('Server reachable nahi / galat credentials — local sync phir bhi chalega')
+    } finally { setAuthBusy(false) }
+  }
+  const handleSignOut = ()=>{ apiLogout(); setAuthUser(null); showToast('Signed out — local data safe hai') }
 
   const playTrack = async (track, list)=>{
     const targetList = list || queue
@@ -741,7 +796,16 @@ export default function App(){
 
   // derived lists
   const allSongsForLibrary = [...localSongs, ...fallbackTracks]
-  const likedTracks = allSongsForLibrary.filter(t=> liked.has(t.id) || liked.has(String(t.id)))
+  const likedTracks = (()=>{
+    const byId = new Map()
+    // 1) cloud/local meta map (full objects — survives refresh + cross-device)
+    try{ Object.values(likedMetaRef.current||{}).forEach(x=>{ if(x&&x.tid) byId.set(String(x.tid), { ...x, id: x.tid, color: x.color||'#6A418E' }) }) }catch{}
+    // 2) known pools (fallback + local) for ids liked before meta existed
+    allSongsForLibrary.forEach(t=>{ if(liked.has(t.id)||liked.has(String(t.id))) byId.set(String(t.id), t) })
+    // 3) any plain ids left → placeholder so count is honest
+    liked.forEach(id=>{ const s=String(id); if(!byId.has(s)) byId.set(s, { id, title:'Liked track', artist:'—', cover:'', durationLabel:'', source:'' }) })
+    return [...byId.values()].filter(x=> liked.has(x.id)||liked.has(String(x.id)))
+  })()
   const downloadedTracks = downloaded.map(d=> {
     // if blob exists, create blob URL for offline playback
     if(d.blob && d.blob.size>0){
@@ -878,7 +942,7 @@ export default function App(){
 
           <main className="flex-1 px-4 lg:px-6 py-6 pb-28 lg:pb-28 space-y-7">
             {nav==='profile' ? (
-              <ProfileView user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} />
+              <ProfileView user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} />
             ) : nav==='search' ? (
               <>
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -946,7 +1010,7 @@ export default function App(){
                                     <div className={`text-xs truncate ${String(current?.id)===String(t.id)?'text-black/60':'text-white/60'}`}>{t.artist} • {t.album}</div>
                                   </div>
                                   <span className={`hidden md:block text-xs ${String(current?.id)===String(t.id)?'text-black/50':'text-white/30'}`}>{t.durationLabel}</span>
-                                  <button onClick={()=> toggleLike(t.id)} className={`w-8 h-8 grid place-items-center rounded-full ${liked.has(t.id)? 'text-[#C35445]':'text-white/30 hover:text-white'}`}><Heart filled={liked.has(t.id)} size={16}/></button>
+                                  <button onClick={()=> toggleLike(t.id, t)} className={`w-8 h-8 grid place-items-center rounded-full ${liked.has(t.id)? 'text-[#C35445]':'text-white/30 hover:text-white'}`}><Heart filled={liked.has(t.id)} size={16}/></button>
                                   <div className="hidden sm:flex items-center gap-1">
                                     <button onClick={()=> setShowAddToPl(t)} className="w-8 h-8 grid place-items-center rounded-full bg-white/10 hover:bg-white/15 text-white/70 hover:text-white"><PlusIcon/></button>
                                     <button onClick={()=> handleDownload(t)} disabled={downloadingId===t.id} className={`w-8 h-8 grid place-items-center rounded-full border ${isDl? 'bg-emerald-500 border-emerald-500 text-white':'border-white/10 text-white/60 hover:text-white'}`}>{downloadingId===t.id? <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"/> : <DownloadIcon size={14}/>}</button>
@@ -1059,7 +1123,7 @@ export default function App(){
                             <span className="w-6 text-center text-xs text-white/30 group-hover:hidden">{String(i+1).padStart(2,'0')}</span><button onClick={()=> playTrack(t, likedTracks)} className="w-6 hidden group-hover:grid place-items-center"><PlayMini/></button>
                             <button onClick={()=> playTrack(t, likedTracks)} className="flex items-center gap-3 flex-1 min-w-0 text-left"><img src={t.cover} alt="" className="w-10 h-10 rounded-md object-cover"/><div className="min-w-0"><div className={`text-sm font-medium truncate ${isCur?'text-[#D5AA55]':''}`}>{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div></div></button>
                             <span className="hidden sm:block text-xs text-white/40">{t.plays}</span><span className="text-xs text-white/60">{t.durationLabel}</span>
-                            <button onClick={()=> toggleLike(t.id)} className="w-8 h-8 grid place-items-center text-[#C35445]"><Heart filled/></button>
+                            <button onClick={()=> toggleLike(t.id, t)} className="w-8 h-8 grid place-items-center text-[#C35445]"><Heart filled/></button>
                             <button onClick={()=> handleDownload(t)} className="w-8 h-8 grid place-items-center rounded-full border border-white/10 text-white/60"><DownloadIcon size={12}/></button>
                           </div>
                         )
@@ -1240,7 +1304,7 @@ export default function App(){
                             <span className={`hidden sm:block w-6 text-center text-xs font-bold ${isCur? 'text-black/40':'text-white/30'}`}>{String(i+1).padStart(2,'0')}</span>
                             <button onClick={()=> playTrack(t)} className="relative w-11 h-11 rounded-lg overflow-hidden shrink-0"><img src={t.cover} alt="" className="w-full h-full object-cover"/><span className={`absolute inset-0 grid place-items-center bg-black/40 opacity-0 hover:opacity-100 ${isCur? 'opacity-100 bg-black/20':''}`}>{isCur && isPlaying? <PauseMini dark={!isCur}/>:<PlayMini dark={!isCur}/>}</span></button>
                             <div className="min-w-0 flex-1"><div className={`text-sm font-medium truncate ${isCur? 'text-black':'text-white'}`}>{t.title} {t.source && <span className="text-[10px] bg-black/5 px-1.5 py-0.5 rounded-full border border-black/10 ml-1">{t.source}</span>}</div><div className={`text-xs truncate ${isCur? 'text-black/60':'text-white/50'}`}>{t.artist}</div></div>
-                            <button onClick={()=> toggleLike(t.id)} className={`hidden sm:grid w-8 h-8 place-items-center rounded-full ${liked.has(t.id)? 'text-[#C35445]': isCur? 'text-black/30':'text-white/30 hover:text-white'}`}><Heart filled={liked.has(t.id)} size={16}/></button>
+                            <button onClick={()=> toggleLike(t.id, t)} className={`hidden sm:grid w-8 h-8 place-items-center rounded-full ${liked.has(t.id)? 'text-[#C35445]': isCur? 'text-black/30':'text-white/30 hover:text-white'}`}><Heart filled={liked.has(t.id)} size={16}/></button>
                             <button onClick={()=> handleDownload(t)} className={`hidden sm:grid w-8 h-8 place-items-center rounded-full border ${downloaded.find(d=> String(d.id)===String(t.id))? 'bg-emerald-500 border-emerald-500 text-white':'border-white/10 text-white/40'}`}><DownloadIcon size={12}/></button>
                             <span className={`text-xs font-medium ${isCur? 'text-black/60':'text-white/40'}`}>{t.durationLabel}</span>
                           </div>
@@ -1284,7 +1348,7 @@ export default function App(){
                       <div className="relative">
                         <div className="inline-flex items-center gap-2 text-xs font-bold tracking-widest bg-white/15 backdrop-blur px-3 py-1.5 rounded-full border border-white/10">✨ SUR SANGAM ORIGINALS</div>
                         <h3 className="text-2xl font-bold font-display leading-tight mt-3">Monsoon Mix 2025</h3><p className="text-sm text-white/80 mt-2 leading-relaxed">Baarishein, Heeriye & 30 soulful tracks for chai & late nights.</p>
-                        <div className="flex items-center gap-3 mt-4"><button onClick={()=> playTrack(fallbackTracks[13])} className="px-6 py-2.5 rounded-full bg-white text-black text-sm font-bold flex items-center gap-2"><PlayMini/> Play</button><button onClick={()=> toggleLike(fallbackTracks[13].id)} className={`w-10 h-10 rounded-full backdrop-blur grid place-items-center border ${liked.has(fallbackTracks[13].id)? 'bg-[#C35445] border-[#C35445] text-white':'bg-white/15 border-white/15 text-white'}`}><Heart filled={liked.has(fallbackTracks[13].id)}/></button></div>
+                        <div className="flex items-center gap-3 mt-4"><button onClick={()=> playTrack(fallbackTracks[13])} className="px-6 py-2.5 rounded-full bg-white text-black text-sm font-bold flex items-center gap-2"><PlayMini/> Play</button><button onClick={()=> toggleLike(fallbackTracks[13].id, fallbackTracks[13])} className={`w-10 h-10 rounded-full backdrop-blur grid place-items-center border ${liked.has(fallbackTracks[13].id)? 'bg-[#C35445] border-[#C35445] text-white':'bg-white/15 border-white/15 text-white'}`}><Heart filled={liked.has(fallbackTracks[13].id)}/></button></div>
                         <div className="flex -space-x-2 mt-5">{[0,1,2,3].map(i=> (<img key={i} src={fallbackTracks[i].cover} alt="" className="w-8 h-8 rounded-full object-cover border-2 border-[#6A418E]"/>))}<span className="w-8 h-8 rounded-full bg-black/30 backdrop-blur border-2 border-white/20 grid place-items-center text-xs font-bold">+34</span></div>
                       </div>
                     </section>
@@ -1315,7 +1379,7 @@ export default function App(){
                     <div className="relative w-12 h-12 lg:w-14 lg:h-14 rounded-xl overflow-hidden shrink-0"><img src={current.cover} alt="" className="w-full h-full object-cover"/><div className="absolute inset-0 ring-1 ring-white/10 rounded-xl"/></div>
                     <div className="min-w-0"><div className="text-sm font-semibold leading-tight truncate pr-2">{current.title} {current.source && <span className="text-[10px] bg-white/10 px-1.5 py-0.5 rounded-full border border-white/10 ml-1">{current.source}</span>}</div><div className="text-xs text-white/60 truncate pr-2 flex items-center gap-2">{current.artist}<span className="hidden sm:inline-flex items-center gap-1 text-[11px] bg-white/10 px-2 py-0.5 rounded-full"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"/> {downloaded.find(d=> String(d.id)===String(current.id))? 'Offline':'Live'}</span></div></div>
                   </button>
-                  <button onClick={()=> toggleLike(current.id)} className={`hidden sm:grid w-9 h-9 place-items-center rounded-full border ${liked.has(current.id)? 'bg-[#C35445] border-[#C35445] text-white':'border-white/10 text-white/60 hover:text-white hover:bg-white/10'}`}><Heart filled={liked.has(current.id)}/></button>
+                  <button onClick={()=> toggleLike(current.id, current)} className={`hidden sm:grid w-9 h-9 place-items-center rounded-full border ${liked.has(current.id)? 'bg-[#C35445] border-[#C35445] text-white':'border-white/10 text-white/60 hover:text-white hover:bg-white/10'}`}><Heart filled={liked.has(current.id)}/></button>
                   <div className="hidden md:flex items-center gap-1">
                     <button onClick={()=> setShuffle(!shuffle)} className={`w-8 h-8 grid place-items-center rounded-full ${shuffle? 'text-[#D5AA55] bg-[#D5AA55]/15':'text-white/60 hover:text-white'}`}><ShuffleIcon active={shuffle}/></button>
                     <button onClick={handlePrev} className="w-9 h-9 grid place-items-center text-white hover:bg-white/10 rounded-full"><PrevIcon/></button>
@@ -1357,7 +1421,7 @@ export default function App(){
                     </div>
                     <div className="absolute -bottom-4 left-4 right-4 flex justify-center"><div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-xl border border-white/10 text-xs font-medium"><span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"/> {downloaded.find(d=> String(d.id)===String(current.id))? 'Offline • Downloaded':'Lossless • 24-bit / 48 kHz'}</div></div>
                     <div className="hidden lg:flex absolute -right-6 top-10 flex-col gap-2">
-                      <button onClick={()=> toggleLike(current.id)} className={`w-11 h-11 rounded-full backdrop-blur-xl border grid place-items-center shadow-lg ${liked.has(current.id)? 'bg-[#C35445] border-[#C35445] text-white':'bg-white/10 border-white/15 text-white hover:bg-white/15'}`}><Heart filled={liked.has(current.id)}/></button>
+                      <button onClick={()=> toggleLike(current.id, current)} className={`w-11 h-11 rounded-full backdrop-blur-xl border grid place-items-center shadow-lg ${liked.has(current.id)? 'bg-[#C35445] border-[#C35445] text-white':'bg-white/10 border-white/15 text-white hover:bg-white/15'}`}><Heart filled={liked.has(current.id)}/></button>
                       <button onClick={()=> handleDownload(current)} className={`w-11 h-11 rounded-full backdrop-blur-xl border grid place-items-center ${downloaded.find(d=> String(d.id)===String(current.id))? 'bg-emerald-500 border-emerald-500 text-white':'bg-white/10 border-white/15 text-white hover:bg-white/15'}`}><DownloadIcon/></button>
                       <button onClick={()=> setShowAddToPl(current)} className="w-11 h-11 rounded-full bg-white/10 backdrop-blur-xl border border-white/15 grid place-items-center text-white hover:bg-white/15"><PlusIcon/></button>
                     </div>
@@ -1366,7 +1430,7 @@ export default function App(){
                     <div className="text-center lg:text-left">
                       <h1 className="text-[32px] lg:text-[40px] font-bold font-display leading-none tracking-tight">{current.title}</h1><p className="text-lg text-white/70 mt-2">{current.artist}</p><p className="text-sm text-white/40 mt-1">{current.album} • {current.plays} plays {current.source && `• ${current.source}`}</p>
                       <div className="lg:hidden flex items-center justify-center gap-3 mt-5">
-                        <button onClick={()=> toggleLike(current.id)} className={`w-11 h-11 rounded-full border grid place-items-center ${liked.has(current.id)? 'bg-[#C35445] border-[#C35445] text-white':'bg-white/10 border-white/10 text-white'}`}><Heart filled={liked.has(current.id)}/></button>
+                        <button onClick={()=> toggleLike(current.id, current)} className={`w-11 h-11 rounded-full border grid place-items-center ${liked.has(current.id)? 'bg-[#C35445] border-[#C35445] text-white':'bg-white/10 border-white/10 text-white'}`}><Heart filled={liked.has(current.id)}/></button>
                         <button onClick={()=> handleDownload(current)} className={`px-5 py-2.5 rounded-full text-sm font-bold border ${downloaded.find(d=> String(d.id)===String(current.id))? 'bg-emerald-500 border-emerald-500 text-white':'bg-white/10 border-white/10 text-white'}`}>{downloaded.find(d=> String(d.id)===String(current.id))? 'Downloaded ✓':'Download'}</button>
                         <button onClick={()=> setShowAddToPl(current)} className="px-5 py-2.5 rounded-full bg-white/10 border border-white/10 text-sm font-semibold">+ Playlist</button>
                       </div>
@@ -1394,6 +1458,17 @@ export default function App(){
           )}
 
           {/* Modals */}
+          {showAuth && (
+            <div className="fixed inset-0 z-[70] grid place-items-center p-4"><div onClick={()=> setShowAuth(false)} className="absolute inset-0 bg-black/70 backdrop-blur-sm"/><div className="relative w-full max-w-sm glass-strong rounded-[24px] p-6">
+              <h3 className="text-lg font-bold">{authForm.mode==='login' ? "Welcome back" : "Create your account"}</h3>
+              <p className="text-xs text-white/50 mt-1">{authForm.mode==='login' ? 'Sign in — liked songs + playlists cloud se sync honge.' : 'Naam + email se account — sab kuch MongoDB me save, device badlo, music saath.'}</p>
+              {authForm.mode==='signup' && <input autoFocus value={authForm.name} onChange={e=> setAuthForm({...authForm, name:e.target.value})} placeholder="Naam" className="mt-4 w-full h-11 px-4 rounded-full bg-white/10 border border-white/10 outline-none placeholder:text-white/30"/>}
+              <input type="email" value={authForm.email} onChange={e=> setAuthForm({...authForm, email:e.target.value})} placeholder="email@example.com" className={`${authForm.mode==='login'?'mt-4':''} mt-2 w-full h-11 px-4 rounded-full bg-white/10 border border-white/10 outline-none placeholder:text-white/30`}/>
+              <input type="password" value={authForm.password} onChange={e=> setAuthForm({...authForm, password:e.target.value})} onKeyDown={e=>{ if(e.key==='Enter') handleAuthSubmit() }} placeholder="Password (min 6)" className="mt-2 w-full h-11 px-4 rounded-full bg-white/10 border border-white/10 outline-none placeholder:text-white/30"/>
+              <button onClick={handleAuthSubmit} disabled={authBusy} className="mt-4 w-full py-2.5 rounded-full bg-[#D5AA55] text-black font-bold disabled:opacity-50">{authBusy ? 'Connecting…' : (authForm.mode==='login' ? 'Sign in ☁' : 'Create account ☁')}</button>
+              <button onClick={()=> setAuthForm({...authForm, mode: authForm.mode==='login'?'signup':'login'})} className="mt-3 w-full text-xs text-white/60 hover:text-white">{authForm.mode==='login' ? 'Naya account chahiye? Sign up' : 'Pehle se account hai? Sign in'}</button>
+            </div></div>
+          )}
           {showCreatePl && (
             <div className="fixed inset-0 z-50 grid place-items-center p-4"><div onClick={()=> setShowCreatePl(false)} className="absolute inset-0 bg-black/70 backdrop-blur-sm"/><div className="relative w-full max-w-md glass-strong rounded-[24px] p-6"><h3 className="text-lg font-bold">Create playlist</h3><p className="text-sm text-white/60 mt-1">Give your playlist a name — you can add songs later from Search or Library.</p><input autoFocus value={newPlName} onChange={e=> setNewPlName(e.target.value)} placeholder="My Playlist #1" className="mt-4 w-full h-11 px-4 rounded-full bg-white text-black placeholder:text-black/40 outline-none"/><div className="flex gap-2 mt-4"><button onClick={()=> setShowCreatePl(false)} className="flex-1 py-2.5 rounded-full bg-white/10 border border-white/10 font-semibold">Cancel</button><button onClick={handleCreatePlaylist} className="flex-1 py-2.5 rounded-full bg-white text-black font-bold">Create</button></div></div></div>
           )}
@@ -1450,7 +1525,7 @@ export default function App(){
   )
 }
 
-function ProfileView({ user, setUser, editUser, setEditUser, liked, playlists, localSongs, downloaded, showToast }){
+function ProfileView({ user, setUser, editUser, setEditUser, liked, playlists, localSongs, downloaded, showToast, authUser, onSignIn, onSignOut }){
   const [tab, setTab] = useState("Overview")
   const isEditing = !!editUser
   const startEdit = ()=> setEditUser({...user})
@@ -1477,6 +1552,15 @@ function ProfileView({ user, setUser, editUser, setEditUser, liked, playlists, l
                   <div><div className="text-xl font-bold">{playlists.length}</div><div className="text-xs text-white/50">Playlists</div></div>
                   <div><div className="text-xl font-bold">{downloaded.length}</div><div className="text-xs text-white/50">Offline</div></div>
                 </div>
+                {authUser ? (
+                  <div className="mt-4 flex items-center gap-3 p-3 rounded-2xl bg-white/5 border border-white/10 max-w-md">
+                    <span className="w-8 h-8 shrink-0 rounded-full bg-[#D5AA55] text-black grid place-items-center text-sm font-bold">☁</span>
+                    <div className="min-w-0 flex-1"><div className="text-sm font-semibold truncate">{authUser.email}</div><div className="text-xs text-white/50">Cloud sync ON — liked + playlists MongoDB me save ho rahe hain</div></div>
+                    <button onClick={onSignOut} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10 hover:bg-white/15 shrink-0">Sign out</button>
+                  </div>
+                ) : (
+                  <div className="mt-4 max-w-md"><button onClick={onSignIn} className="w-full py-2.5 rounded-full bg-[#D5AA55] text-black text-sm font-bold flex items-center justify-center gap-2">☁ Sign in / Create account — <span className="font-medium opacity-80">liked songs + playlists har device par</span></button></div>
+                )}
               </>
             ) : (
               <div className="space-y-3">

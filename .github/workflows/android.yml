@@ -38,6 +38,11 @@ jobs:
           npx cap add android || true
           npx cap sync android
 
+      - name: Generate app icons (adaptive + legacy)
+        run: |
+          npm i --legacy-peer-deps @capacitor/assets@3
+          npx capacitor-assets generate --android --icon-only
+
       - name: Build Debug APK
         working-directory: android
         run: |

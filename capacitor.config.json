@@ -1,15 +1,17 @@
 {
   "appId": "com.sursangam.app",
-  "appName": "Sur Sangam",
+  "appName": "Sur Sangam Music",
   "webDir": "dist",
   "bundledWebRuntime": false,
   "plugins": {
     "SplashScreen": {
-      "launchShowDuration": 1500,
+      "launchShowDuration": 1200,
       "backgroundColor": "#060306"
     }
   },
   "server": {
     "androidScheme": "https"
-  }
+  },
+  "assets": "assets",
+  "backgroundColor": "#060306"
 }

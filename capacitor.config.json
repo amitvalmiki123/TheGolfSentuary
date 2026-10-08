@@ -11,7 +11,5 @@
   },
   "server": {
     "androidScheme": "https"
-  },
-  "assets": "assets",
-  "backgroundColor": "#060306"
+  }
 }

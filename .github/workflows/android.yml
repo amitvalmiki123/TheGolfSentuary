@@ -38,10 +38,33 @@ jobs:
           npx cap add android || true
           npx cap sync android
 
-      - name: Generate app icons (adaptive + legacy)
+      - name: Generate app icons (adaptive + legacy, ImageMagick)
         run: |
-          npm i --legacy-peer-deps @capacitor/assets@3
-          npx capacitor-assets generate --android --icon-only
+          set -e
+          RES=android/app/src/main/res
+          # adaptive background = theme colour
+          if [ -f $RES/values/ic_launcher_background.xml ]; then
+            sed -i 's/#[0-9A-Fa-f]*/#060306/' $RES/values/ic_launcher_background.xml
+          else
+            mkdir -p $RES/values && printf '<?xml version="1.0" encoding="utf-8"?>\n<resources><color name="ic_launcher_background">#060306</color></resources>\n' > $RES/values/ic_launcher_background.xml
+          fi
+          # anydpi xml -> adaptive, background drawable = colour
+          mkdir -p $RES/mipmap-anydpi-v26
+          for n in ic_launcher ic_launcher_round; do
+            printf '<?xml version="1.0" encoding="utf-8"?>\n<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">\n  <background android:drawable="@color/ic_launcher_background"/>\n  <foreground android:drawable="@mipmap/${n}_foreground"/>\n</adaptive-icon>\n' > $RES/mipmap-anydpi-v26/$n.xml
+          done
+          # foreground layers (108dp family) + legacy icons (48-192)
+          declare -A FG=( [mdpi]=108 [hdpi]=162 [xhdpi]=216 [xxhdpi]=324 [xxxhdpi]=432 )
+          declare -A LG=( [mdpi]=48 [hdpi]=72 [xhdpi]=96 [xxhdpi]=144 [xxxhdpi]=192 )
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            mkdir -p $RES/mipmap-$d
+            convert assets/icon.png -resize ${FG[$d]}x${FG[$d]} -background '#060306' -gravity center -extent ${FG[$d]}x${FG[$d]} $RES/mipmap-$d/ic_launcher_foreground.png
+            cp $RES/mipmap-$d/ic_launcher_foreground.png $RES/mipmap-$d/ic_launcher_round_foreground.png
+            convert assets/icon.png -resize ${LG[$d]}x${LG[$d]} -background '#060306' -gravity center -extent ${LG[$d]}x${LG[$d]} $RES/mipmap-$d/ic_launcher.png
+            convert assets/icon.png -resize ${LG[$d]}x${LG[$d]} \( +clone -alpha extract -draw 'fill black polygon 0,0 0,$s 100,100 $s,0' -negate \) -alpha off -compose CopyOpacity -compose over -background none -flatten /dev/null 2>/dev/null || true
+            convert assets/icon.png -crop ${LG[$d]}x${LG[$d]}+0+0 -alpha set \( -clone 0 -alpha extract -draw 'fill black circle 50%,50% 50%,50%' -negate -resize ${LG[$d]}x${LG[$d]} \) \( -clone 0 -alpha extract \) -compose DstIn -compose CopyOpacity +page -background none -flatten $RES/mipmap-$d/ic_launcher_round.png 2>/dev/null || cp $RES/mipmap-$d/ic_launcher.png $RES/mipmap-$d/ic_launcher_round.png
+          done
+          ls $RES/mipmap-xxxhdpi/
 
       - name: Build Debug APK
         working-directory: android

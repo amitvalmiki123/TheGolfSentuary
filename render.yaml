@@ -17,6 +17,6 @@ services:
       - key: MONGO_URI
         sync: false              # ye khod bharna hai: Environment tab me (Atlas ki URI)
       - key: CORS_ORIGIN
-        value: https://amitvalmiki123.github.io
+        value: https://amitvalmiki123.github.io,https://thegolfsentuary.onrender.com,https://localhost,http://localhost
       - key: ALLOW_FALLBACK
         value: "0"

@@ -344,6 +344,12 @@ app.get('/api/auth/me', auth, async (req,res)=>{
   }catch(e){ res.status(400).json({ error: 'invalid token' }) }
 })
 
+app.delete('/api/auth/me', auth, async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error: 'DB not ready' })
+  await User.findByIdAndDelete(req.user.id)
+  res.json({ ok: true })
+})
+
 // ---- Liked songs (cloud) ----
 app.get('/api/likes', auth, async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error: 'DB not ready' })

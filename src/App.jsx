@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
-import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio, apiSignup, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists } from './lib/api.js'
+import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio, searchSaavn, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists } from './lib/api.js'
 import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
 
 const BASE = import.meta.env.BASE_URL || '/'
@@ -23,16 +23,10 @@ const fallbackTracks = [
   { id: 16, title: "Arabic Kuthu", artist: "Anirudh Ravichander", album: "Beast", cover: "https://images.unsplash.com/photo-1501386761578-eac5c94b800a?w=600&auto=format&fit=crop&q=60", audio: BASE + "audio/tone1.wav", durationLabel: "4:38", color: "#A154D6", plays: "290M" },
 ]
 
-const defaultPlaylists = [
-  { id: 'p1', title: "Today's Top Hits • India", subtitle: "Arijit, Pritam & today's biggest songs.", cover: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=60", color: "from-[#543551] to-[#572223]", count: "24 songs", songs: [1,2,3,4,5,12,13,11,14,6,7,15] },
-  { id: 'p2', title: "Bollywood Butter", subtitle: "The finest love songs from the heart of Mumbai.", cover: "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=600&auto=format&fit=crop&q=60", color: "from-[#6A418E] to-[#A154D6]", count: "22 songs", songs: [1,4,5,11,12,13,2,3,14,6,7,15] },
-  { id: 'p3', title: "Punjabi 101", subtitle: "Sidhu, AP Dhillon, Diljit — pure fire.", cover: "https://images.unsplash.com/photo-1471478331149-c72f17e33c73?w=600&auto=format&fit=crop&q=60", color: "from-[#D5AA55] to-[#C35445]", count: "20 songs", songs: [6,7,15,11,6,7,15,1,2,3,4,5] },
-  { id: 'p4', title: "Chill Kar Yaar", subtitle: "Lo-fi, Anuv Jain & rainy-day feels.", cover: "https://images.unsplash.com/photo-1508700115892-45ecd05ae2c4?w=600&auto=format&fit=crop&q=60", color: "from-[#572223] to-[#060306]", count: "18 songs", songs: [14,3,11,5,1,4,12,13,6,7] },
-  { id: 'p5', title: "Indie India", subtitle: "Prateek Kuhad, Ritviz, When Chai Met Toast.", cover: "https://images.unsplash.com/photo-1498038432885-c6f3f1b912ee?w=600&auto=format&fit=crop&q=60", color: "from-[#543551]/80 to-[#6A418E]", count: "20 songs", songs: [14,11,3,6,7,15,1,2,4,5,12,13] },
-  { id: 'p6', title: "Global Top 50", subtitle: "The Weeknd, Harry Styles & world charts.", cover: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=60", color: "from-[#A154D6] to-[#C35445]", count: "18 songs", songs: [8,9,10,1,2,3,11,12,6,7,14,15] },
-  { id: 'p7', title: "90s Love Hits", subtitle: "Kumar Sanu, Alka Yagnik — golden era.", cover: "https://images.unsplash.com/photo-1470229722913-7c0e2dbbafd3?w=600&auto=format&fit=crop&q=60", color: "from-[#E9CDC2] to-[#A154D6]", count: "20 songs", songs: [4,5,12,13,2,1,3,11,14,6,7,15] },
-  { id: 'p8', title: "New Releases", subtitle: "Fresh drops • Hindi & Punjabi 2024", cover: "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=600&auto=format&fit=crop&q=60", color: "from-[#572223] to-[#D5AA55]", count: "22 songs", songs: [2,3,6,11,14,1,4,5,12,13,7,15] },
-]
+const defaultPlaylists = []
+
+// v2: ek baar purane demo likes/playlists clear — defaults ab khali (user demand)
+try{ if(localStorage.getItem('sur_ver')!=='v2'){ ['sur_liked','sur_liked_map','sur_playlists','sur_recent'].forEach(k=> localStorage.removeItem(k)); localStorage.setItem('sur_ver','v2') } }catch{}
 
 const categories = [
   { id:"All", label:"All", icon:"✨" },
@@ -102,7 +96,7 @@ function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60)
 
 export default function App(){
   // player
-  const [queue, setQueue] = useState(fallbackTracks)
+  const [queue, setQueue] = useState([])
   const [currentIndex, setCurrentIndex] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
   const [progress, setProgress] = useState(0)
@@ -112,7 +106,7 @@ export default function App(){
   const [shuffle, setShuffle] = useState(false)
   const [repeat, setRepeat] = useState(0)
   const [liked, setLiked] = useState(()=> {
-    try{ const v = JSON.parse(localStorage.getItem('sur_liked')||'null'); return v? new Set(v): new Set([1,3,6]) }catch{ return new Set([1,3,6]) }
+    try{ const v = JSON.parse(localStorage.getItem('sur_liked')||'null'); return v? new Set(v): new Set() }catch{ return new Set() }
   })
   const [playlists, setPlaylists] = useState(()=>{
     try{ const v=JSON.parse(localStorage.getItem('sur_playlists')||'null'); return v||defaultPlaylists }catch{ return defaultPlaylists }
@@ -129,6 +123,7 @@ export default function App(){
   const [nav, setNav] = useState("home") // home, search, library, profile
   const [libTab, setLibTab] = useState("Playlists") // Playlists, Songs, Liked, Local, Downloads
   const [showFull, setShowFull] = useState(false)
+  const touchRef = useRef(null)
   const [showQueue, setShowQueue] = useState(false)
   const [showLyrics, setShowLyrics] = useState(false)
   const [showCreatePl, setShowCreatePl] = useState(false)
@@ -140,6 +135,7 @@ export default function App(){
   const [recentlyPlayed, setRecentlyPlayed] = useState(()=>{ try{ return JSON.parse(localStorage.getItem('sur_recent')||'[]') }catch{ return [] } })
   const [categoryLoading, setCategoryLoading] = useState(false)
   const [homeTracks, setHomeTracks] = useState([])
+  const [homeErr, setHomeErr] = useState(false)
   const [homeLoading, setHomeLoading] = useState(true)
   const [homeNextPage, setHomeNextPage] = useState(null)
   const [homeLoadingMore, setHomeLoadingMore] = useState(false)
@@ -165,7 +161,7 @@ export default function App(){
   const ytReadyRef = useRef(false)
   const [ytReady, setYtReady] = useState(false)
   const ytProgressRef = useRef(null)
-  const current = queue[currentIndex] || fallbackTracks[0]
+  const current = queue[currentIndex] || null
 
   // persist
   useEffect(()=>{ localStorage.setItem('sur_liked', JSON.stringify([...liked])) },[liked])
@@ -256,12 +252,11 @@ export default function App(){
           return prev
         })
       } else {
-        // fallback to local so home not dummy (user wanted online but empty is worse)
-        const fb = getCategoryTracks(activeCat)
-        setHomeTracks(fb.length? fb : fallbackTracks.slice(0,12))
+        if(!cancelled){ setHomeTracks([]); setHomeErr(true); setHomeLoading(false) }
+        return
       }
       setHomeLoading(false)
-    }).catch(()=>{ if(!cancelled){ const fb=getCategoryTracks(activeCat); setHomeTracks(fb.length? fb: fallbackTracks.slice(0,12)); setHomeLoading(false) }})
+    }).catch(()=>{ if(!cancelled){ setHomeTracks([]); setHomeErr(true); setHomeLoading(false) }})
     return ()=> { cancelled=true }
   },[activeCat])
 
@@ -309,6 +304,7 @@ export default function App(){
   }, [homeLoading, homeNextPage, homeTracks.length])
   // Media Session + background playback
   useEffect(()=>{
+    if(!current) return
     if('mediaSession' in navigator){
       try{
         navigator.mediaSession.metadata = new MediaMetadata({
@@ -548,14 +544,19 @@ export default function App(){
     setIsPlaying(v=>!v)
   }
   const handleNext = ()=>{
+    if(!queue.length) return
     if(shuffle){ let n; do{ n=Math.floor(Math.random()*queue.length)}while(n===currentIndex && queue.length>1); setCurrentIndex(n) }
     else setCurrentIndex(i=> (i+1)%queue.length)
   }
   const handlePrev = ()=>{
+    if(!queue.length) return
     const a=audioRef.current; if(a && a.currentTime>3){ a.currentTime=0; return }
     setCurrentIndex(i=> (i-1+queue.length)%queue.length)
   }
   const seek = e=>{ const v=Number(e.target.value); if(current?.videoId && ytPlayerRef.current?.seekTo){ try{ ytPlayerRef.current.seekTo(v, true); setProgress(v) }catch{} return } if(audioRef.current){ audioRef.current.currentTime=v; setProgress(v)} }
+  const seekToTime = (v)=>{ if(!current) return; v=Math.max(0, Math.min(v, duration||v)); if(current.videoId && ytPlayerRef.current?.seekTo){ try{ ytPlayerRef.current.seekTo(v, true); setProgress(v); return }catch{} } if(audioRef.current){ try{ audioRef.current.currentTime=v }catch{} setProgress(v) } }
+  const scrubRef = useRef(false)
+  const scrubTo = (clientX, el)=>{ const r = el.getBoundingClientRect(); const frac = Math.max(0, Math.min(1, (clientX - r.left)/r.width)); seekToTime(frac * (duration||0)) }
   const trackById = (id)=>{ const s=String(id); const pool=[...fallbackTracks, ...localSongs, ...homeTracks, ...queue, ...artistTracks]; return pool.find(x=> String(x.id)===s) || null }
   const toggleLike = (id, trackArg)=> setLiked(prev=>{ const n=new Set(prev); const had = n.has(id) || n.has(Number(id)) || n.has(String(id)); if(n.has(id)) n.delete(id); else n.add(id); showToast(n.has(id)? "Added to Liked Songs":"Removed from Liked Songs")
     try{ if(!had){ const tr = trackArg || trackById(id); if(tr) likedMetaRef.current[String(id)] = { tid:String(id), title:tr.title||'', artist:tr.artist||'', album:tr.album||'', cover:tr.cover||'', audio:tr.audio||null, videoId:tr.videoId||null, durationLabel:tr.durationLabel||'', source:tr.source||'' } } else { delete likedMetaRef.current[String(id)] }
@@ -576,6 +577,7 @@ export default function App(){
     } finally { setAuthBusy(false) }
   }
   const handleSignOut = ()=>{ apiLogout(); setAuthUser(null); showToast('Signed out — local data safe hai') }
+  const handleDeleteAccount = async ()=>{ const ok = await apiDeleteAccount(); setAuthUser(null); showToast(ok? 'Account cloud se delete ho gaya' : 'Server reachable nahi — session sign out kiya') }
 
   const playTrack = async (track, list)=>{
     const targetList = list || queue
@@ -787,11 +789,13 @@ export default function App(){
     setPlaylists(prev=> prev.map(p=>{
       if(p.id!==plId) return p
       const sid = String(track.id)
-      if(p.songs?.includes(sid) || p.songs?.includes(track.id)) { showToast("Already in playlist"); return p }
-      const ns = [...(p.songs||[]), sid]
-      return {...p, songs: ns, count: `${ns.length} songs`}
+      const tr0 = p.tracks||[]
+      if(tr0.some(x=> String(x.id||x.tid)===sid) || p.songs?.includes(sid) || p.songs?.includes(track.id)) { showToast("Already in playlist"); return p }
+      const meta = { id: sid, title: track.title||'', artist: track.artist||'', album: track.album||'', cover: track.cover||'', audio: track.audio||null, videoId: track.videoId||null, durationLabel: track.durationLabel||'', durationSec: track.durationSec||0, source: track.source||'', color: track.color||'#6A418E' }
+      const nt = [...tr0, meta]
+      return {...p, tracks: nt, songs: [...(p.songs||[]), sid], count: `${nt.length} songs`}
     }))
-    setShowAddToPl(null); showToast(`Added to playlist`)
+    setShowAddToPl(null); showToast(`Added to "${(playlists.find(x=>x.id===plId)||{}).title||'playlist'}" ✓`)
   }
 
   // derived lists
@@ -942,7 +946,7 @@ export default function App(){
 
           <main className="flex-1 px-4 lg:px-6 py-6 pb-28 lg:pb-28 space-y-7">
             {nav==='profile' ? (
-              <ProfileView user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} />
+              <ProfileView user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} />
             ) : nav==='search' ? (
               <>
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -1077,10 +1081,14 @@ export default function App(){
                           <div className="text-sm font-semibold leading-tight line-clamp-1">{pl.title}</div><div className="text-xs text-white/50 line-clamp-2 leading-relaxed">{pl.subtitle}</div>
                           <div className="mt-3 flex gap-1">
                             <button onClick={async()=>{ 
+                              if(pl.tracks?.length){
+                                setQueue(pl.tracks); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing • ${pl.title} • ${pl.tracks.length}`)
+                                return
+                              }
                               if(pl.songs?.length){ 
                                 const ids=pl.songs; 
-                                let tracksToPlay = ids.map(id=> fallbackTracks.find(t=> String(t.id)===String(id)) || localSongs.find(t=> String(t.id)===String(id))).filter(Boolean); 
-                                // if playlist is curated and has only dummy, fetch real
+                                let tracksToPlay = ids.map(id=> localSongs.find(t=> String(t.id)===String(id))).filter(Boolean); 
+                                // curated/legacy — fetch real from Saavn
                                 if(tracksToPlay.length < 3){
                                   const q = pl.title
                                   try{
@@ -1088,7 +1096,7 @@ export default function App(){
                                     if(real.length) tracksToPlay = real
                                   }catch{}
                                 }
-                                if(tracksToPlay.length){ setQueue(tracksToPlay); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing • ${pl.title}`) } 
+                                if(tracksToPlay.length){ setQueue(tracksToPlay); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing • ${pl.title}`) } else showToast("Kuch nahi mila — internet check karke phir try karo") 
                               } else {
                                 // empty custom playlist — try to fetch real for its name
                                 try{
@@ -1211,13 +1219,18 @@ export default function App(){
                 <div>
                   <div className="flex flex-wrap items-baseline gap-3 mb-4"><h1 className="text-[28px] sm:text-[32px] font-bold font-display tracking-tight">{greeting}, {user.name.split(' ')[0]}</h1><span className="text-sm text-white/50 hidden sm:block">Ready to vibe? {localSongs.length>0? `${localSongs.length} local +`:''} {downloaded.length} offline • {activeCat==="All"? "All genres":"Category: "+activeCat}</span></div>
                   {activeCat!=="All" && (
-                    <div className="mb-4 p-4 rounded-[20px] bg-gradient-to-br from-[#6A418E]/30 to-[#543551]/30 border border-white/10 flex items-center gap-4">
-                      <div className="w-12 h-12 rounded-xl bg-white text-black grid place-items-center text-xl">{categories.find(c=> c.id===activeCat)?.icon}</div>
-                      <div className="flex-1"><div className="font-bold">{activeCat} Playlist • {getCategoryTracks(activeCat).length} songs</div><div className="text-xs text-white/60">Tap any song or Play All — auto-queued for you</div></div>
-                      <button onClick={()=>{ const t= homeTracks.length? homeTracks : getCategoryTracks(activeCat); setQueue(t); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing ${activeCat} • ${t.length} full`) }} className="px-6 py-2.5 rounded-full bg-white text-black text-sm font-bold flex items-center gap-2"><PlayMini/> Play All</button>
-                      <button onClick={()=>{ setActiveCat("All"); setQueue(fallbackTracks)}} className="hidden sm:flex px-4 py-2 rounded-full bg-white/10 border border-white/10 text-sm">Show All</button>
+                    <div className="mb-4 p-4 rounded-[20px] bg-gradient-to-br from-[#6A418E]/30 to-[#543551]/30 border border-white/10">
+                      <div className="flex items-center gap-3">
+                        <div className="w-11 h-11 rounded-xl bg-white text-black grid place-items-center text-lg shrink-0">{categories.find(c=> c.id===activeCat)?.icon}</div>
+                        <div className="min-w-0 flex-1"><div className="font-bold truncate">{activeCat} Playlist</div><div className="text-xs text-white/60">{homeTracks.length || getCategoryTracks(activeCat).length} songs • tap any song or Play All below</div></div>
+                        <button onClick={()=> setActiveCat("All")} className="px-3 py-1.5 rounded-full bg-white/10 border border-white/10 text-xs shrink-0">All</button>
+                      </div>
+                      <div className="mt-3 flex gap-2">
+                        <button onClick={()=>{ const tk = homeTracks.length? homeTracks : getCategoryTracks(activeCat); if(tk.length){ setQueue(tk); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing ${activeCat} • ${tk.length} tracks`) } else showToast('Pehle tracks load hojne do — Retry dabao') }} className="flex-1 py-2.5 rounded-full bg-white text-black text-sm font-bold flex items-center justify-center gap-2"><PlayMini/> Play All</button>
+                      </div>
                     </div>
                   )}
+                  {homeErr && !homeLoading && <div className="mb-3 p-4 rounded-[20px] bg-white/5 border border-white/10 flex items-center gap-3"><span className="text-sm text-white/70 flex-1">Internet/Lag delay — {activeCat} load nahi ho paya</span><button onClick={()=>{ setHomeErr(false); setHomeLoading(true); trendingByCategory(activeCat, 20).then(tr=>{ setHomeTracks(tr||[]); setHomeLoading(false); if(tr&&tr.length) setHomeErr(false) }) }} className="px-4 py-2 rounded-full bg-white text-black text-sm font-bold">Retry</button></div>}
                   {homeLoading ? <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">{[1,2,3,4,5,6,7,8,9,10,11,12].map(i=> <div key={i} className="h-[64px] rounded-xl bg-white/5 animate-pulse border border-white/5"/> )}</div> : <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
                     {homeTracks.map(t=>{
                       const idx=queue.findIndex(x=> String(x.id)===String(t.id))
@@ -1276,11 +1289,11 @@ export default function App(){
                               }
                               if(tracks.length){
                                 setQueue(tracks); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing • ${pl.title} • ${tracks.length} real`)
-                              } else {
-                                const ids=pl.songs; const t2=ids.map(id=> fallbackTracks.find(x=> String(x.id)===String(id))).filter(Boolean); if(t2.length){ setQueue(t2); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing • ${pl.title}`)}
-                              }
+                              } else if(pl.tracks?.length){
+                                setQueue(pl.tracks); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing saved • ${pl.title}`)
+                              } else showToast("Network nahi mila — thodi der baad try karo")
                             }catch{
-                              const ids=pl.songs; const t2=ids.map(id=> fallbackTracks.find(x=> String(x.id)===String(id))).filter(Boolean); if(t2.length){ setQueue(t2); setCurrentIndex(0); setIsPlaying(true); }
+                              if(pl.tracks?.length){ setQueue(pl.tracks); setCurrentIndex(0); setIsPlaying(true) } else showToast("Network nahi mila — retry karo")
                             }
                           }} className="absolute bottom-3 right-3 w-10 h-10 rounded-full bg-white text-black grid place-items-center shadow-xl opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0 transition"><PlayMini/></button>
                           <div className="absolute top-3 left-3 text-[11px] font-bold tracking-widest bg-black/40 backdrop-blur px-2 py-1 rounded-full border border-white/10">{pl.count || `${(pl.songs||[]).length} songs`}</div>
@@ -1358,7 +1371,7 @@ export default function App(){
                 <section>
                   <div className="flex items-center justify-between mb-3"><h2 className="text-xl font-bold font-display">{activeCat==="All"? "Jump back in — Online + Local" : `${activeCat} • Jump back in`}</h2><span className="text-xs text-white/40 hidden sm:block">{activeCat==="All"? "Based on your listening + downloads" : `${getCategoryTracks(activeCat).length} songs in ${activeCat}`}</span></div>
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
-                    {(activeCat==="All"? (homeTracks.length? homeTracks.slice(0,6) : fallbackTracks.slice(6,10)) : (homeTracks.length? homeTracks.slice(0,12) : [])).map(t=>(
+                    {(activeCat==="All"? (homeTracks.length? homeTracks.slice(0,6) : []) : (homeTracks.length? homeTracks.slice(0,12) : [])).map(t=>(
                       <button key={t.id} onClick={()=> playTrack(t, activeCat==="All"? [...fallbackTracks, ...localSongs] : getCategoryTracks(activeCat))} className="text-left glass rounded-[18px] p-3 hover:bg-white/10 transition group">
                         <div className="relative aspect-square rounded-xl overflow-hidden mb-3"><img src={t.cover} alt="" className="w-full h-full object-cover group-hover:scale-105 transition duration-700"/><span className="absolute bottom-2 right-2 w-9 h-9 rounded-full bg-[#D5AA55] text-black grid place-items-center shadow-lg translate-y-1 opacity-0 group-hover:opacity-100 group-hover:translate-y-0 transition"><PlayMini/></span>{t.isLocal && <span className="absolute top-2 left-2 text-[10px] font-bold bg-emerald-500 text-white px-2 py-0.5 rounded-full">LOCAL</span>}{activeCat!=="All" && <span className="absolute top-2 right-2 text-[10px] font-bold bg-black/60 backdrop-blur text-white px-2 py-0.5 rounded-full border border-white/10">{activeCat}</span>}</div>
                         <div className="text-sm font-semibold leading-tight truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div>
@@ -1370,10 +1383,10 @@ export default function App(){
             )}
           </main>
 
-          <div className={`fixed bottom-0 left-0 right-0 z-40 lg:left-[300px] ${showFull? 'hidden':''}`}>
+          {current && <div className={`fixed bottom-0 left-0 right-0 z-40 lg:left-[300px] ${showFull? 'hidden':''}`}>
             <div className="mx-3 lg:mx-4 mb-3 lg:mb-4">
               <div className="relative glass-strong rounded-[20px] lg:rounded-[18px] overflow-hidden shadow-[0_20px_60px_rgba(0,0,0,0.5)]">
-                <div className="absolute top-0 left-0 right-0 h-[2px] bg-white/10"><div className="h-full bg-white transition-all" style={{ width:`${duration? (progress/duration)*100:0}%`}}/></div>
+                <div className="absolute top-0 left-0 right-0 h-[3px] bg-white/10"><div className="h-full bg-[#D5AA55] rounded-r-full transition-all" style={{ width:`${duration? Math.min(100,(progress/duration)*100):0}%`}}/></div>
                 <div className="flex items-center gap-3 px-3 py-3 lg:px-4">
                   <button onClick={()=> setShowFull(true)} className="flex items-center gap-3 min-w-0 flex-1 text-left">
                     <div className="relative w-12 h-12 lg:w-14 lg:h-14 rounded-xl overflow-hidden shrink-0"><img src={current.cover} alt="" className="w-full h-full object-cover"/><div className="absolute inset-0 ring-1 ring-white/10 rounded-xl"/></div>
@@ -1387,7 +1400,7 @@ export default function App(){
                     <button onClick={handleNext} className="w-9 h-9 grid place-items-center text-white hover:bg-white/10 rounded-full"><NextIcon/></button>
                     <button onClick={()=> setRepeat(r=> (r+1)%3)} className={`w-8 h-8 grid place-items-center rounded-full ${repeat!==0? 'text-[#D5AA55] bg-[#D5AA55]/15':'text-white/60 hover:text-white'}`}><RepeatIcon mode={repeat}/></button>
                   </div>
-                  <div className="flex md:hidden items-center gap-2"><button onClick={togglePlay} className="w-9 h-9 rounded-full bg-white text-black grid place-items-center">{isPlaying? <PauseMini/>:<PlayMini/>}</button><button onClick={handleNext} className="w-9 h-9 grid place-items-center text-white/80"><NextIcon/></button></div>
+                  <div className="flex md:hidden items-center gap-2"><button onClick={togglePlay} className="w-9 h-9 rounded-full bg-white text-black grid place-items-center">{isPlaying? <PauseMini dark/>:<PlayMini dark/>}</button><button onClick={handleNext} className="w-9 h-9 grid place-items-center text-white/80"><NextIcon/></button></div>
                   <div className="hidden lg:flex items-center gap-3 pl-3 border-l border-white/10">
                     <button onClick={()=> setShowLyrics(!showLyrics)} className={`hidden xl:grid w-8 h-8 place-items-center rounded-full ${showLyrics? 'bg-white text-black':'text-white/60 hover:text-white hover:bg-white/10'}`}><MicIcon/></button>
                     <button onClick={()=> setShowQueue(!showQueue)} className={`w-8 h-8 grid place-items-center rounded-full ${showQueue? 'bg-white text-black':'text-white/60 hover:text-white hover:bg-white/10'}`}><QueueIcon/></button>
@@ -1398,10 +1411,12 @@ export default function App(){
                 </div>
               </div>
             </div>
-          </div>
+          </div>}
 
           {/* Full player */}
-          <div className={`fixed inset-0 z-50 bg-[#060306] overflow-y-auto transition-transform duration-500 ${showFull? 'translate-y-0':'translate-y-full'}`}>
+          {current && <div className={`fixed inset-0 z-50 bg-[#060306] overflow-y-auto transition-transform duration-500 ${showFull? 'translate-y-0':'translate-y-full'}`}
+            onTouchStart={e=>{ touchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() } }}
+            onTouchEnd={e=>{ const s = touchRef.current; if(!s) return; const dx = e.changedTouches[0].clientX - s.x; const dy = e.changedTouches[0].clientY - s.y; if(Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy)*1.4){ if(dx < 0) handleNext(); else handlePrev(); } else if(dy > 120 && Math.abs(dy) > Math.abs(dx)*1.2){ setShowFull(false) } touchRef.current=null }}>
             <div className="min-h-screen relative">
               <div className="absolute inset-0 overflow-hidden"><img src={current.cover} alt="" className="w-full h-full object-cover scale-110 blur-[60px] opacity-30"/><div className="absolute inset-0 bg-gradient-to-b from-[#060306]/40 via-[#060306]/70 to-[#060306]"/><div className="absolute inset-0" style={{ background:`radial-gradient(600px 600px at 50% 0%, ${current.color}40, transparent)`}}/></div>
               <div className="relative max-w-[980px] mx-auto px-4 lg:px-6 py-4 lg:py-6">
@@ -1436,7 +1451,10 @@ export default function App(){
                       </div>
                     </div>
                     <div className="mt-8 lg:mt-10">
-                      <div className="flex items-center gap-3"><span className="text-xs font-medium tabular-nums text-white/70 w-10 text-right">{formatTime(progress)}</span><div className="flex-1 relative"><input type="range" min={0} max={duration||100} value={progress} onChange={seek} className="range w-full accent-white"/></div><span className="text-xs font-medium tabular-nums text-white/70 w-10">-{formatTime(Math.max(0,(duration||0)-progress))}</span></div>
+                      <div className="flex items-center gap-3"><span className="text-xs font-medium tabular-nums text-white/70 w-10 text-right">{formatTime(progress)}</span><div className="flex-1 relative h-6 -my-2 cursor-pointer touch-none" onPointerDown={e=>{ scrubRef.current=true; e.currentTarget.setPointerCapture(e.pointerId); scrubTo(e.clientX, e.currentTarget) }} onPointerMove={e=>{ if(scrubRef.current) scrubTo(e.clientX, e.currentTarget) }} onPointerUp={()=>{ scrubRef.current=false }} onPointerCancel={()=>{ scrubRef.current=false }}>
+                          <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-[6px] rounded-full bg-white/15 overflow-hidden"><div className="h-full bg-gradient-to-r from-[#D5AA55] to-white rounded-full" style={{width:`${duration? Math.min(100,(progress/duration)*100):0}%`}}/></div>
+                          <div className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-[14px] h-[14px] rounded-full bg-white shadow-[0_0_0_3px_rgba(255,255,255,0.25),0_2px_8px_rgba(0,0,0,0.6)]" style={{left:`${duration? Math.min(100,(progress/duration)*100):0}%`}}/>
+                        </div><span className="text-xs font-medium tabular-nums text-white/70 w-10">-{formatTime(Math.max(0,(duration||0)-progress))}</span></div>
                       <div className="flex items-center justify-between mt-6"><button onClick={()=> setShuffle(!shuffle)} className={`w-10 h-10 grid place-items-center rounded-full ${shuffle? 'text-[#D5AA55] bg-[#D5AA55]/15':'text-white/60 hover:text-white'}`}><ShuffleIcon active={shuffle}/></button><button onClick={handlePrev} className="w-12 h-12 grid place-items-center text-white hover:bg-white/10 rounded-full"><PrevIcon large/></button><button onClick={togglePlay} className="w-[72px] h-[72px] rounded-full bg-white text-black grid place-items-center shadow-[0_10px_30px_rgba(255,255,255,0.25)] hover:scale-[1.02] active:scale-[0.98] transition">{isPlaying? <PauseIcon large dark/>:<PlayIcon large dark/>}</button><button onClick={handleNext} className="w-12 h-12 grid place-items-center text-white hover:bg-white/10 rounded-full"><NextIcon large/></button><button onClick={()=> setRepeat(r=> (r+1)%3)} className={`w-10 h-10 grid place-items-center rounded-full ${repeat!==0? 'text-[#D5AA55] bg-[#D5AA55]/15':'text-white/60 hover:text-white'}`}><RepeatIcon mode={repeat}/></button></div>
                       <div className="flex items-center justify-between mt-8 gap-3"><button onClick={()=> setShowLyrics(!showLyrics)} className={`flex-1 py-3 rounded-full text-sm font-bold border transition ${showLyrics? 'bg-white text-black border-white':'bg-white/10 text-white border-white/10 hover:bg-white/15'}`}>{showLyrics? 'Hide Lyrics':'View Lyrics'}</button><button onClick={()=> setShowQueue(!showQueue)} className={`px-5 py-3 rounded-full text-sm font-bold border ${showQueue? 'bg-white text-black border-white':'bg-white/10 text-white border-white/10'}`}>Queue</button></div>
                       <div className="hidden lg:flex items-center gap-3 mt-6"><VolumeIcon muted={isMuted} volume={volume}/><input type="range" min={0} max={1} step={0.01} value={isMuted?0:volume} onChange={e=>{ setVolume(Number(e.target.value)); setIsMuted(false)}} className="range flex-1 accent-white"/><button onClick={()=> setIsMuted(!isMuted)} className="text-xs font-semibold text-white/60 hover:text-white">{isMuted? 'Muted':'Volume'}</button></div>
@@ -1451,9 +1469,9 @@ export default function App(){
                 )}
               </div>
             </div>
-          </div>
+          </div>}
 
-          {showQueue && !showFull && (
+          {current && showQueue && !showFull && (
             <div className="fixed inset-0 z-40"><div onClick={()=> setShowQueue(false)} className="absolute inset-0 bg-black/60 backdrop-blur-sm"/><div className="absolute bottom-[88px] right-4 left-4 lg:left-auto lg:right-6 w-auto lg:w-[380px] glass-strong rounded-[20px] p-4 max-h-[60vh] flex flex-col shadow-2xl"><div className="flex items-center justify-between mb-3"><h3 className="font-bold">Queue</h3><button onClick={()=> setShowQueue(false)} className="w-8 h-8 grid place-items-center rounded-full hover:bg-white/10"><CloseIcon/></button></div><div className="text-xs font-semibold tracking-widest text-white/40 mb-2">NOW PLAYING</div><div className="flex items-center gap-3 p-2 rounded-xl bg-white text-black mb-3"><img src={current.cover} alt="" className="w-11 h-11 rounded-lg object-cover"/><div className="min-w-0"><div className="text-sm font-semibold truncate">{current.title}</div><div className="text-xs text-black/60 truncate">{current.artist}</div></div><Equalizer dark/></div><div className="text-xs font-semibold tracking-widest text-white/40 mb-2">NEXT UP</div><div className="space-y-1 overflow-y-auto flex-1 pr-1">{queue.filter((_,i)=> i!==currentIndex).slice(0,6).map(t=> (<button key={t.id} onClick={()=>{ const idx=queue.findIndex(x=> String(x.id)===String(t.id)); setCurrentIndex(idx); setIsPlaying(true)}} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 text-left"><img src={t.cover} alt="" className="w-10 h-10 rounded-lg object-cover"/><div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div></div><PlayMini/></button>))}</div><button onClick={()=>{ setShuffle(true); handleNext()}} className="mt-3 w-full py-2.5 rounded-full bg-white text-black text-sm font-bold">Shuffle play</button></div></div>
           )}
 
@@ -1525,11 +1543,11 @@ export default function App(){
   )
 }
 
-function ProfileView({ user, setUser, editUser, setEditUser, liked, playlists, localSongs, downloaded, showToast, authUser, onSignIn, onSignOut }){
+function ProfileView({ user, setUser, editUser, setEditUser, liked, playlists, localSongs, downloaded, showToast, authUser, onSignIn, onSignOut, onDeleteAccount }){
   const [tab, setTab] = useState("Overview")
   const isEditing = !!editUser
   const startEdit = ()=> setEditUser({...user})
-  const saveEdit = ()=>{ setUser(editUser); setEditUser(null); showToast("Profile updated ✓") }
+  const saveEdit = ()=>{ const u = {...editUser}; if(!u.avatar) u.avatar = `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(u.name||'Sur Sangam')}&radius=50`; setUser(u); setEditUser(null); showToast("Profile updated ✓") }
   return (
     <div className="space-y-6 max-w-4xl">
       <div className="relative rounded-[32px] overflow-hidden glass p-6 md:p-8">
@@ -1567,7 +1585,11 @@ function ProfileView({ user, setUser, editUser, setEditUser, liked, playlists, l
                 <h3 className="font-bold">Edit Profile</h3>
                 <input value={editUser.name} onChange={e=> setEditUser({...editUser, name:e.target.value})} placeholder="Name" className="w-full h-10 rounded-full px-4 bg-white text-black outline-none"/>
                 <input value={editUser.email} onChange={e=> setEditUser({...editUser, email:e.target.value})} placeholder="Email" className="w-full h-10 rounded-full px-4 bg-white text-black outline-none"/>
-                <input value={editUser.avatar} onChange={e=> setEditUser({...editUser, avatar:e.target.value})} placeholder="Avatar URL" className="w-full h-10 rounded-full px-4 bg-white/10 border border-white/10 text-white outline-none"/>
+                <input value={editUser.avatar} onChange={e=> setEditUser({...editUser, avatar:e.target.value})} placeholder="Avatar URL (ya upload karo)" className="w-full h-10 rounded-full px-4 bg-white/10 border border-white/10 text-white outline-none"/>
+                <div className="flex gap-2">
+                  <label className="flex-1 py-2 rounded-full bg-white/10 border border-white/10 text-center text-sm font-semibold cursor-pointer hover:bg-white/15"><input type="file" accept="image/*" className="hidden" onChange={e=>{ const f=e.target.files?.[0]; if(!f) return; const rd=new FileReader(); rd.onload=()=> setEditUser({...editUser, avatar: String(rd.result)}); rd.readAsDataURL(f) }}/>⬆ Upload photo</label>
+                  <button type="button" onClick={()=> setEditUser({...editUser, avatar: '' })} className="flex-1 py-2 rounded-full bg-white/10 border border-white/10 text-sm font-semibold">✖ Remove</button>
+                </div>
                 <textarea value={editUser.bio} onChange={e=> setEditUser({...editUser, bio:e.target.value})} placeholder="Bio" rows={2} className="w-full rounded-2xl p-3 bg-white/10 border border-white/10 outline-none resize-none"/>
                 <div className="flex gap-2"><button onClick={()=> setEditUser(null)} className="flex-1 py-2 rounded-full bg-white/10 border border-white/10 font-semibold">Cancel</button><button onClick={saveEdit} className="flex-1 py-2 rounded-full bg-white text-black font-bold">Save</button></div>
               </div>
@@ -1610,13 +1632,13 @@ function ProfileView({ user, setUser, editUser, setEditUser, liked, playlists, l
         <div className="glass rounded-[24px] p-5 space-y-3">
           <h3 className="font-bold">Settings</h3>
           {[
-            { k:"High Quality Streaming", v:"Lossless on WiFi" },
-            { k:"Crossfade", v:"5 seconds" },
-            { k:"Download Quality", v:"320kbps" },
-            { k:"Offline Mode", v: downloaded.length>0? `${downloaded.length} songs offline`:"Disabled" },
+            { k:"Online music", v:"JioSaavn + YouTube — full length" },
+            { k:"Offline Mode", v: downloaded.length>0? `${downloaded.length} songs saved offline`:"Abhi 0 downloads" },
+            { k:"Cloud sync", v: authUser? `ON — ${authUser.email}`:"Off — sign in karo" },
           ].map(s=> (
-            <div key={s.k} className="flex items-center justify-between py-3 border-b border-white/5 last:border-0"><div><div className="text-sm font-medium">{s.k}</div><div className="text-xs text-white/50">{s.v}</div></div><div className="w-11 h-6 rounded-full bg-white relative"><div className="absolute right-1 top-1 w-4 h-4 rounded-full bg-black"/></div></div>
+            <div key={s.k} className="flex items-center justify-between py-3 border-b border-white/5 last:border-0"><div><div className="text-sm font-medium">{s.k}</div><div className="text-xs text-white/50">{s.v}</div></div>{s.k==="Cloud sync" ? (authUser? <button onClick={onSignOut} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">Sign out</button> : <button onClick={onSignIn} className="text-xs font-bold px-3 py-1.5 rounded-full bg-[#D5AA55] text-black">Sign in</button>) : <span className="text-xs text-emerald-400">●</span>}</div>
           ))}
+          {authUser && <button onClick={onDeleteAccount} className="w-full mt-1 py-3 rounded-full bg-[#C35445]/15 text-[#C35445] border border-[#C35445]/30 text-sm font-bold">Delete cloud account (likes + playlists from server)</button>}
           <button onClick={()=>{ localStorage.clear(); indexedDB.deleteDatabase('sur_sangam_db'); showToast("Data cleared — refresh"); setTimeout(()=> location.reload(),800)}} className="w-full mt-2 py-3 rounded-full bg-[#C35445] text-white text-sm font-bold">Clear All Data (Reset Backend)</button>
         </div>
       )}

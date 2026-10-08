@@ -231,7 +231,7 @@ export async function searchITunes(query, limit=6){
 export async function unifiedSearch(query, limit=24, offset=0){
   if(!query.trim()) return []
   // Try backend (MongoDB + Saavn/Piped proxy) first — like JioSaavn/Gaana
-  if(BACKEND_URL || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV)){
+  if(BACKEND_URL || SELF_HOSTED || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV)){
     try{
       const base = BACKEND_URL ? `${BACKEND_URL}/api/search` : `/api/search`
       const r = await fetch(`${base}?q=${encodeURIComponent(query)}&limit=${limit}`, { headers: { 'Accept':'application/json' } })
@@ -327,7 +327,7 @@ export async function unifiedSearchPaginated(query, limit=20, nextpage=null){
 
 export async function trendingByCategory(cat, limit=20, offset=0){
   // Try backend first (DB + live) — fast like JioSaavn
-  if(BACKEND_URL || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV)){
+  if(BACKEND_URL || SELF_HOSTED || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV)){
     try{
       const base = BACKEND_URL ? `${BACKEND_URL}/api/tracks` : `/api/tracks`
       const r = await fetch(`${base}?category=${encodeURIComponent(cat)}&limit=${limit}`, { headers: { 'Accept':'application/json' } })
@@ -450,7 +450,8 @@ function decode(s){ if(!s) return s; try{ return decodeURIComponent(s).replace(/
 function pickColor(){ const c=["#C35445","#6A418E","#A154D6","#543551","#572223","#D5AA55","#E9CDC2"]; return c[Math.floor(Math.random()*c.length)] }
 
 // ================= Cloud account (Sur Sangam backend) =================
-const API_ON = !!(BACKEND_URL || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV))
+const SELF_HOSTED = typeof location !== 'undefined' && (location.hostname === 'thegolfsentuary.onrender.com' || location.hostname.endsWith('.onrender.com'))
+const API_ON = !!(BACKEND_URL || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV) || SELF_HOSTED)
 const API_BASE = BACKEND_URL || ''
 export const getAuthToken = ()=> { try{ return localStorage.getItem('sur_token') }catch{ return null } }
 export const setAuthToken = (tok)=>{ try{ if(tok) localStorage.setItem('sur_token', tok); else localStorage.removeItem('sur_token') }catch{} }
@@ -483,3 +484,5 @@ export async function apiPushLikes(tracks){ return apiFetch('/api/likes', { meth
 export async function apiPullLikes(){ const d = await apiFetch('/api/likes'); return d && Array.isArray(d.tracks) ? d.tracks : null }
 export async function apiPushPlaylists(playlists){ return apiFetch('/api/playlists/sync', { method:'POST', body: JSON.stringify({ playlists }) }) }
 export async function apiPullPlaylists(){ const d = await apiFetch('/api/playlists/sync'); return d && Array.isArray(d.playlists) ? d.playlists : null }
+
+export async function apiDeleteAccount(){ const d = await apiFetch('/api/auth/me', { method:'DELETE' }); setAuthToken(null); return !!(d && d.ok) }

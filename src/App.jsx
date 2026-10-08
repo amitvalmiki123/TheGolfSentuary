@@ -124,6 +124,7 @@ export default function App(){
   const [libTab, setLibTab] = useState("Playlists") // Playlists, Songs, Liked, Local, Downloads
   const [showFull, setShowFull] = useState(false)
   const touchRef = useRef(null)
+  const wakeLockRef = useRef(null)
   const [showQueue, setShowQueue] = useState(false)
   const [showLyrics, setShowLyrics] = useState(false)
   const [showCreatePl, setShowCreatePl] = useState(false)
@@ -319,21 +320,50 @@ export default function App(){
         navigator.mediaSession.setActionHandler('previoustrack', handlePrev)
       }catch(e){}
     }
-  },[current])
-  // keep playing in background - don't pause on hidden
+    try{ navigator.mediaSession.playbackState = isPlaying? 'playing':'paused' }catch{}
+  },[current, isPlaying])
+  // keep playing in background — Android keeps a PWA's audio alive ONLY when it sees an
+// active media session (playbackState + positionState) — that also powers the notification.
+  useEffect(()=>{
+    if(!('mediaSession' in navigator)) return
+    try{ navigator.mediaSession.playbackState = isPlaying? 'playing':'paused' }catch{}
+    // screen wake-lock while player open (auto-releases when minimized)
+    try{
+      if(isPlaying && 'wakeLock' in navigator && !document.hidden){ if(!wakeLockRef.current) navigator.wakeLock.request('screen').then(s=>{ wakeLockRef.current=s; s.addEventListener('release',()=>{ wakeLockRef.current=null }) }).catch(()=>{}) }
+      else if(!isPlaying && wakeLockRef.current){ try{ wakeLockRef.current.release() }catch{}; wakeLockRef.current=null }
+    }catch{}
+  },[isPlaying])
+  useEffect(()=>{
+    if(!isPlaying || !('mediaSession' in navigator)) return
+    const tick = ()=>{
+      try{
+        const dur = (duration && isFinite(duration) && duration>1)? duration : (audioRef.current?.duration||0)
+        if(dur>1) navigator.mediaSession.setPositionState({ duration: dur, position: Math.min(progress||0, dur), playbackRate: 1 })
+      }catch{}
+    }
+    tick()
+    const id = setInterval(tick, 4000)
+    return ()=> clearInterval(id)
+  },[isPlaying, duration])
+  // re-acquire wake lock when returning to app
   useEffect(()=>{
     const onVis = ()=> {
       if(!document.hidden && isPlaying){
+        if('wakeLock' in navigator && !wakeLockRef.current){ try{ navigator.wakeLock.request('screen').then(s=>{ wakeLockRef.current=s; s.addEventListener('release',()=>{ wakeLockRef.current=null }) }).catch(()=>{}) }catch{} }
         if(current?.videoId && ytReadyRef.current && ytPlayerRef.current?.playVideo){
           ytPlayerRef.current.playVideo()
-        } else {
-          audioRef.current?.play().catch(()=>{})
+        } else if(audioRef.current && audioRef.current.paused){
+          audioRef.current.play().catch(()=>{})
         }
       }
     }
     document.addEventListener('visibilitychange', onVis)
     return ()=> document.removeEventListener('visibilitychange', onVis)
   },[isPlaying, current])
+  useEffect(()=>{
+    if(!isPlaying || !('mediaSession' in navigator)) return
+    try{ navigator.mediaSession.playbackState = 'playing' }catch{}
+  },[isPlaying])
 
   // YouTube IFrame API — for YouTube • Full tracks (YouTube Music-like)
   useEffect(()=>{

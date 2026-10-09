@@ -57,17 +57,22 @@ public class NowPlayingService extends Service {
   @Override
   public void onCreate() {
     super.onCreate();
-    instance = this;
-    createChannel();
-    mediaSession = new MediaSession(this, "sur-sangam");
-    mediaSession.setActive(true);
-    mediaSession.setCallback(new MediaSession.Callback() {
-      @Override public void onPlay()              { send("play"); }
-      @Override public void onPause()             { send("pause"); }
-      @Override public void onSkipToNext()        { send("next"); }
-      @Override public void onSkipToPrevious()    { send("prev"); }
-    });
-    audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+    try {
+      instance = this;
+      createChannel();
+      mediaSession = new MediaSession(this, "sur-sangam");
+      mediaSession.setActive(true);
+      mediaSession.setCallback(new MediaSession.Callback() {
+        @Override public void onPlay()              { send("play"); }
+        @Override public void onPause()             { send("pause"); }
+        @Override public void onSkipToNext()        { send("next"); }
+        @Override public void onSkipToPrevious()    { send("prev"); }
+      });
+      audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+    } catch (Exception e) {
+      // NEVER take the whole app down from a service
+      try { stopSelf(); } catch (Exception ignored) {}
+    }
   }
 
   private void send(String a) {
@@ -77,6 +82,14 @@ public class NowPlayingService extends Service {
 
   @Override
   public int onStartCommand(Intent intent, int flags, int startId) {
+    try { return handleStart(intent); }
+    catch (Exception e) {
+      try { stopSelf(); } catch (Exception ignored) {}
+      return START_NOT_STICKY;
+    }
+  }
+
+  private int handleStart(Intent intent) {
     String a = (intent == null) ? null : intent.getAction();
     if (ACTION_STOP.equals(a)) {
       send("stop");
@@ -147,6 +160,7 @@ public class NowPlayingService extends Service {
 
   private void updateSession() {
     if (mediaSession == null) return;
+    try {
     MediaMetadata.Builder mb = new MediaMetadata.Builder()
       .putString(MediaMetadata.METADATA_KEY_TITLE, title)
       .putString(MediaMetadata.METADATA_KEY_ARTIST, artist)
@@ -160,6 +174,7 @@ public class NowPlayingService extends Service {
       .setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED,
         PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1f)
       .build());
+    } catch (Exception ignored) {}
   }
 
   private static int piFlags() {
@@ -218,16 +233,30 @@ public class NowPlayingService extends Service {
   }
 
   private void startForegroundNow() {
-    Notification n = buildNotification();
+    Notification n;
+    try { n = buildNotification(); } catch (Exception e) { n = buildMinimal(); }
     try {
       if (Build.VERSION.SDK_INT >= 29) {
         startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
       } else {
         startForeground(NOTIF_ID, n);
       }
-    } catch (Exception e) {
-      try { startForeground(NOTIF_ID, n); } catch (Exception ignored) {}
+    } catch (Exception e1) {
+      try { startForeground(NOTIF_ID, buildMinimal()); }
+      catch (Exception e2) {
+        // No FGS possible right now (perm race / OEM block) — stop cleanly instead of
+        // tripping ForegroundServiceDidNotStartInTime crash a few seconds later.
+        try { stopSelf(); } catch (Exception ignored) {}
+      }
     }
+  }
+
+  private Notification buildMinimal() {
+    Notification.Builder b = (Build.VERSION.SDK_INT >= 26)
+      ? new Notification.Builder(this, CHANNEL) : new Notification.Builder(this);
+    b.setSmallIcon(getDrawableId()).setContentTitle("Sur Sangam").setContentText("Music")
+     .setOngoing(false).setVisibility(Notification.VISIBILITY_PUBLIC);
+    return (Build.VERSION.SDK_INT >= 26) ? b.build() : b.getNotification();
   }
 
   private void loadArt(final String url) {

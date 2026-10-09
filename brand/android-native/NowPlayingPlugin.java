@@ -1,7 +1,6 @@
 package com.sursangam.app;
 
 import android.Manifest;
-import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
@@ -18,75 +17,16 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 @CapacitorPlugin(name = "NowPlaying")
 public class NowPlayingPlugin extends Plugin {
 
-  private Intent pending = null;
-
-  private boolean resumed() {
-    try {
-      Activity a = getActivity();
-      if (a == null) return false;
-      // isResumed() lives on FragmentActivity (androidx) — framework Activity has no such method
-      if (a instanceof androidx.fragment.app.FragmentActivity)
-        return ((androidx.fragment.app.FragmentActivity) a).isResumed();
-      return true; // unknown host type: assume interactive (every dispatch below is still guarded)
-    } catch (Exception e) { return false; }
-  }
-
-  // Timer-based self-heal: if we had to defer (activity not resumed), retry on the main
-  // looper — independent of any lifecycle event reaching us.
-  private void retryPending(final int n) {
-    if (n <= 0) return;
-    new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
-      @Override public void run() {
-        Intent i = pending;
-        if (i == null) return;
-        if (resumed()) {
-          pending = null;
-          try {
-            if (Build.VERSION.SDK_INT >= 26) getContext().startForegroundService(i);
-            else getContext().startService(i);
-            return;
-          } catch (Throwable t) { pending = i; }
-        }
-        retryPending(n - 1);
-      }
-    }, 1500);
-  }
-
-  // Resumed → start as FOREGROUND service (background protection).
-  // Not resumed (e.g. permission dialog showing) → plain startService — legal from
-  // background, and a plain start never owes the system a startForeground() call, so
-  // nothing can be posted back to crash us. The real FGS start replays on next resume.
-  private void dispatch(Intent i) {
-    if (resumed()) {
-      try {
-        if (Build.VERSION.SDK_INT >= 26) getContext().startForegroundService(i);
-        else getContext().startService(i);
-        pending = null;
-        return;
-      } catch (Throwable ignored) {}
-    }
-    pending = i;
-    retryPending(10);
-    try { getContext().startService(i); } catch (Throwable ignored) {}
-  }
-
-  @Override
-  protected void handleOnResume() {
-    super.handleOnResume();
-    Intent i = pending;
-    if (i != null && resumed()) {
-      pending = null;
-      try {
-        if (Build.VERSION.SDK_INT >= 26) getContext().startForegroundService(i);
-        else getContext().startService(i);
-      } catch (Throwable ignored) {}
-    }
-  }
-
+  // Plain startService ONLY — a started service owes the system nothing, so no
+  // ForegroundService* exception can be posted back asynchronously (the exact class of
+  // crash we kept hitting). The SERVICE itself calls startForeground() from
+  // onStartCommand inside try/catch: when playback begins the app IS foreground (user
+  // tapped play), so the call is permitted; if it ever throws from a background-origin
+  // update, the service catches it and stops itself cleanly.
   private void startService(String action) {
     Intent i = new Intent(getContext(), NowPlayingService.class);
     if (action != null) i.setAction(action);
-    dispatch(i);
+    try { getContext().startService(i); } catch (Throwable ignored) {}
   }
 
   @PluginMethod
@@ -109,7 +49,7 @@ public class NowPlayingPlugin extends Plugin {
     i.putExtra("album", call.getString("album", ""));
     i.putExtra("playing", "playing".equals(call.getString("state", "paused")));
     i.putExtra("artUrl", call.getString("artUrl", ""));
-    dispatch(i);
+    try { getContext().startService(i); } catch (Throwable ignored) {}
     call.resolve();
   }
 

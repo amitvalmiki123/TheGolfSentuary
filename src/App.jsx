@@ -115,19 +115,28 @@ function getCategoryPlaylists(cat){
 
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
-function NpDiagCard({ bgDiag, bgPing, toast }){
+function NpDiagCard({ toast }){
+  // Self-contained on purpose: ProfileView and App are different components — earlier this
+  // card read App-scoped state from ProfileView's JSX and ReferenceError'd the whole app.
   const [svc, setSvc] = useState('')
+  const [bgDiag, setBgDiag] = useState(null)
   const T = toast || (()=>{})
+  const ping = ()=>{ try{ npPing().then(r=>setBgDiag(r)).catch(()=>setBgDiag({plugin:false,service:false,notif:true})) }catch(e){ setBgDiag({plugin:false,service:false,notif:true}) } }
   useEffect(()=>{
-    const tick = ()=>{ try{ const el = document.getElementById('__svc'); setSvc((el && el.textContent) || '') }catch(e){ setSvc('') } }
-    tick(); const id = setInterval(tick, 1500)
+    let tries = 0
+    const id = setInterval(()=>{
+      try{ const el = document.getElementById('__svc'); setSvc((el && el.textContent) || '') }catch(e){ setSvc('') }
+      ping()
+      if(++tries > 6) clearInterval(id)   // then rely on manual Re-check
+    }, 1600)
+    ping()
     return ()=> clearInterval(id)
   },[])
   let np = null
   try{ const m = /^NP\|(\d)\|([^|]*)\|(.*)$/.exec(document.title||''); if(m) np = { play: m[1]==='1', title:(m[2]||'').trim(), artist:(m[3]||'').trim() } }catch(e){}
   const ok = !!(bgDiag && bgDiag.plugin && bgDiag.service && bgDiag.notif)
-  const link = np ? ('app→svc: '+(np.play?'\u25b6 playing':'\u23f8 paused')+' \u00b7 '+(np.title||'')) : 'app\u2192svc: idle'
-  const svcTxt = svc ? ('svc\u2192app: '+svc) : ('svc\u2192app: '+(isNativeApp()||hasNativeBridge()||wvGuess() ? 'no heartbeat (ticker dead)' : 'browser \u2014 native engine not present'))
+  const link = np ? ('app\u2192svc: '+(np.play?'\u25b6 playing':'\u23f8 paused')+' \u00b7 '+(np.title||'')) : 'app\u2192svc: idle (play a song)'
+  const svcTxt = svc ? ('svc\u2192app: '+svc) : ('svc\u2192app: '+(isNativeApp()||hasNativeBridge()||wvGuess() ? 'no heartbeat yet \u2014 ticker silent' : 'browser \u2014 no native engine'))
   return (
     <div className="mt-4 rounded-2xl border p-3 text-xs max-w-md"
          style={{ background:'rgba(255,255,255,.04)', borderColor: ok? 'rgba(16,185,129,.5)' : 'rgba(245,158,11,.4)' }}>
@@ -139,9 +148,9 @@ function NpDiagCard({ bgDiag, bgPing, toast }){
         {bgDiag && !bgDiag.notif ? (
           <button onClick={()=> npOpenNotifSettings()} className="shrink-0 rounded-full bg-white px-3 py-1.5 font-bold text-black hover:bg-white/90">Turn on</button>
         ) : (
-          <button onClick={bgPing} className="shrink-0 rounded-full border border-white/15 px-3 py-1.5 font-semibold text-white/70 hover:text-white">Re-check</button>
+          <button onClick={ping} className="shrink-0 rounded-full border border-white/15 px-3 py-1.5 font-semibold text-white/70 hover:text-white">Re-check</button>
         )}
-        <button onClick={()=>{ npSetDisabled(!npDisabled()); T(npDisabled()? 'Native player OFF (safe mode)' : 'Native player ON'); setTimeout(bgPing, 800) }}
+        <button onClick={()=>{ npSetDisabled(!npDisabled()); T(npDisabled()? 'Native player OFF (safe mode)' : 'Native player ON'); setTimeout(ping, 800) }}
                 className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[10px] font-semibold text-white/60 hover:text-white">{npDisabled()? 'Safe mode: ON \u2014 tap OFF' : 'Safe mode: off'}</button>
       </div>
       <div className="mt-1.5 break-all opacity-60" style={{ fontFamily:'ui-monospace,monospace', fontSize:10 }}>
@@ -1934,7 +1943,7 @@ function ProfileView({ user, setUser, editUser, setEditUser, liked, playlists, l
                   <div><div className="text-xl font-bold">{playlists.length}</div><div className="text-xs text-white/50">Playlists</div></div>
                   <div><div className="text-xl font-bold">{downloaded.length}</div><div className="text-xs text-white/50">Offline</div></div>
                 </div>
-                <NpDiagCard bgDiag={bgDiag} bgPing={bgPing} toast={showToast}/>
+                <NpDiagCard toast={showToast}/>
                 {authUser ? (
                   <div className="mt-4 flex items-center gap-3 p-3 rounded-2xl bg-white/5 border border-white/10 max-w-md">
                     <span className="w-8 h-8 shrink-0 rounded-full bg-[#D5AA55] text-black grid place-items-center text-sm font-bold">☁</span>

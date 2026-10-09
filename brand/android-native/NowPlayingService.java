@@ -136,25 +136,14 @@ public class NowPlayingService extends Service {
   private int NotificationManager_LOW() { return android.app.NotificationManager.IMPORTANCE_LOW; }
 
   private void handleFocus() {
+    // CRITICAL: the service NEVER requests audio focus. The real players (<audio> / YouTube
+    // iframe in Chromium) own system focus; when the service also grabbed it, the WebView's
+    // request caused us AUDIOFOCUS_LOSS -> send("pause") -> JS paused the song seconds after
+    // every play. Notification/session only — focus stays entirely with the WebView.
     if (audioManager == null) return;
-    if (Build.VERSION.SDK_INT >= 26) {
-      if (playing) {
-        if (focusRequest == null) {
-          focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-            .setAudioAttributes(new android.media.AudioAttributes.Builder()
-              .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-              .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
-              .build())
-            .setWillPauseWhenDucked(true)
-            .setOnAudioFocusChangeListener(f -> {
-              if (f == AudioManager.AUDIOFOCUS_LOSS || f == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) send("pause");
-            })
-            .build();
-        }
-        audioManager.requestAudioFocus(focusRequest);
-      } else if (focusRequest != null) {
-        audioManager.abandonAudioFocusRequest(focusRequest);
-      }
+    if (Build.VERSION.SDK_INT >= 26 && focusRequest != null) {
+      try { audioManager.abandonAudioFocusRequest(focusRequest); } catch (Exception ignored) {}
+      focusRequest = null;
     }
   }
 

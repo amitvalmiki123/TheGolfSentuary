@@ -47,7 +47,8 @@ public class NowPlayingPlugin extends Plugin {
     i.putExtra("title", call.getString("title", "Sur Sangam"));
     i.putExtra("artist", call.getString("artist", ""));
     i.putExtra("album", call.getString("album", ""));
-    i.putExtra("playing", "playing".equals(call.getString("state", "paused")));
+    String st = call.getString("state");
+    if (st != null) i.putExtra("playing", "playing".equals(st));
     i.putExtra("artUrl", call.getString("artUrl", ""));
     try { getContext().startService(i); } catch (Throwable ignored) {}
     call.resolve();

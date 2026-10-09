@@ -1,73 +1,91 @@
-// Native NowPlaying bridge — Capacitor plugin (foreground service + lock-screen media controls).
-// On web/PWA these are no-ops (browser MediaSession handles it there).
+// Native NowPlaying bridge - Capacitor plugin (foreground service + lock-screen media controls).
+// Robust by design: uses the Capacitor proxy when present; falls back to the raw
+// androidBridge channel; detects the WebView through UA/bridge/origin so a missing
+// window.Capacitor can never silently disable background playback again.
 export function npDisabled(){ try{ return localStorage.getItem('np_off')==='1' }catch{ return false } }
 export function npSetDisabled(v){ try{ v? localStorage.setItem('np_off','1') : localStorage.removeItem('np_off') }catch{} }
 
-const getPlugin = () => {
-  try{ return (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NowPlaying) || null }catch{ return null }
-}
-export const isNativeApp = () => {
-  try{ return !!(window.Capacitor && ((window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) || window.Capacitor.isNative)) }catch{ return false }
-}
-export function npStart(onAction){
-  if(npDisabled()) return ()=>{}
-  let p = null, stopped = false, tries = 0
-  const setup = ()=>{
-    if(stopped) return
-    p = getPlugin()
-    if(!p){ tries++; if(tries < 12) setTimeout(setup, 500); return }
-    try{
-      if(p.addListener) p.addListener('mediaAction', e => { try{ onAction && onAction(e && e.action) }catch{} })
-      p.start && p.start().catch(()=>{})
-    }catch{}
-  }
-  setup()
-  return ()=>{ stopped = true; try{ p && p.removeAllListeners && p.removeAllListeners('mediaAction') }catch{} }
-}
-export function npUpdate(meta){
-  if(npDisabled()) return
-  const p = getPlugin()
-  if(p){ try{ p.update && p.update(meta).catch(()=>{}) }catch{} ; return }
-  // plugin not ready yet — retry a few times so a slow bridge never loses the CURRENT meta
-  let n = 0
-  const tick = ()=>{
-    const q = getPlugin()
-    if(q){ try{ q.update && q.update(meta).catch(()=>{}) }catch{}; return }
-    if(++n < 8) setTimeout(tick, 400)
-  }
-  setTimeout(tick, 400)
-}
-export function npStop(){
-  const p = getPlugin()
-  if(!p) return
-  try{ p.stop && p.stop().catch(()=>{}) }catch{}
+const getCap = () => { try{ return window.Capacitor || null }catch{ return null } }
+const getProxy = () => { const c = getCap(); try{ return (c && c.Plugins && c.Plugins.NowPlaying) || null }catch{ return null } }
+const hasRawBridge = () => { try{ return !!(window.androidBridge && typeof window.androidBridge.postMessage === 'function') }catch{ return false } }
+
+let _nat = null
+export function isNativeApp(){
+  if(_nat !== null) return _nat
+  try{
+    const cap = getCap()
+    const viaCap = !!(cap && ((typeof cap.isNativePlatform==='function' && cap.isNativePlatform()) || cap.isNative))
+    const ua = (typeof navigator!=='undefined' && navigator.userAgent) || ''
+    const inWebView = /;\s*wv\)/.test(ua)
+    const localHost = typeof location!=='undefined' && location.protocol==='https:' && /^(localhost|127\.0\.0\.1|10\.0\.2\.2)$/.test(location.hostname)
+    _nat = viaCap || hasRawBridge() || (inWebView && localHost)
+  }catch{ _nat = false }
+  return _nat
 }
 
-export async function npNotifGranted(){
-  const p = getPlugin()
-  if(!p || !p.hasNotifPerm) return true
-  try{ const r = await p.hasNotifPerm(); return !!(r && r.granted) }catch{ return true }
+function rawCall(method, opts){
+  try{
+    if(!hasRawBridge()) return false
+    window.androidBridge.postMessage(JSON.stringify({ pluginId:'NowPlaying', methodId:method, callbackId:'np_'+Math.random().toString(36).slice(2), options: opts || {} }))
+    return true
+  }catch{ return false }
 }
-export function npAskNotif(){
-  const p = getPlugin()
-  try{ p && p.askNotifPerm && p.askNotifPerm().catch(()=>{}) }catch{}
+
+export function npBridgeMode(){
+  return getProxy() ? 'proxy' : (hasRawBridge() ? 'raw' : 'none')
 }
-export function npOpenNotifSettings(){
-  const p = getPlugin()
-  try{ p && p.openNotifSettings && p.openNotifSettings().catch(()=>{}) }catch{}
+
+export function npStart(onAction){
+  if(npDisabled()) return ()=>{}
+  const p = getProxy()
+  if(p){
+    let stopped = false, tries = 0
+    const setup = ()=>{
+      if(stopped) return
+      const q = getProxy()
+      if(!q){ if(++tries < 12) setTimeout(setup, 500); return }
+      try{ if(q.addListener) q.addListener('mediaAction', e => { try{ onAction && onAction(e && e.action) }catch{} }) }catch{}
+      try{ q.start && q.start().catch(()=>{}) }catch{}
+    }
+    setup()
+    return ()=>{ stopped = true; try{ p.removeAllListeners && p.removeAllListeners('mediaAction') }catch{} }
+  }
+  rawCall('start', {})
+  return ()=>{}
+}
+
+export function npUpdate(meta){
+  if(npDisabled()) return
+  const p = getProxy()
+  if(p){ try{ p.update && p.update(meta).catch(()=>{}) }catch{}; return }
+  rawCall('update', meta)
+}
+
+export function npStop(){
+  const p = getProxy()
+  if(p){ try{ p.stop && p.stop().catch(()=>{}) }catch{}; return }
+  rawCall('stop', {})
 }
 
 export async function npPing(){
-  const p = getPlugin()
-  if(!p || !p.ping) return { plugin:false, service:false, notif:true }
+  const p = getProxy()
+  if(!p || !p.ping) return { plugin: hasRawBridge() || isNativeApp(), service:false, notif:true, raw: hasRawBridge() }
   try{
     const r = await Promise.race([ p.ping(), new Promise((_,rej)=> setTimeout(()=>rej(new Error('timeout')), 2500)) ])
     return { plugin:true, service: !!(r && r.service), notif: !(r && r.notif===false) }
   }catch(e){ return { plugin:false, service:false, notif:true } }
 }
 
+export async function npNotifGranted(){
+  const p = getProxy()
+  if(!p || !p.hasNotifPerm) return true
+  try{ const r = await p.hasNotifPerm(); return !!(r && r.granted) }catch{ return true }
+}
+export function npAskNotif(){ const p = getProxy(); try{ p && p.askNotifPerm && p.askNotifPerm().catch(()=>{}) }catch{} }
+export function npOpenNotifSettings(){ const p = getProxy(); try{ p && p.openNotifSettings && p.openNotifSettings().catch(()=>{}) }catch{} }
+
 export async function npLastCrash(){
-  const p = getPlugin()
+  const p = getProxy()
   if(!p || !p.lastCrash) return ''
   try{ const r = await p.lastCrash(); return (r && r.trace) || '' }catch{ return '' }
 }

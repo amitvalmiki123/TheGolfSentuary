@@ -65,6 +65,20 @@ public class MainActivity extends BridgeActivity {
         try { installCrashReporter(getApplication()); } catch (Throwable ignored) {}
         registerPlugin(NowPlayingPlugin.class);
         super.onCreate(savedInstanceState);
+        // Plain startService ONLY (no FGS obligation → cannot crash the process). The service
+        // itself calls startForeground inside try/catch — while the app is foreground this is
+        // always permitted, so the media notification + bg protection exist from app launch.
+        try {
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
+                @Override public void run() {
+                    try {
+                        Intent i = new Intent(MainActivity.this, NowPlayingService.class);
+                        i.setAction(NowPlayingService.ACTION_UPDATE);
+                        startService(i);
+                    } catch (Throwable ignored) {}
+                }
+            }, 700);
+        } catch (Throwable ignored) {}
         try {
             if (Build.VERSION.SDK_INT >= 33
                     && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)

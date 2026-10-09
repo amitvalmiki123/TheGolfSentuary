@@ -194,7 +194,7 @@ export async function searchSaavn(query, limit=18){
         const album=s.album?.name || (typeof s.album==='string'? s.album:null) || s.albumName || "Single"
         const dur=Number(s.duration)||Number(s.playTime)||Number(s.more_info?.duration)||0
         if(typeof audio==='string' && audio.startsWith('http') && !audio.includes('encrypted')){
-          return { id:`saavn-${s.id||title}-${Math.random().toString(36).slice(2,5)}`, title, artist:artistVal, album, cover: typeof img==='string'? img: img||"https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=600&auto=format&fit=crop&q=60", audio, durationLabel: dur? formatSec(dur):"3:30", durationSec:dur||210, plays:`${(Math.random()*800+50).toFixed(0)}M`, color:pickColor(), source:'Saavn • Full', isPreview:false, original:s, videoId:null }
+          return { id:`saavn-${s.id||title}-${Math.random().toString(36).slice(2,5)}`, title, artist:artistVal, album, cover: typeof img==='string'? img: img||"https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=600&auto=format&fit=crop&q=60", audio, durationLabel: dur? formatSec(dur):"3:30", durationSec:dur||210, plays:`${(Math.random()*800+50).toFixed(0)}M`, color:pickColor(), source:'Saavn • Full', isPreview:false, language:String(s.language||'').toLowerCase(), original:s, videoId:null }
         }
         return null
       }).filter(Boolean).filter(x=> x.audio && x.audio.startsWith('http'))
@@ -202,6 +202,74 @@ export async function searchSaavn(query, limit=18){
     }catch(e){ continue }
   }
   return []
+}
+
+
+// ---------- LIVE SUGGESTIONS + STRICT RELEVANCE (YouTube-style search UX) ----------
+let _lastSearchNextpage = null
+export const getLastSearchNextpage = () => _lastSearchNextpage
+
+export async function searchSuggestions(query){
+  const q = String(query||'').trim()
+  if(q.length < 2) return []
+  const hosts = ["https://pipedapi.kavin.rocks","https://pipedapi.adminforge.de","https://pipedapi.leptos.at"]
+  for(const h of hosts){
+    try{
+      const data = await fetchJsonWithCors(`${h}/suggest?search=${encodeURIComponent(q)}`, 1800)
+      if(Array.isArray(data) && data.length){
+        return [...new Set(data.map(x=> String(x).trim()).filter(Boolean))].slice(0, 8)
+      }
+    }catch(e){ }
+  }
+  try{
+    const songs = await searchSaavn(q, 8)
+    const seen = new Set(); const out = []
+    for(const t of songs){ const s = t.title; if(s && !seen.has(s.toLowerCase())){ seen.add(s.toLowerCase()); out.push(s) } if(out.length>=6) break }
+    return out
+  }catch(e){ return [] }
+}
+
+export function rankByRelevance(tracks, query){
+  const toks = String(query||'').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(t=> t.length>=2)
+  if(!toks.length || !tracks || !tracks.length) return tracks || []
+  const qlow = String(query||'').toLowerCase().trim()
+  const scored = tracks.map(function(x){
+    const title = String(x.title||'').toLowerCase()
+    const artist = String(x.artist||'').toLowerCase()
+    const album = String(x.album||'').toLowerCase()
+    let score = 0
+    for(const tok of toks){
+      if(artist.includes(tok)) score += 4
+      if(title.includes(tok)) score += 2
+      if(album.includes(tok)) score += 1
+    }
+    if(title === qlow) score += 4
+    if(artist.includes(qlow)) score += 3
+    return { t: x, score: score, max: toks.length*5+7 }
+  })
+  scored.sort(function(a,b){ return b.score - a.score })
+  const strong = scored.filter(function(x){ return x.score >= x.max*0.5 }).map(function(x){ return x.t })
+  if(strong.length >= 8) return strong
+  if(strong.length >= 3){
+    const rest = scored.filter(function(x){ return x.score < x.max*0.5 }).map(function(x){ return x.t })
+    return strong.concat(rest)
+  }
+  return scored.map(function(x){ return x.t })
+}
+
+const LANG_EXPECT = { Punjabi:'punjabi', Hindi:'hindi', Bollywood:'hindi' }
+function strictByCategory(tracks, cat){
+  const want = LANG_EXPECT[cat]
+  if(!want || !tracks || !tracks.length) return tracks
+  const m = tracks.filter(function(t){
+    const lang = String(t.language||'').toLowerCase()
+    if(lang.includes(want)) return true
+    if(want==='punjabi'){
+      return /[\u0A00-\u0A7F]/.test(String(t.title||'')) || /(sidhu|moose wala|diljit|aujla|shubh|ap dhillon|karoran|waraam|heera|bohra|intense|gill|kaur)/i.test(String(t.artist||''))
+    }
+    return false
+  })
+  return m.length >= 8 ? m : tracks
 }
 
 export async function searchAudius(query, limit=10, offset=0){
@@ -229,6 +297,7 @@ export async function searchITunes(query, limit=6){
 
 // Unified search — Genuine full only (Spotify/Resso style): Piped+Invidious+Saavn primary, iTunes preview only as last resort and filtered out if full exists
 export async function unifiedSearch(query, limit=24, offset=0){
+  _lastSearchNextpage = null
   if(!query.trim()) return []
   // Try backend (MongoDB + Saavn/Piped proxy) first — like JioSaavn/Gaana
   if(BACKEND_URL || SELF_HOSTED || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV)){
@@ -258,12 +327,13 @@ export async function unifiedSearch(query, limit=24, offset=0){
   const saavn = saavnR || []
   const piped = (pipedR && pipedR.tracks) || []
   tracks = dedup(isIndian ? [...saavn, ...piped] : [...piped, ...saavn])
+  _lastSearchNextpage = (pipedR && pipedR.nextpage) || null
   // preview filter
   if(tracks.some(x=> !x.isPreview)){
     const filtered = tracks.filter(x=> !x.isPreview)
     if(filtered.length >= 4) tracks = filtered
   }
-  if(tracks.length >= 14) return tracks.slice(0, limit)
+  if(tracks.length >= 14) return rankByRelevance(tracks, query).slice(0, limit)
   if(tracks.length < 12){
     const inv = await searchInvidious(query, limit - tracks.length).catch(()=>({tracks:[]}))
     tracks = dedup([...tracks, ...(inv.tracks||[])])
@@ -288,7 +358,7 @@ export async function unifiedSearch(query, limit=24, offset=0){
     const filtered = tracks.filter(x=> !x.isPreview)
     if(filtered.length >= 4) tracks = filtered
   }
-  return tracks.slice(0, limit)
+  return rankByRelevance(tracks, query).slice(0, limit)
 }
 
 // Paginated version for infinite scroll — genuine full only
@@ -312,7 +382,7 @@ export async function unifiedSearchPaginated(query, limit=20, nextpage=null){
     const filtered = tracks.filter(x=> !x.isPreview)
     if(filtered.length) tracks = filtered
   }
-  return { tracks: tracks.slice(0, limit), nextpage: res.nextpage }
+  return { tracks: rankByRelevance(tracks, query).slice(0, limit), nextpage: res.nextpage || null }
 }
 
 const _catCache = new Map()
@@ -352,10 +422,10 @@ export async function trendingByCategory(cat, limit=20, offset=0){
   const isIndianCat = ["Punjabi","Hindi","Love","90s","Bollywood","Indie"].includes(cat)
   if(isIndianCat){
     const saavnCat = await searchSaavn(q, 20).catch(()=>[])
-    if(saavnCat.length >= 8) return saavnCat.slice(0, limit)
+    if(saavnCat.length >= 8) return strictByCategory(saavnCat, cat).slice(0, limit)
     // merge with YouTube for variety
     const pipedCat = await searchPiped(q, 12).catch(()=>({tracks:[]}))
-    const mergedCat = dedup([...saavnCat, ...(pipedCat.tracks||[])])
+    const mergedCat = strictByCategory(dedup([...saavnCat, ...(pipedCat.tracks||[])]), cat)
     if(mergedCat.length >= 6) return mergedCat.slice(0, limit)
   }
   if(cat==="Love"){
@@ -369,7 +439,7 @@ export async function trendingByCategory(cat, limit=20, offset=0){
     const merged = dedup([...a, ...pipedB, ...pipedC])
     if(merged.length>=6) return merged.slice(0, limit)
   }
-  return unifiedSearch(q, limit, offset)
+  return strictByCategory(await unifiedSearch(q, limit+8, offset), cat).slice(0, limit)
 }
 
 export async function artistSongs(artist, limit=24){

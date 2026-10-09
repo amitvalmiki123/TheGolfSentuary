@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
-import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio, searchSaavn, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists } from './lib/api.js'
+import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio, searchSaavn, searchSuggestions, getLastSearchNextpage, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists } from './lib/api.js'
 import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
 
 const BASE = import.meta.env.BASE_URL || '/'
@@ -133,6 +133,15 @@ export default function App(){
   const [searchPage, setSearchPage] = useState(1)
   const [searchNextPage, setSearchNextPage] = useState(null)
   const searchSentinelRef = useRef(null)
+  // YouTube-style: search history + live suggestions
+  const [history, setHistory] = useState(()=>{ try{ const h = JSON.parse(localStorage.getItem('sur_history')||'[]'); return Array.isArray(h)? h.filter(x=> typeof x==='string' && x.trim()).slice(0,12) : [] }catch{ return [] } })
+  const [sugg, setSugg] = useState([])
+  const [suggOpen, setSuggOpen] = useState(false)
+  const [searchNoMore, setSearchNoMore] = useState(false)
+  const suggTimerRef = useRef(null)
+  const suggSeqRef = useRef(0)
+  const lastCommittedRef = useRef('')
+  useEffect(()=>{ try{ localStorage.setItem('sur_history', JSON.stringify(history)) }catch{} },[history])
 
   // user
   const [user, setUser] = useState(()=>{
@@ -465,34 +474,64 @@ export default function App(){
 
   // search online ONLY (user demand — no hardcoded/local), YouTube Music-like paginated
   useEffect(()=>{
-    if(!search.trim()){ setOnlineResults([]); setSearching(false); setSearchPage(1); setSearchNextPage(null); return }
+    if(!search.trim()){ setOnlineResults([]); setSearching(false); setSearchPage(1); setSearchNextPage(null); setSearchNoMore(false); setSugg([]); return }
     const tm = setTimeout(async()=>{
       setSearching(true)
       setSearchPage(1)
       try{
         // JioSaavn-like fast search — Saavn first, then Piped
-        const fb = await unifiedSearch(search, 30)
+        const fb = await unifiedSearch(search, 40)
         if(fb.length){
           setOnlineResults(fb)
-          setSearchNextPage(null)
+          setSearchNextPage(getLastSearchNextpage())
+          setSearchNoMore(false)
+          commitHistory(search)
         } else {
           const {tracks, nextpage} = await unifiedSearchPaginated(search, 30, null)
           setSearchNextPage(nextpage)
+          setSearchNoMore(false)
           setOnlineResults(tracks)
+          if(tracks.length) commitHistory(search)
         }
       }catch{
         try{
-          const fb = await unifiedSearch(search, 30)
+          const fb = await unifiedSearch(search, 40)
           setOnlineResults(fb)
+          setSearchNextPage(getLastSearchNextpage())
         }catch{ setOnlineResults([]) }
       }
       setSearching(false)
     }, 180)
     return ()=> clearTimeout(tm)
   },[search])
+  // Live suggestions while typing (YouTube-style autocomplete)
+  useEffect(()=>{
+    const q = search.trim()
+    clearTimeout(suggTimerRef.current)
+    if(q.length < 2){ setSugg([]); return }
+    suggTimerRef.current = setTimeout(async()=>{
+      const seq = ++suggSeqRef.current
+      try{
+        const s = await searchSuggestions(q)
+        if(seq === suggSeqRef.current) setSugg(s || [])
+      }catch{ if(seq === suggSeqRef.current) setSugg([]) }
+    }, 220)
+    return ()=> clearTimeout(suggTimerRef.current)
+  },[search])
+
+  const commitHistory = (q)=>{
+    const s = String(q||'').trim()
+    if(s.length < 2 || lastCommittedRef.current === s) return
+    lastCommittedRef.current = s
+    setHistory(prev=> [s, ...prev.filter(x=> x.toLowerCase()!==s.toLowerCase())].slice(0,12))
+  }
+  const removeHistoryItem = (q)=> setHistory(prev=> prev.filter(x=> x!==q))
+  const clearHistory = ()=> setHistory([])
+  const applySuggestion = (s)=>{ setSearch(s); commitHistory(s); setSuggOpen(false) }
+
   // infinite scroll for search — auto load when sentinel visible
   useEffect(()=>{
-    if(!search.trim() || searching) return
+    if(!search.trim() || searching || searchNoMore) return
     const el = searchSentinelRef.current
     if(!el) return
     const io = new IntersectionObserver(entries=>{
@@ -502,35 +541,29 @@ export default function App(){
     }, { rootMargin: '400px' })
     io.observe(el)
     return ()=> io.disconnect()
-  }, [search, searching, onlineResults.length, searchPage])
+  }, [search, searching, onlineResults.length, searchPage, searchNoMore])
 
   const handleLoadMoreSearch = async()=>{
-    if(!search.trim() || searching) return
+    if(!search.trim() || searching || searchNoMore) return
     setSearching(true)
     try{
-      if(searchNextPage){
-        const {tracks: more, nextpage} = await unifiedSearchPaginated(search, 20, searchNextPage)
-        if(more.length){
-          setOnlineResults(prev=> [...prev, ...more.filter(m=> !prev.some(p=> String(p.id)===String(m.id)))])
-          setSearchNextPage(nextpage)
-          setSearchPage(p=> p+1)
-        } else {
-          // fallback to piped direct
-          const res = await searchPiped(search, 20, searchNextPage)
-          if(res.tracks.length){
-            setOnlineResults(prev=> [...prev, ...res.tracks.filter(m=> !prev.some(p=> String(p.id)===String(m.id)))])
-            setSearchNextPage(res.nextpage)
-            setSearchPage(p=> p+1)
-          }
-        }
+      let more = [], next = null
+      const tok = searchNextPage || getLastSearchNextpage()
+      if(tok){
+        const r = await unifiedSearchPaginated(search, 24, tok)
+        more = r.tracks || []; next = r.nextpage || null
       } else {
-        const more = await unifiedSearch(search + " page " + (searchPage+1), 20)
-        if(more.length){
-          setOnlineResults(prev=> [...prev, ...more.filter(m=> !prev.some(p=> String(p.id)===String(m.id)))])
-          setSearchPage(p=> p+1)
-        }
+        const res = await searchPiped(search, 24, null)
+        more = res.tracks || []; next = res.nextpage || null
       }
-    }catch(e){ console.warn('loadMore', e) }
+      const seen = new Set(onlineResults.map(p=> String(p.id)))
+      const seenVid = new Set(onlineResults.map(p=> p.videoId).filter(Boolean))
+      const fresh = more.filter(m=> m && isRealTrack(m) && !seen.has(String(m.id)) && !(m.videoId && seenVid.has(m.videoId)))
+      if(fresh.length) setOnlineResults(prev=> [...prev, ...fresh])
+      setSearchNextPage(next)
+      setSearchPage(p=> p+1)
+      if(!next && !fresh.length) setSearchNoMore(true)
+    }catch(e){ setSearchNoMore(true) }
     setSearching(false)
   }
 
@@ -678,7 +711,7 @@ export default function App(){
     }
     setQueue(newQueue); setCurrentIndex(newIdx); setIsPlaying(true)
     // recently played DB
-    setRecentlyPlayed(prev=> [track, ...prev.filter(x=> String(x.id)!==String(track.id))].slice(0,30))
+    if(isRealTrack(track)) setRecentlyPlayed(prev=> [track, ...prev.filter(x=> String(x.id)!==String(track.id) && isRealTrack(x))].slice(0,30))
     // direct play in user gesture context — YouTube via IFrame, else audio element
     setTimeout(()=>{
       if(resolvedTrack.videoId){
@@ -947,14 +980,35 @@ export default function App(){
         <div className="flex-1 min-w-0 flex flex-col">
           <header className="sticky top-0 z-30 backdrop-blur-xl bg-[#060306]/60 border-b border-white/5">
             <div className="flex items-center gap-3 px-4 lg:px-6 py-3">
-              <div className="flex items-center gap-2 lg:hidden"><div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#D5AA55] to-[#C35445] grid place-items-center font-bold text-black text-sm">♪</div><span className="font-display font-bold text-sm">Sur Sangam</span><span className="hidden xs:inline text-[10px] bg-emerald-500 text-white px-2 py-0.5 rounded-full ml-1">Backend Live</span></div>
-              <div className="hidden lg:flex items-center gap-2"><button className="w-8 h-8 rounded-full bg-black/40 backdrop-blur grid place-items-center border border-white/10 hover:bg-white/10"><ChevronLeft/></button><button className="w-8 h-8 rounded-full bg-black/40 backdrop-blur grid place-items-center border border-white/10 opacity-50"><ChevronRight/></button></div>
-              <div className="flex-1 flex justify-center lg:justify-start max-w-[680px] mx-auto lg:mx-4">
+              <div className="flex-1 flex justify-center min-w-0 lg:mx-1">
                 <div className="relative w-full">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/50"><SearchIcon size={18}/></span>
-                  <input value={search} onChange={e=>{ setSearch(e.target.value); if(e.target.value) setNav('search')}} onFocus={()=> setNav('search')} placeholder="Real search • Try 'Arijit', 'Sidhu', 'Calm Down' — online + local" className="w-full h-10 pl-10 pr-10 rounded-full bg-white/10 hover:bg-white/[0.14] focus:bg-white text-sm placeholder:text-white/50 focus:placeholder:text-black/40 focus:text-black outline-none border border-white/10 focus:border-white transition"/>
+                  <input value={search} onChange={e=>{ setSearch(e.target.value); setSuggOpen(true); if(e.target.value) setNav('search')}} onFocus={()=>{ setNav('search'); setSuggOpen(true) }} onBlur={()=> setTimeout(()=> setSuggOpen(false), 140)} onKeyDown={e=>{ if(e.key==='Enter'){ commitHistory(search); setSuggOpen(false) } if(e.key==='Escape') setSuggOpen(false) }} placeholder="Search songs, artists, albums…" className="w-full h-11 pl-10 pr-10 rounded-full bg-white/10 hover:bg-white/[0.14] focus:bg-white text-sm placeholder:text-white/50 focus:placeholder:text-black/40 focus:text-black outline-none border border-white/10 focus:border-white transition"/>
                   {search && <button onClick={()=> setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 grid place-items-center rounded-full bg-black/20 hover:bg-black/30 text-white/70"><CloseIcon/></button>}
                   {searching && <span className="absolute right-10 top-1/2 -translate-y-1/2 w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"/>}
+                  {suggOpen && (search.trim() ? sugg.length>0 : history.length>0) && (
+                    <div className="absolute left-0 right-0 top-12 z-50 overflow-hidden rounded-2xl border border-white/10 bg-[#0b0709]/95 shadow-2xl backdrop-blur-xl" onMouseDown={e=> e.preventDefault()}>
+                      {!search.trim() ? (
+                        <div className="flex items-center justify-between px-3.5 pt-2.5 pb-1">
+                          <span className="text-[11px] font-bold uppercase tracking-wider text-white/40">Recent searches</span>
+                          <button onClick={clearHistory} className="text-[11px] text-white/50 hover:text-white font-semibold">Clear all</button>
+                        </div>
+                      ) : (
+                        <div className="px-3.5 pt-2.5 pb-1"><span className="text-[11px] font-bold uppercase tracking-wider text-white/40">Suggestions</span></div>
+                      )}
+                      {(search.trim() ? sugg : history).map((s,i)=>(
+                        <div key={s+'-'+i} onClick={()=> applySuggestion(s)} className="flex w-full cursor-pointer items-center gap-2.5 px-3.5 py-2 text-left text-sm text-white/85 hover:bg-white/10">
+                          <span className="text-white/40"><SearchIcon size={14}/></span>
+                          <span className="truncate">{s}</span>
+                          {!search.trim() ? (
+                            <span onClick={(e)=>{ e.stopPropagation(); removeHistoryItem(s) }} className="ml-auto grid h-6 w-6 place-items-center rounded-full text-white/30 hover:bg-white/10 hover:text-white"><CloseIcon/></span>
+                          ) : (
+                            <span className="ml-auto text-white/25 text-xs">↵</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -1073,8 +1127,8 @@ export default function App(){
                             })}
                           </div>
                           <div ref={searchSentinelRef} className="h-1" />
-                          {onlineResults.length>=10 && <button onClick={handleLoadMoreSearch} disabled={searching} className="mt-4 w-full py-2.5 rounded-full bg-white/10 border border-white/10 text-white text-sm font-bold hover:bg-white hover:text-black disabled:opacity-50">{searching? "Loading more worldwide…":"Load more — scroll for auto-load"}</button>}
-                          <div className="text-center text-xs text-white/30 mt-2">Showing {onlineResults.length} worldwide full-length tracks • Scroll for auto-load</div>
+                          {searching && onlineResults.length ? <div className="mt-4 flex items-center justify-center gap-2 text-xs text-white/50"><span className="w-4 h-4 rounded-full border-2 border-white/20 border-t-white animate-spin"/>Loading more results…</div> : null}
+                          {!searching && (searchNoMore || !searchNextPage) && onlineResults.length ? <div className="text-center text-xs text-white/30 mt-3 pb-2">✓ {onlineResults.length} matching results — all loaded</div> : <div className="text-center text-xs text-white/30 mt-2">Showing {onlineResults.length} results • more load automatically on scroll</div>}
                         </div>
                         {localSongs.length>0 && (
                           <div>
@@ -1358,7 +1412,7 @@ export default function App(){
                     <div className="flex items-center justify-between mb-4"><h3 className="font-bold text-lg">Recently played — {recentlyPlayed.length? `${recentlyPlayed.length} songs`:'Real history'}</h3><button onClick={()=> { if(recentlyPlayed.length){ setQueue(recentlyPlayed); setCurrentIndex(0); setIsPlaying(true) }}} className="w-8 h-8 rounded-full bg-white text-black grid place-items-center"><ChevronRight/></button></div>
                     {recentlyPlayed.length===0 ? <div className="text-center py-8 text-sm text-white/50">Play any song — it will appear here (like Spotify history, saved to DB)</div> : null}
                     <div className="space-y-1">
-                      {(recentlyPlayed.length? recentlyPlayed : queue).slice(0,7).map((t,i)=>{
+                      {(recentlyPlayed.length? recentlyPlayed : queue).filter(isRealTrack).slice(0,7).map((t,i)=>{
                         const isCur = String(current?.id)===String(t.id)
                         return (
                           <div key={t.id+String(i)} className={`flex items-center gap-3 p-2 rounded-xl transition ${isCur? 'bg-white text-black':'hover:bg-white/5'}`}>

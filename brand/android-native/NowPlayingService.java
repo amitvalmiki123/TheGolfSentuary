@@ -51,7 +51,7 @@ public class NowPlayingService extends Service {
       w.evaluateJavascript(
         "(function(){try{var n=window.__np||{};return JSON.stringify({t:n.title||'',a:n.artist||'',al:n.album||'',p:!!n.playing,art:n.artUrl||''})}catch(e){return '{}'}})()",
         new android.webkit.ValueCallback<String>() {
-          @Override public void onReceiveMessage(String raw) {
+          @Override public void onReceiveValue(String raw) {
             try {
               String j = raw == null ? "{}" : raw;
               if (j.length() > 1 && j.charAt(0) == '"') j = j.substring(1, j.length() - 1);

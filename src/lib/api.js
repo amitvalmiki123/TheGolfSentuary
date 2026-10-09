@@ -160,7 +160,12 @@ export async function resolveDirectAudio(track){
       const ac = new AbortController(); const tm = setTimeout(()=>ac.abort(), 9000)
       const r = await fetch(`${BACKEND_URL}/api/audiourl?vid=${vid}${track&&track.host?('&host='+encodeURIComponent(track.host)):''}`)
       clearTimeout(tm)
-      if(r.ok){ const j = await r.json(); if(j && j.url) url = j.url }
+      if(r.ok){ const j = await r.json()
+        if(j && j.url){
+          url = j.url
+          // never hand the WebView an http:// media url from an https:// app (mixed content = silent fail)
+          if(url.startsWith('http://') && /onrender\.com/.test(url)) url = 'https://'+url.slice(7)
+        } }
     }catch(e){}
   }
   if(!url){ try{ url = await resolvePipedAudio(track) }catch(e){} }

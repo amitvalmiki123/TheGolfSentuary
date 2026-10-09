@@ -319,6 +319,19 @@ app.get('/api/audiostream', async (req,res)=>{
       }
     }catch(e){}
   }
+  // last resort: resolve via piped and 302 the CLIENT straight to the stream url (device-side
+  // load avoids proxying bytes through a free tier)
+  for(const h of PIPED_HOSTS.slice(0,3)){
+    try{
+      const rr = await fetch(`${h}/streams/${vid}`, { headers:{ 'User-Agent':'Mozilla/5.0' }, signal: AbortSignal.timeout(10000) })
+      if(!rr.ok) continue
+      const dd = await rr.json()
+      const aa = (dd.audioStreams||[]).filter(x=>x&&x.url)
+      const bb = aa.find(x=>String(x.mimeType||'').includes('mp4')) || aa[0]
+      if(bb) return res.redirect(302, bb.url)
+      if(dd.hls) return res.redirect(302, dd.hls)
+    }catch(e){}
+  }
   res.status(502).json({ error:'no working upstream', tried })
 })
 
@@ -328,7 +341,8 @@ app.get('/api/audiourl', async (req,res)=>{
   const vid = (req.query.vid||'').toString().trim().replace(/[^A-Za-z0-9_-]/g,'').slice(0,20)
   if(!vid) return res.json({ url:null })
   // Prefer our own proxy url: same-origin, no IP-binding, seek via Range.
-  return res.json({ url: `${req.protocol}://${req.get('host')}/api/audiostream?vid=${vid}`, proxy:true })
+  const proto = (req.get('x-forwarded-proto')||'').split(',')[0].trim() || (req.headers.host && req.headers.host.includes('onrender.com') ? 'https' : req.protocol)
+  return res.json({ url: `${proto}://${req.get('host')}/api/audiostream?vid=${vid}`, proxy:true })
   const ak = `au:${vid}`
   const hit = memoGet(ak)
   if(hit) return res.json(hit)

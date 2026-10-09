@@ -59,15 +59,16 @@ jobs:
           ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/gradle.log
           status=${PIPESTATUS[0]}
           set -e
-          if [ "$status" != "0" ]; then
-            {
-              echo "### Gradle failure tail"
-              echo '```'
-              grep -n -iE "error|failed|exception|what went wrong" -A 4 /tmp/gradle.log | tail -180
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
           exit $status
+
+      - name: Upload gradle log (debugging failed builds)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-log
+          path: /tmp/gradle.log
+          if-no-files-found: ignore
+          retention-days: 3
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4

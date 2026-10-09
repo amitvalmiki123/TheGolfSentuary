@@ -168,6 +168,14 @@ public class NowPlayingService extends Service {
   private Notification buildNotification() {
     int playIcon = playing ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play;
     String sub = artist + (album.isEmpty() || album.equals(artist) ? "" : " \u2022 " + album);
+    androidx.media.app.NotificationCompat.MediaStyle style =
+      new androidx.media.app.NotificationCompat.MediaStyle().setShowActionsInCompactView(0, 1, 2);
+    if (mediaSession != null) {
+      try {
+        style.setMediaSession(androidx.media.session.MediaSessionCompat.Token
+          .fromMediaSessionToken(mediaSession.getSessionToken()));
+      } catch (Exception ignored) {}
+    }
     NotificationCompat.Builder b = new NotificationCompat.Builder(this, CHANNEL)
       .setSmallIcon(getDrawableId())
       .setContentTitle(title)
@@ -178,9 +186,7 @@ public class NowPlayingService extends Service {
       .setOnlyAlertOnce(true)
       .setOngoing(playing)
       .setPriority(NotificationCompat.PRIORITY_LOW)
-      .setStyle(new androidx.media.app.NotificationCompat.MediaStyle()
-        .setMediaSession(mediaSession == null ? null : mediaSession.getSessionToken())
-        .setShowActionsInCompactView(0, 1, 2))
+      .setStyle(style)
       .addAction(android.R.drawable.ic_media_previous, "Previous", bcast(ACTION_PREV))
       .addAction(playIcon, playing ? "Pause" : "Play", bcast(playing ? ACTION_PAUSE : ACTION_PLAY))
       .addAction(android.R.drawable.ic_media_next, "Next", bcast(ACTION_NEXT));

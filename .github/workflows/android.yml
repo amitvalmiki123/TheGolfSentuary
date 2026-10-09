@@ -59,6 +59,10 @@ jobs:
           ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/gradle.log
           status=${PIPESTATUS[0]}
           set -e
+          if [ "$status" != "0" ]; then
+            msg=$(grep -iE "error:|FAILED|what went wrong|Caused by" /tmp/gradle.log | head -20 | sed 's/%/25/g' | tr '\n' '@' | sed 's/@/%0A/g' | head -c 3000)
+            echo "::error::GRADLE>>$msg"
+          fi
           exit $status
 
       - name: Upload gradle log (debugging failed builds)

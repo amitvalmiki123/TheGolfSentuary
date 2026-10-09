@@ -482,6 +482,19 @@ export default function App(){
       artUrl: /^https:\/\//.test(String(current.cover||'')) ? current.cover : ''
     })
   },[current && current.id, isPlaying])
+  // Service ticker calls this every 1.2s while it believes we're playing — defeats YouTube's
+  // iframe auto-pause (hidden small player) within ~1s, from native, bridge-independent.
+  window.__npKeepAlive = ()=>{
+    try{
+      if(!isPlaying || (scrubRef && scrubRef.current) || !current) return
+      if(current.videoId && ytPlayerRef.current){
+        const st = ytPlayerRef.current.getPlayerState && ytPlayerRef.current.getPlayerState()
+        if(st !== undefined && st !== 1 && st !== -1) ytPlayerRef.current.playVideo()
+      } else if(audioRef.current && audioRef.current.paused){
+        audioRef.current.play().catch(()=>{})
+      }
+    }catch(e){}
+  }
   const pushNpMeta = ()=>{
     if(!current) return
     npUpdate({
@@ -1877,6 +1890,7 @@ function ProfileView({ user, setUser, editUser, setEditUser, liked, playlists, l
                        'Background playback + lock-screen controls ACTIVE ✓'}
                     </span>
                     {bgDiag && bgDiag.diag ? <div className="w-full break-all opacity-70" style={{fontFamily:'ui-monospace,monospace',fontSize:10}}>svc: {bgDiag.diag}</div> : null}
+                    {(()=>{ try{ const m=/^SVC\|(\d)\|(.*)$/.exec(document.title||''); return m ? <div className="w-full break-all" style={{fontFamily:'ui-monospace,monospace',fontSize:10}}>native link: {m[1]==='1'?'\u25b6 playing':'\u23f8 paused'} \u2022 {decodeURIComponent(m[2]||'')}</div> : null }catch(e){ return null } })()}
                     {bgDiag && !bgDiag.notif ? (
                       <button onClick={()=> npOpenNotifSettings()} className="shrink-0 rounded-full bg-white px-3 py-1.5 font-bold text-black hover:bg-white/90">Turn on</button>
                     ) : bgDiag && bgDiag.plugin && !bgDiag.service ? (

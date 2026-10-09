@@ -38,6 +38,49 @@ public class NowPlayingService extends Service {
   public static final String ACTION_NEXT   = "sur.np.NEXT";
   public static final String ACTION_STOP   = "sur.np.STOP";
 
+  private final android.os.Handler mTick = new android.os.Handler(android.os.Looper.getMainLooper());
+  private final Runnable mTickRun = new Runnable() {
+    @Override public void run() { tick(); mTick.postDelayed(this, 1200); }
+  };
+
+  // Zero-bridge metadata channel: read the app's playback state straight out of the WebView.
+  private void tick() {
+    try {
+      final android.webkit.WebView w = MainActivity.npWebView;
+      if (w == null) return;
+      w.evaluateJavascript(
+        "(function(){try{var n=window.__np||{};return JSON.stringify({t:n.title||'',a:n.artist||'',al:n.album||'',p:!!n.playing,art:n.artUrl||''})}catch(e){return '{}'}})()",
+        new android.webkit.ValueCallback<String>() {
+          @Override public void onReceiveMessage(String raw) {
+            try {
+              String j = raw == null ? "{}" : raw;
+              if (j.length() > 1 && j.charAt(0) == '"') j = j.substring(1, j.length() - 1);
+              j = j.replace("\\"", "\"").replace("\\/", "/").replace("\\n", " ");
+              org.json.JSONObject o = new org.json.JSONObject(j);
+              String t = o.optString("t"); String a = o.optString("a"); String al = o.optString("al");
+              boolean pl = o.optBoolean("p");
+              String art = o.optString("art");
+              boolean changed = !t.equals(title) || !a.equals(artist) || pl != playing;
+              if (!t.isEmpty()) title = t;
+              artist = a.isEmpty() ? "Music" : a;
+              album = al;
+              playing = pl;
+              if (!art.isEmpty() && !art.equals(artUrlLoaded)) loadArt(art);
+              updateSession();
+              if (changed) startForegroundNow();
+              setWake(playing);
+              // If we believe it should be playing, tell the WebView player to make sure of it
+              // (YouTube's iframe auto-pauses when the page is hidden — this un-pauses within ~1.2s,
+              // even while the Activity is stopped, since the service's main-looper keeps ticking).
+              if (playing) w.evaluateJavascript("try{window.__npKeepAlive&&window.__npKeepAlive()}catch(e){}", null);
+              // Heartbeat back to JS (card shows it even when the Capacitor bridge is dead).
+              w.evaluateJavascript("try{document.title='SVC|'+" + (pl ? "1" : "0") + "+'|'+encodeURIComponent((window.__np&&window.__np.title||'').slice(0,40))}catch(e){}", null);
+            } catch (Exception ignored) {}
+          }
+        });
+    } catch (Throwable ignored) {}
+  }
+
   public interface ActionListener { void onAction(String action); }
   public static volatile ActionListener listener;
   public static volatile NowPlayingService instance;
@@ -79,6 +122,7 @@ public class NowPlayingService extends Service {
         @Override public void onSkipToPrevious()    { send("prev"); }
       });
       audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+      mTick.postDelayed(mTickRun, 1500);
     } catch (Exception e) {
       // NEVER take the whole app down from a service
       try { stopSelf(); } catch (Exception ignored) {}
@@ -312,7 +356,9 @@ public class NowPlayingService extends Service {
   // Notification action button taps land here
   @Override
   public void onDestroy() {
+    try { mTick.removeCallbacks(mTickRun); } catch (Exception ignored) {}
     setWake(false);
+    try { MainActivity.npWebView.evaluateJavascript("try{document.title=document.title.replace(/^SVC\\|[^]*$/,'')}catch(e){}", null); } catch (Throwable ignored) {}
     try {
       android.app.NotificationManager nm = getSystemService(android.app.NotificationManager.class);
       if (nm != null) nm.cancel(NOTIF_ID);

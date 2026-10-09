@@ -44,3 +44,12 @@ export function npOpenNotifSettings(){
   const p = getPlugin()
   try{ p && p.openNotifSettings && p.openNotifSettings().catch(()=>{}) }catch{}
 }
+
+export async function npPing(){
+  const p = getPlugin()
+  if(!p || !p.ping) return { plugin:false, service:false, notif:true }
+  try{
+    const r = await Promise.race([ p.ping(), new Promise((_,rej)=> setTimeout(()=>rej(new Error('timeout')), 2500)) ])
+    return { plugin:true, service: !!(r && r.service), notif: !(r && r.notif===false) }
+  }catch(e){ return { plugin:false, service:false, notif:true } }
+}

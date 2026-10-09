@@ -54,6 +54,21 @@ public class NowPlayingPlugin extends Plugin {
   }
 
   @PluginMethod
+  public void ping(PluginCall call) {
+    JSObject r = new JSObject();
+    try {
+      r.put("ok", true);
+      r.put("service", NowPlayingService.instance != null);
+      boolean g = true;
+      if (Build.VERSION.SDK_INT >= 33)
+        g = ContextCompat.checkSelfPermission(getContext(), Manifest.permission.POST_NOTIFICATIONS)
+            == PackageManager.PERMISSION_GRANTED;
+      r.put("notif", g);
+    } catch (Exception ignored) {}
+    call.resolve(r);
+  }
+
+  @PluginMethod
   public void hasNotifPerm(PluginCall call) {
     JSObject r = new JSObject();
     boolean g = true;

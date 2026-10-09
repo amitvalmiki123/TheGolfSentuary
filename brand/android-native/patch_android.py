@@ -14,6 +14,7 @@ mfa = os.path.join(PKG, 'MainActivity.java')
 MAIN = """package com.sursangam.app;
 
 import android.Manifest;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
@@ -26,14 +27,24 @@ import com.getcapacitor.BridgeActivity;
 public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        // Official Capacitor pattern: register BEFORE super.onCreate so the WebView bridge
+        // advertises the plugin in its header list at page load (late registration = JS calls vanish).
+        registerPlugin(NowPlayingPlugin.class);
         super.onCreate(savedInstanceState);
-        this.bridge.registerPlugin(NowPlayingPlugin.class);
         if (Build.VERSION.SDK_INT >= 33
                 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                    != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this,
                 new String[]{ Manifest.permission.POST_NOTIFICATIONS }, 101);
         }
+        // Start the NowPlaying foreground service with the app itself — background playback
+        // no longer depends on any JS call arriving in time.
+        try {
+            Intent i = new Intent(this, NowPlayingService.class);
+            i.setAction(NowPlayingService.ACTION_UPDATE);
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(i);
+            else startService(i);
+        } catch (Exception ignored) {}
     }
 }
 """

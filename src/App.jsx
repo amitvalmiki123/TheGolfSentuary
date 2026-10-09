@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
 import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio, searchSaavn, searchSuggestions, getLastSearchNextpage, fetchLyrics, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists } from './lib/api.js'
 import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
-import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npOpenNotifSettings } from './lib/nowplaying.js'
+import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npOpenNotifSettings, npPing } from './lib/nowplaying.js'
 
 const BASE = import.meta.env.BASE_URL || '/'
 // In the native app (Capacitor WebView) pretend the page is always visible — stops the
@@ -122,6 +122,7 @@ export default function App(){
   const [showLyrics, setShowLyrics] = useState(false)
   const [lyrics, setLyrics] = useState(null)
   const [npPermBar, setNpPermBar] = useState(false)
+  const [bgDiag, setBgDiag] = useState(null)
   const [lyricsLoading, setLyricsLoading] = useState(false)
   const lyricsBoxRef = useRef(null)
   const lyricSeqRef = useRef(0)
@@ -398,9 +399,12 @@ export default function App(){
   },[isPlaying])
   // ---- NATIVE background + lock-screen controls (foreground service plugin) ----
   // Android 13+: without POST_NOTIFICATIONS the media notification (and bg protection) can't exist — nudge + re-ask
+  const bgPing = async()=>{ try{ const r = await npPing(); setBgDiag(r) }catch{ setBgDiag({plugin:false,service:false,notif:true}) } }
   useEffect(()=>{
     if(!isNativeApp()) return
     let alive = true
+    let tries = 0
+    const id = setInterval(()=>{ bgPing(); if(++tries>5) clearInterval(id) }, 900)
     const check = async()=>{
       try{
         const ok = await npNotifGranted()
@@ -410,6 +414,7 @@ export default function App(){
       }catch{}
     }
     check()
+    return ()=>{ clearInterval(id); alive=false }
     const recheck = ()=>{ if(!document.hidden || true) check() }
     window.addEventListener('focus', recheck)
     document.addEventListener('visibilitychange', recheck)
@@ -1794,6 +1799,26 @@ function ProfileView({ user, setUser, editUser, setEditUser, liked, playlists, l
                   <div><div className="text-xl font-bold">{playlists.length}</div><div className="text-xs text-white/50">Playlists</div></div>
                   <div><div className="text-xl font-bold">{downloaded.length}</div><div className="text-xs text-white/50">Offline</div></div>
                 </div>
+                {isNativeApp() && (
+                  <div className="mt-4 flex items-center gap-2.5 rounded-2xl border p-3 text-xs max-w-md"
+                       style={{background:'rgba(255,255,255,.04)', borderColor: (bgDiag && bgDiag.plugin && bgDiag.service && bgDiag.notif) ? 'rgba(16,185,129,.5)':'rgba(245,158,11,.4)'}}>
+                    <span className="w-2.5 h-2.5 shrink-0 rounded-full animate-pulse" style={{background:(bgDiag && bgDiag.plugin && bgDiag.service && bgDiag.notif)?'#10b981':'#f59e0b'}}/>
+                    <span className="min-w-0 flex-1 text-white/70 leading-relaxed">
+                      {!bgDiag ? 'Background playback: checking…' :
+                       !bgDiag.plugin ? 'Background player engine not loaded — reinstall the latest APK (Actions → sur-sangam-apk).' :
+                       !bgDiag.notif ? 'Notifications are OFF — background music + lock-screen controls need them on.' :
+                       !bgDiag.service ? 'Service idle right now — start a song; if it still won’t play after locking, tap Fix.' :
+                       'Background playback + lock-screen controls ACTIVE ✓'}
+                    </span>
+                    {bgDiag && !bgDiag.notif ? (
+                      <button onClick={()=> npOpenNotifSettings()} className="shrink-0 rounded-full bg-white px-3 py-1.5 font-bold text-black hover:bg-white/90">Turn on</button>
+                    ) : bgDiag && bgDiag.plugin && !bgDiag.service ? (
+                      <button onClick={()=>{ npStart(a=>{ if(npActionRef.current) npActionRef.current(a) }); npUpdate({title:'Sur Sangam', artist:'Ready', album:'', state:'playing', artUrl:''}); setTimeout(bgPing, 1200) }} className="shrink-0 rounded-full bg-white px-3 py-1.5 font-bold text-black hover:bg-white/90">Fix</button>
+                    ) : bgDiag && bgDiag.plugin && bgDiag.service && bgDiag.notif ? (
+                      <button onClick={bgPing} className="shrink-0 rounded-full border border-white/15 px-3 py-1.5 font-semibold text-white/70 hover:text-white">Re-check</button>
+                    ) : null}
+                  </div>
+                )}
                 {authUser ? (
                   <div className="mt-4 flex items-center gap-3 p-3 rounded-2xl bg-white/5 border border-white/10 max-w-md">
                     <span className="w-8 h-8 shrink-0 rounded-full bg-[#D5AA55] text-black grid place-items-center text-sm font-bold">☁</span>

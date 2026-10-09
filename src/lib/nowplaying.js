@@ -27,8 +27,15 @@ export function npStart(onAction){
 export function npUpdate(meta){
   if(npDisabled()) return
   const p = getPlugin()
-  if(!p) return
-  try{ p.update && p.update(meta).catch(()=>{}) }catch{}
+  if(p){ try{ p.update && p.update(meta).catch(()=>{}) }catch{} ; return }
+  // plugin not ready yet — retry a few times so a slow bridge never loses the CURRENT meta
+  let n = 0
+  const tick = ()=>{
+    const q = getPlugin()
+    if(q){ try{ q.update && q.update(meta).catch(()=>{}) }catch{}; return }
+    if(++n < 8) setTimeout(tick, 400)
+  }
+  setTimeout(tick, 400)
 }
 export function npStop(){
   const p = getPlugin()

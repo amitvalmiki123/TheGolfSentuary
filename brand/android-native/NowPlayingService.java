@@ -236,7 +236,8 @@ public class NowPlayingService extends Service {
     // IMPORTANT: service is started via plain startService() (no FGS obligation anywhere),
     // so every failure path here is 100% non-fatal: worst case we stopSelf() and the app
     // keeps working exactly as before — no system-posted async crash is possible.
-    if (!playing) return; // only upgrade to foreground while actually playing
+    // Always foreground while the app runs (ongoing flag only while playing). This keeps the
+    // process non-cached → WebView timers keep ticking → playback/watchdog survive minimize/lock.
     Notification n;
     try { n = buildNotification(); } catch (Exception e) { n = buildMinimal(); }
     try {

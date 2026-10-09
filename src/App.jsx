@@ -12,6 +12,34 @@ try{
     Object.defineProperty(document, 'visibilityState', { get: ()=> 'visible', configurable: true })
   }
 }catch(e){}
+// Global error strip: JS/React errors show right on screen (plain DOM — survives React unmount),
+// so a black screen always carries its own diagnosis.
+try{
+  if(typeof window!=='undefined'){
+    const showErr = (msg)=>{
+      try{
+        let el = document.getElementById('__errbar')
+        if(!el){
+          el = document.createElement('div')
+          el.id = '__errbar'
+          el.style.cssText = 'position:fixed;left:8px;right:8px;top:8px;z-index:99999;background:#7f1d1d;color:#fff;font:11px/1.5 system-ui;padding:8px 34px 8px 12px;border-radius:10px;max-height:34vh;overflow:auto;white-space:pre-wrap;box-shadow:0 8px 30px rgba(0,0,0,.5)'
+          const x = document.createElement('button')
+          x.textContent = '\u00d7'
+          x.style.cssText = 'position:absolute;top:4px;right:6px;background:transparent;border:none;color:#fff;font-size:16px'
+          x.onclick = ()=>{ el.style.display='none' }
+          el.appendChild(x)
+          const span = document.createElement('span'); span.id='__errtext'; el.appendChild(span)
+          document.body.appendChild(el)
+        }
+        const t = document.getElementById('__errtext')
+        t.textContent = (t.textContent ? t.textContent.slice(-1200)+'\n---\n' : '') + String(msg).slice(0,800)
+        el.style.display = 'block'
+      }catch(_){ }
+    }
+    window.addEventListener('error', (e)=> showErr((e && e.message) || String(e)))
+    window.addEventListener('unhandledrejection', (e)=> { try{ showErr('promise: '+((e.reason && (e.reason.message||e.reason.stack)) || e.reason)) }catch(_){ } })
+  }
+}catch(e){}
 
 const fallbackTracks = [] // no dummy/tone tracks — live music only (user demand)
 
@@ -406,6 +434,7 @@ export default function App(){
   useEffect(()=>{
     if(!isNativeApp()) return
     let alive = true
+    if(npDisabled()){ try{ setTimeout(()=>showToast('Safe mode ON — background player disabled. Turn it off in You tab.'), 1200) }catch{} }
     npLastCrash().then(t=>{ if(alive && t && t.trim()){ setCrashTrace(t.trim()); setCrashOpen(true) } }).catch(()=>{})
     return ()=>{ alive = false }
   },[])
@@ -452,11 +481,24 @@ export default function App(){
       artUrl: /^https:\/\//.test(String(current.cover||'')) ? current.cover : ''
     })
   },[current && current.id, isPlaying])
-  // Native watchdog: agar WebView background me media suspend kare to wapas resume — lock pe bhi music chalta rahe
+  const pushNpMeta = ()=>{
+    if(!isNativeApp() || !current) return
+    npUpdate({
+      title: String(current.title||'').slice(0,140),
+      artist: String(current.artist||'').slice(0,140),
+      album: String(current.album||'').slice(0,140),
+      state: isPlaying ? 'playing' : 'paused',
+      artUrl: /^https:\/\//.test(String(current.cover||'')) ? current.cover : ''
+    })
+  }
+  // Native watchdog: (a) re-push now-playing meta so notification NEVER sticks to placeholder,
+  // (b) agar WebView background me media suspend kare to wapas resume — lock pe bhi music chalta rahe
   useEffect(()=>{
-    if(!isNativeApp() || !isPlaying) return
+    if(!isNativeApp()) return
     const id = setInterval(()=>{
       try{
+        if(isPlaying) pushNpMeta()
+        if(!isPlaying) return
         if(scrubRef && scrubRef.current) return
         if(current && current.videoId && ytPlayerRef.current){
           const st = ytPlayerRef.current.getPlayerState && ytPlayerRef.current.getPlayerState()
@@ -467,7 +509,7 @@ export default function App(){
       }catch(e){}
     }, 2600)
     return ()=> clearInterval(id)
-  },[isPlaying, current && current.id])
+  },[isPlaying, current && current.id, isNativeApp()])
 
   // YouTube IFrame API — for YouTube • Full tracks (YouTube Music-like)
   useEffect(()=>{
@@ -1824,8 +1866,7 @@ function ProfileView({ user, setUser, editUser, setEditUser, liked, playlists, l
                   <div><div className="text-xl font-bold">{playlists.length}</div><div className="text-xs text-white/50">Playlists</div></div>
                   <div><div className="text-xl font-bold">{downloaded.length}</div><div className="text-xs text-white/50">Offline</div></div>
                 </div>
-                {isNativeApp() && (
-                  <div className="mt-4 flex items-center gap-2.5 rounded-2xl border p-3 text-xs max-w-md"
+                {isNativeApp() ? (()=>{ try{ return (<><div className="mt-4 flex items-center gap-2.5 rounded-2xl border p-3 text-xs max-w-md"
                        style={{background:'rgba(255,255,255,.04)', borderColor: (bgDiag && bgDiag.plugin && bgDiag.service && bgDiag.notif) ? 'rgba(16,185,129,.5)':'rgba(245,158,11,.4)'}}>
                     <span className="w-2.5 h-2.5 shrink-0 rounded-full animate-pulse" style={{background:(bgDiag && bgDiag.plugin && bgDiag.service && bgDiag.notif)?'#10b981':'#f59e0b'}}/>
                     <span className="min-w-0 flex-1 text-white/70 leading-relaxed">
@@ -1843,8 +1884,7 @@ function ProfileView({ user, setUser, editUser, setEditUser, liked, playlists, l
                       <button onClick={bgPing} className="shrink-0 rounded-full border border-white/15 px-3 py-1.5 font-semibold text-white/70 hover:text-white">Re-check</button>
                     ) : null}
                     <button onClick={()=>{ npSetDisabled(!npDisabled()); showToast(npDisabled()? 'Native player OFF (safe mode)' : 'Native player ON'); setTimeout(bgPing, 800) }} className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[10px] font-semibold text-white/60 hover:text-white">{npDisabled()? 'Safe mode: ON' : 'Safe mode: off'}</button>
-                  </div>
-                )}
+                  </div></>) }catch(e){ return null } })() : null}
                 {authUser ? (
                   <div className="mt-4 flex items-center gap-3 p-3 rounded-2xl bg-white/5 border border-white/10 max-w-md">
                     <span className="w-8 h-8 shrink-0 rounded-full bg-[#D5AA55] text-black grid place-items-center text-sm font-bold">☁</span>

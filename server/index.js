@@ -253,6 +253,31 @@ app.get('/api/search', async (req,res)=>{
   res.json(sout)
 })
 
+app.get('/api/audiourl', async (req,res)=>{
+  // videoId → best audio stream URL (Piped instances, tried server-side; the APK then plays
+  // the mp3 in a plain <audio> element → no YouTube iframe policy → survives minimize/lock).
+  const vid = (req.query.vid||'').toString().trim().replace(/[^A-Za-z0-9_-]/g,'').slice(0,20)
+  if(!vid) return res.json({ url:null })
+  const ak = `au:${vid}`
+  const hit = memoGet(ak)
+  if(hit) return res.json(hit)
+  const hosts = [...new Set([req.query.host, ...PIPED_HOSTS].filter(Boolean))]
+  const ctl = new AbortController(); const tm = setTimeout(()=>ctl.abort(), 12000)
+  for(const host of hosts.slice(0,4)){
+    try{
+      const r = await fetch(`${host}/streams/${vid}`, { signal: ctl.signal, headers: { 'User-Agent':'Mozilla/5.0' } })
+      if(!r.ok) continue
+      const data = await r.json()
+      const a = (data.audioStreams||[]).filter(x=>x&&x.url)
+      const best = a.find(x=>String(x.mimeType||'').includes('mp4')) || a.find(x=>String(x.mimeType||'').includes('webm')) || a[0]
+      const url = best ? best.url : (data.hls||null)
+      if(url){ clearTimeout(tm); const out={ url }; memoSet(ak, out); return res.json(out) }
+    }catch(e){ continue }
+  }
+  clearTimeout(tm)
+  res.json({ url:null })
+})
+
 app.get('/api/tracks', async (req,res)=>{
   const cat = (req.query.category || 'All').toString()
   const limit = Math.min(parseInt(req.query.limit||'20'), 40)

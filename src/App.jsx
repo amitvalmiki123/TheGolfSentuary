@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
-import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio, searchSaavn, searchSuggestions, getLastSearchNextpage, fetchLyrics, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists } from './lib/api.js'
+import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio, resolveDirectAudio, searchSaavn, searchSuggestions, getLastSearchNextpage, fetchLyrics, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists } from './lib/api.js'
 import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
 import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npOpenNotifSettings, npPing, npLastCrash, npSetDisabled, npDisabled, npBridgeMode, hasNativeBridge, wvGuess } from './lib/nowplaying.js'
 
@@ -115,7 +115,7 @@ function getCategoryPlaylists(cat){
 
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
-function NpDiagCard({ toast }){
+function NpDiagCard({ toast, engine }){
   // Self-contained on purpose: ProfileView and App are different components — earlier this
   // card read App-scoped state from ProfileView's JSX and ReferenceError'd the whole app.
   const [svc, setSvc] = useState('')
@@ -154,7 +154,7 @@ function NpDiagCard({ toast }){
                 className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[10px] font-semibold text-white/60 hover:text-white">{npDisabled()? 'Safe mode: ON \u2014 tap OFF' : 'Safe mode: off'}</button>
       </div>
       <div className="mt-1.5 break-all opacity-60" style={{ fontFamily:'ui-monospace,monospace', fontSize:10 }}>
-        bridge:{npBridgeMode()} {bgDiag && bgDiag.diag ? ('\u00b7 ping: '+bgDiag.diag) : ''}
+        bridge:{npBridgeMode()} {engine ? ('\u00b7 audio: '+engine) : ''} {bgDiag && bgDiag.diag ? ('\u00b7 ping: '+bgDiag.diag) : ''}
       </div>
     </div>
   )
@@ -494,10 +494,10 @@ export default function App(){
     ;(async()=>{
       try{
         const cache = (window.__ytAudioCache = window.__ytAudioCache || {})
-        if(cache[vid]){ setYtDirect({id:vid, url:cache[vid]}); return }
-        const u = await resolvePipedAudio({ videoId: vid, host: current.host })
-        if(u && !cancelled){ cache[vid] = u; setYtDirect({id:vid, url:u}) }
-      }catch(e){}
+        if(vid in cache){ setYtDirect({id:vid, url:cache[vid]||''}); return }
+        const u = await resolveDirectAudio({ videoId: vid, host: current.host })
+        if(!cancelled) setYtDirect({id:vid, url:u||''})
+      }catch(e){ if(!cancelled) setYtDirect({id:vid, url:''}) }
     })()
     return ()=>{ cancelled = true }
   },[current && current.videoId])
@@ -1164,7 +1164,7 @@ export default function App(){
         <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-[#060306]"/>
       </div>
 
-      <audio ref={audioRef} src={current?.videoId ? (directFor || undefined) : current?.audio} preload="metadata" crossOrigin="anonymous" playsInline onError={()=>{ rescueTrack(current) }} />
+      <audio ref={audioRef} src={current?.videoId ? (directFor || undefined) : current?.audio} preload="metadata" crossOrigin="anonymous" playsInline onError={()=>{ if(current?.videoId && directFor){ try{ window.__ytAudioCache[String(current.videoId)] = ''; setYtDirect({id:null,url:''}); showToast('Direct link failed — player switched over') }catch(e){} } rescueTrack(current) }} />
       <div id="yt-player" style={{position:'absolute', left:'-9999px', width:'1px', height:'1px', overflow:'hidden', opacity:0, pointerEvents:'none'}} />
       {audioError && <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 bg-[#C35445] text-white px-4 py-2 rounded-full text-xs font-bold shadow-lg">{audioError}</div>}
 
@@ -1301,7 +1301,7 @@ export default function App(){
 
           <main className="flex-1 px-4 lg:px-6 py-6 pb-28 lg:pb-28 space-y-7">
             {nav==='profile' ? (
-              <ProfileView user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} />
+              <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : "yt-iframe (direct resolve pending/failed)") : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} />
             ) : nav==='search' ? (
               <>
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -1940,7 +1940,7 @@ export default function App(){
   )
 }
 
-function ProfileView({ user, setUser, editUser, setEditUser, liked, playlists, localSongs, downloaded, showToast, authUser, onSignIn, onSignOut, onDeleteAccount }){
+function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, playlists, localSongs, downloaded, showToast, authUser, onSignIn, onSignOut, onDeleteAccount }){
   const [tab, setTab] = useState("Overview")
   const isEditing = !!editUser
   const startEdit = ()=> setEditUser({...user})
@@ -1967,7 +1967,7 @@ function ProfileView({ user, setUser, editUser, setEditUser, liked, playlists, l
                   <div><div className="text-xl font-bold">{playlists.length}</div><div className="text-xs text-white/50">Playlists</div></div>
                   <div><div className="text-xl font-bold">{downloaded.length}</div><div className="text-xs text-white/50">Offline</div></div>
                 </div>
-                <NpDiagCard toast={showToast}/>
+                <NpDiagCard toast={showToast} engine={npEngine}/>
                 {authUser ? (
                   <div className="mt-4 flex items-center gap-3 p-3 rounded-2xl bg-white/5 border border-white/10 max-w-md">
                     <span className="w-8 h-8 shrink-0 rounded-full bg-[#D5AA55] text-black grid place-items-center text-sm font-bold">☁</span>

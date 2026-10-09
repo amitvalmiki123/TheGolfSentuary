@@ -2,6 +2,9 @@
 const PIPED_HOSTS = [
   "https://pipedapi.kavin.rocks",
   "https://pipedapi.adminforge.de",
+  "https://piapi.ggtyler.dev",
+  "https://pipedapi.drgns.space",
+  "https://pipedapi.leptos.at",
   "https://api.piped.private.coffee",
   "https://pipedapi.leptos.at"
 ]
@@ -144,6 +147,27 @@ export async function searchInvidious(query, limit=20){
 }
 
 // Resolve to direct googlevideo url (only for audio-element fallback, YT player doesn't need it)
+export async function resolveDirectAudio(track){
+  const vid = String((track&&track.videoId)||'').slice(0,20)
+  if(!vid) return null
+  if(typeof window!=='undefined'){
+    const cache = (window.__ytAudioCache = window.__ytAudioCache || {})
+    if(vid in cache) return cache[vid] || null
+  }
+  let url = null
+  if(BACKEND_URL){
+    try{
+      const ac = new AbortController(); const tm = setTimeout(()=>ac.abort(), 9000)
+      const r = await fetch(`${BACKEND_URL}/api/audiourl?vid=${vid}${track&&track.host?('&host='+encodeURIComponent(track.host)):''}`)
+      clearTimeout(tm)
+      if(r.ok){ const j = await r.json(); if(j && j.url) url = j.url }
+    }catch(e){}
+  }
+  if(!url){ try{ url = await resolvePipedAudio(track) }catch(e){} }
+  if(url && typeof window!=='undefined'){ try{ window.__ytAudioCache[vid] = url }catch(e){} }
+  return url || null
+}
+
 export async function resolvePipedAudio(track){
   if(track.audio && track.audio.startsWith('http')) return track.audio
   if(!track.videoId) return null

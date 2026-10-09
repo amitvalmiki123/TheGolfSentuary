@@ -18,7 +18,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 
-import androidx.core.app.NotificationCompat;
+// (framework-only: no androidx.media / NotificationCompat needed)
 
 import java.io.InputStream;
 import java.net.HttpURLConnection;
@@ -168,30 +168,32 @@ public class NowPlayingService extends Service {
   private Notification buildNotification() {
     int playIcon = playing ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play;
     String sub = artist + (album.isEmpty() || album.equals(artist) ? "" : " \u2022 " + album);
-    androidx.media.app.NotificationCompat.MediaStyle style =
-      new androidx.media.app.NotificationCompat.MediaStyle().setShowActionsInCompactView(0, 1, 2);
-    if (mediaSession != null) {
-      try {
-        style.setMediaSession(androidx.media.session.MediaSessionCompat.Token
-          .fromMediaSessionToken(mediaSession.getSessionToken()));
-      } catch (Exception ignored) {}
-    }
-    NotificationCompat.Builder b = new NotificationCompat.Builder(this, CHANNEL)
-      .setSmallIcon(getDrawableId())
+    Notification.Builder b = (Build.VERSION.SDK_INT >= 26)
+      ? new Notification.Builder(this, CHANNEL)
+      : new Notification.Builder(this);
+    b.setSmallIcon(getDrawableId())
       .setContentTitle(title)
       .setContentText(sub)
       .setContentIntent(openApp())
       .setDeleteIntent(bcast(ACTION_STOP))
-      .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+      .setVisibility(Notification.VISIBILITY_PUBLIC)
       .setOnlyAlertOnce(true)
       .setOngoing(playing)
-      .setPriority(NotificationCompat.PRIORITY_LOW)
-      .setStyle(style)
+      .setPriority(Notification.PRIORITY_LOW)
       .addAction(android.R.drawable.ic_media_previous, "Previous", bcast(ACTION_PREV))
       .addAction(playIcon, playing ? "Pause" : "Play", bcast(playing ? ACTION_PAUSE : ACTION_PLAY))
       .addAction(android.R.drawable.ic_media_next, "Next", bcast(ACTION_NEXT));
     if (art != null) b.setLargeIcon(art);
-    return b.build();
+    if (mediaSession != null) {
+      Notification.MediaStyle style = new Notification.MediaStyle()
+        .setMediaSession(mediaSession.getSessionToken())
+        .setShowActionsInCompactView(0, 1, 2);
+      b.setStyle(style);
+    }
+    if (Build.VERSION.SDK_INT >= 26) {
+      b.setColor(0xFFD5AA55);
+    }
+    return (Build.VERSION.SDK_INT >= 26) ? b.build() : b.getNotification();
   }
 
   private int getDrawableId() {

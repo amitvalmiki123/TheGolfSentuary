@@ -60,15 +60,5 @@ if os.path.exists(mf):
     open(mf, 'w').write(s)
     log('Manifest patched')
 
-# 3. app/build.gradle — androidx.media (MediaStyle notification support)
-gb = os.path.join('android', 'app', 'build.gradle')
-if os.path.exists(gb):
-    s = open(gb).read()
-    if 'androidx.media:media' not in s:
-        if 'dependencies {' in s:
-            s = s.replace('dependencies {', "dependencies {\n    implementation 'androidx.media:media:1.6.0'", 1)
-            open(gb, 'w').write(s)
-            log('build.gradle patched')
-        else:
-            log('WARN: dependencies block missing'); sys.exit(1)
+# 3. (no androidx deps needed — NowPlayingService uses framework APIs only)
 log('OK')

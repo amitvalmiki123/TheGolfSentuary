@@ -256,9 +256,10 @@ public class NowPlayingService extends Service {
   }
 
   private static int piFlags() {
-    int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-    if (Build.VERSION.SDK_INT >= 23) flags |= 0x40000000; // FLAG_IMMUTABLE
-    return flags;
+    // 0x04000000 == FLAG_IMMUTABLE (1<<26). The previous 0x40000000 was FLAG_ONE_SHOT —
+    // wrong bit: immutability was never declared, so Android 12+ threw IllegalArgumentException
+    // inside every buildNotification → silent fallback to the minimal placeholder notification.
+    return PendingIntent.FLAG_UPDATE_CURRENT | 0x04000000;
   }
 
   private PendingIntent bcast(String action) {

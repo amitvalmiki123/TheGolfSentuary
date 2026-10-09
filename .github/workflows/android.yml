@@ -1,0 +1,65 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ "arena/f257d954-thegolfsentuary", "main" ]
+    paths-ignore: [ "**.md" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install deps
+        run: npm install --legacy-peer-deps
+      - name: Build web app (APK points to Sur Sangam cloud API)
+        run: VITE_API_URL=https://sur-sangam-api.onrender.com npx vite build
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Android SDK check (preinstalled on runner image)
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls $ANDROID_HOME/platforms 2>/dev/null | head -5 || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --list_installed 2>/dev/null | grep -E "platforms;android-3[0-9]|build-tools" | head -6 || true
+
+      - name: Install Capacitor
+        run: npm i --legacy-peer-deps @capacitor/cli@6 @capacitor/core@6 @capacitor/android@6 @capacitor/app@6 @capacitor/splash-screen@6 @capacitor/status-bar@6
+
+      - name: Init + add Android
+        run: |
+          npx cap add android || true
+          npx cap sync android
+
+      - name: Apply brand (icons + adaptive + monochrome)
+        run: |
+          cp -r brand/android-res/. android/app/src/main/res/
+          ls android/app/src/main/res/mipmap-xxxhdpi/
+
+      - name: Add native NowPlaying plugin (background audio + lock-screen controls)
+        run: |
+          mkdir -p android/app/src/main/java/com/sursangam/app android/app/src/main/res/drawable
+          cp brand/android-native/NowPlayingService.java android/app/src/main/java/com/sursangam/app/
+          cp brand/android-native/NowPlayingPlugin.java android/app/src/main/java/com/sursangam/app/
+          cp brand/android-native/res/drawable/ic_stat_music.xml android/app/src/main/res/drawable/
+          python3 brand/android-native/patch_android.py
+
+      - name: Build Debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sur-sangam-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30

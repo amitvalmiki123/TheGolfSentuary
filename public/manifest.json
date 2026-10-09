@@ -1,0 +1,29 @@
+{
+  "name": "Sur Sangam Music: MP3 & Online Songs",
+  "short_name": "Sur Sangam",
+  "description": "Free online music player with millions of full songs \u2014 Punjabi, Hindi, Bollywood, 90s hits, Love & Indie. Fast search, playlists, liked songs, offline downloads & local MP3 support.",
+  "display": "standalone",
+  "background_color": "#060306",
+  "theme_color": "#060306",
+  "start_url": "/",
+  "scope": "/",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

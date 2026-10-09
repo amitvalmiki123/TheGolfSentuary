@@ -481,6 +481,26 @@ export default function App(){
   // ---- NATIVE background + lock-screen controls (foreground service plugin) ----
   // Android 13+: without POST_NOTIFICATIONS the media notification (and bg protection) can't exist — nudge + re-ask
   const bgPing = async()=>{ try{ const r = await npPing(); setBgDiag(r) }catch{ setBgDiag({plugin:false,service:false,notif:true}) } }
+  // ── Native background playback fix: YouTube's iframe player pauses itself when the page is
+  // hidden (cross-origin, unstoppable). Inside the APK we therefore resolve the SAME video to a
+  // direct mp3 stream (Piped) and play it through the plain <audio> element — no iframe policy,
+  // decoder stays alive, music survives minimize/lock. Web keeps the video UI.
+  const [ytDirect, setYtDirect] = useState({id:null, url:''})
+  const directFor = (current && current.videoId && ytDirect.id===String(current.videoId)) ? ytDirect.url : ''
+  useEffect(()=>{
+    if(!isNativeApp() || !current?.videoId) return
+    if(current.audio && String(current.audio).startsWith('http')) return
+    const vid = String(current.videoId); let cancelled=false
+    ;(async()=>{
+      try{
+        const cache = (window.__ytAudioCache = window.__ytAudioCache || {})
+        if(cache[vid]){ setYtDirect({id:vid, url:cache[vid]}); return }
+        const u = await resolvePipedAudio({ videoId: vid, host: current.host })
+        if(u && !cancelled){ cache[vid] = u; setYtDirect({id:vid, url:u}) }
+      }catch(e){}
+    })()
+    return ()=>{ cancelled = true }
+  },[current && current.videoId])
   // pick up last-run crash trace written by the native crash reporter
   useEffect(()=>{
     if(!isNativeApp()) return
@@ -550,7 +570,7 @@ export default function App(){
   window.__npKeepAlive = ()=>{
     try{
       if(!isPlaying || (scrubRef && scrubRef.current) || !current) return
-      if(current.videoId && ytPlayerRef.current){
+      if(current.videoId && !directFor && ytPlayerRef.current){
         const st = ytPlayerRef.current.getPlayerState && ytPlayerRef.current.getPlayerState()
         if(st !== undefined && st !== 1 && st !== -1) ytPlayerRef.current.playVideo()
       } else if(audioRef.current && audioRef.current.paused){
@@ -577,7 +597,7 @@ export default function App(){
         if(isPlaying) pushNpMeta()
         if(!isPlaying) return
         if(scrubRef && scrubRef.current) return
-        if(current && current.videoId && ytPlayerRef.current){
+        if(current && current.videoId && !directFor && ytPlayerRef.current){
           const st = ytPlayerRef.current.getPlayerState && ytPlayerRef.current.getPlayerState()
           if(st !== undefined && st !== 1 && st !== -1) ytPlayerRef.current.playVideo()
         } else if(audioRef.current && audioRef.current.paused){
@@ -623,7 +643,7 @@ export default function App(){
 
   // Sync progress for YouTube tracks
   useEffect(()=>{
-    if(!current?.videoId || !ytReady) return
+    if(!current?.videoId || !ytReady || directFor) return
     if(ytProgressRef.current) clearInterval(ytProgressRef.current)
     ytProgressRef.current = setInterval(()=>{
       const p = ytPlayerRef.current
@@ -637,7 +657,7 @@ export default function App(){
       }
     }, 500)
     return ()=> { if(ytProgressRef.current) clearInterval(ytProgressRef.current) }
-  },[current, ytReady])
+  },[current, ytReady, directFor])
 
   // audio — robust playback with error fallback + direct user-gesture play
   const [audioError, setAudioError] = useState(null)
@@ -661,7 +681,7 @@ export default function App(){
   useEffect(()=>{ const a=audioRef.current; if(a) a.volume = isMuted?0:volume },[volume,isMuted])
   // play/pause reacts to isPlaying + current change — handles both YouTube and audio
   useEffect(()=>{
-    if(current?.videoId){
+    if(current?.videoId && !directFor){
       const p = ytPlayerRef.current
       if(!p || !ytReadyRef.current) return
       try{
@@ -681,8 +701,12 @@ export default function App(){
       if(audioRef.current) audioRef.current.pause()
       return
     }
-    // non-YouTube: use audio element
+    // non-YouTube (or YouTube resolved to a direct mp3 in the APK): use audio element
     const a=audioRef.current; if(!a) return
+    if(current?.videoId && directFor){
+      const want = directFor
+      if(a.getAttribute('src') !== want){ try{ a.src = want; a.load() }catch(e){} }
+    }
     // pause YT if playing
     if(ytPlayerRef.current?.pauseVideo) try{ ytPlayerRef.current.pauseVideo() }catch{}
     if(isPlaying){
@@ -692,10 +716,10 @@ export default function App(){
       })
       if(a.readyState < 2){ a.load(); a.addEventListener('canplay', tryPlay, {once:true}); setTimeout(tryPlay, 200) } else tryPlay()
     } else a.pause()
-  },[isPlaying, currentIndex, queue, ytReady, current])
+  },[isPlaying, currentIndex, queue, ytReady, current, directFor])
   // when queue/current changes while playing, force reload (audio only — YT handled in playEffect)
   useEffect(()=>{
-    if(current?.videoId) return
+    if(current?.videoId && !directFor) return
     if(isPlaying && audioRef.current){
       audioRef.current.load()
       audioRef.current.play().catch(()=>{})
@@ -808,7 +832,7 @@ export default function App(){
   const showToast = (msg)=>{ setToast(msg); setTimeout(()=> setToast(null), 2200) }
 
   const togglePlay = ()=>{
-    if(current?.videoId && ytPlayerRef.current && ytReadyRef.current){
+    if(current?.videoId && ytPlayerRef.current && ytReadyRef.current && !directFor){
       if(isPlaying){
         try{ ytPlayerRef.current.pauseVideo() }catch{}
         setIsPlaying(false)
@@ -830,8 +854,8 @@ export default function App(){
     const a=audioRef.current; if(a && a.currentTime>3){ a.currentTime=0; return }
     setCurrentIndex(i=> (i-1+queue.length)%queue.length)
   }
-  const seek = e=>{ const v=Number(e.target.value); if(current?.videoId && ytPlayerRef.current?.seekTo){ try{ ytPlayerRef.current.seekTo(v, true); setProgress(v) }catch{} return } if(audioRef.current){ audioRef.current.currentTime=v; setProgress(v)} }
-  const seekToTime = (v)=>{ if(!current) return; v=Math.max(0, Math.min(v, duration||v)); if(current.videoId && ytPlayerRef.current?.seekTo){ try{ ytPlayerRef.current.seekTo(v, true); setProgress(v); return }catch{} } if(audioRef.current){ try{ audioRef.current.currentTime=v }catch{} setProgress(v) } }
+  const seek = e=>{ const v=Number(e.target.value); if(current?.videoId && !directFor && ytPlayerRef.current?.seekTo){ try{ ytPlayerRef.current.seekTo(v, true); setProgress(v) }catch{} return } if(audioRef.current){ audioRef.current.currentTime=v; setProgress(v)} }
+  const seekToTime = (v)=>{ if(!current) return; v=Math.max(0, Math.min(v, duration||v)); if(current.videoId && !directFor && ytPlayerRef.current?.seekTo){ try{ ytPlayerRef.current.seekTo(v, true); setProgress(v); return }catch{} } if(audioRef.current){ try{ audioRef.current.currentTime=v }catch{} setProgress(v) } }
   const scrubRef = useRef(false)
   const scrubTo = (clientX, el)=>{ const r = el.getBoundingClientRect(); const frac = Math.max(0, Math.min(1, (clientX - r.left)/r.width)); seekToTime(frac * (duration||0)) }
   // playback rescue — YT/piped link toote: naya working URL dhundo (Saavn CDN ya piped resolve), swap + resume

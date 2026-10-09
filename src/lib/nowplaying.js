@@ -9,9 +9,11 @@ const getCap = () => { try{ return window.Capacitor || null }catch{ return null 
 const getProxy = () => { const c = getCap(); try{ return (c && c.Plugins && c.Plugins.NowPlaying) || null }catch{ return null } }
 const hasRawBridge = () => { try{ return !!(window.androidBridge && typeof window.androidBridge.postMessage === 'function') }catch{ return false } }
 
-let _nat = null
+let _nat = false
+// NOTE: only a POSITIVE result may be cached. The bridge is injected asynchronously —
+// memoizing a false at module-eval time once disabled every native call for the whole session.
 export function isNativeApp(){
-  if(_nat !== null) return _nat
+  if(_nat) return true
   try{
     const cap = getCap()
     const viaCap = !!(cap && ((typeof cap.isNativePlatform==='function' && cap.isNativePlatform()) || cap.isNative))
@@ -20,7 +22,15 @@ export function isNativeApp(){
     const localHost = typeof location!=='undefined' && location.protocol==='https:' && /^(localhost|127\.0\.0\.1|10\.0\.2\.2)$/.test(location.hostname)
     _nat = viaCap || hasRawBridge() || (inWebView && localHost)
   }catch{ _nat = false }
+  if(_nat) { try{ window.__npNative = true }catch{} }
   return _nat
+}
+export function hasNativeBridge(){ return !!(getProxy() || hasRawBridge()) }
+export function wvGuess(){
+  try{
+    const ua = (typeof navigator!=='undefined' && navigator.userAgent) || ''
+    return /;\s*wv\)/.test(ua) || (typeof location!=='undefined' && location.protocol==='https:' && /^(localhost|127\.0\.0\.1|10\.0\.2\.2)$/.test(location.hostname))
+  }catch{ return false }
 }
 
 function rawCall(method, opts){
@@ -72,7 +82,7 @@ export async function npPing(){
   if(!p || !p.ping) return { plugin: hasRawBridge() || isNativeApp(), service:false, notif:true, raw: hasRawBridge() }
   try{
     const r = await Promise.race([ p.ping(), new Promise((_,rej)=> setTimeout(()=>rej(new Error('timeout')), 2500)) ])
-    return { plugin:true, service: !!(r && r.service), notif: !(r && r.notif===false) }
+    return { plugin:true, service: !!(r && r.service), notif: !(r && r.notif===false), diag: (r && r.diag) || '' }
   }catch(e){ return { plugin:false, service:false, notif:true } }
 }
 

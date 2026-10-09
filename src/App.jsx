@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
 import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio, searchSaavn, searchSuggestions, getLastSearchNextpage, fetchLyrics, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists } from './lib/api.js'
 import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
-import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npOpenNotifSettings, npPing, npLastCrash, npSetDisabled, npDisabled, npBridgeMode } from './lib/nowplaying.js'
+import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npOpenNotifSettings, npPing, npLastCrash, npSetDisabled, npDisabled, npBridgeMode, hasNativeBridge, wvGuess } from './lib/nowplaying.js'
 
 const BASE = import.meta.env.BASE_URL || '/'
 // In the native app (Capacitor WebView) pretend the page is always visible — stops the
@@ -471,7 +471,8 @@ export default function App(){
     return ()=>{ try{ if(typeof off==='function') off() }catch{} }
   },[])
   useEffect(()=>{
-    if(!isNativeApp()) return
+    // No isNativeApp() gate: npUpdate self-noops when no bridge exists (browser) — a
+    // mis-detected native app must NEVER be able to kill the notification metadata flow.
     if(!current){ npStop(); return }
     npUpdate({
       title: String(current.title||'').slice(0,140),
@@ -482,7 +483,7 @@ export default function App(){
     })
   },[current && current.id, isPlaying])
   const pushNpMeta = ()=>{
-    if(!isNativeApp() || !current) return
+    if(!current) return
     npUpdate({
       title: String(current.title||'').slice(0,140),
       artist: String(current.artist||'').slice(0,140),
@@ -494,7 +495,6 @@ export default function App(){
   // Native watchdog: (a) re-push now-playing meta so notification NEVER sticks to placeholder,
   // (b) agar WebView background me media suspend kare to wapas resume — lock pe bhi music chalta rahe
   useEffect(()=>{
-    if(!isNativeApp()) return
     const id = setInterval(()=>{
       try{
         if(isPlaying) pushNpMeta()
@@ -1870,12 +1870,13 @@ function ProfileView({ user, setUser, editUser, setEditUser, liked, playlists, l
                        style={{background:'rgba(255,255,255,.04)', borderColor: (bgDiag && bgDiag.plugin && bgDiag.service && bgDiag.notif) ? 'rgba(16,185,129,.5)':'rgba(245,158,11,.4)'}}>
                     <span className="w-2.5 h-2.5 shrink-0 rounded-full animate-pulse" style={{background:(bgDiag && bgDiag.plugin && bgDiag.service && bgDiag.notif)?'#10b981':'#f59e0b'}}/>
                     <span className="min-w-0 flex-1 text-white/70 leading-relaxed">
-                      {(!isNativeApp() ? 'Bridge: not detected' : 'bridge:'+npBridgeMode())+' • '}{!bgDiag ? 'Background playback: checking…' :
+                      {(isNativeApp()||hasNativeBridge() ? 'bridge:'+npBridgeMode() : 'bridge: not detected')+' • '}{!bgDiag ? 'Background player: checking…' :
                        !bgDiag.plugin ? 'Background player engine not loaded — reinstall the latest APK (Actions → sur-sangam-apk).' :
                        !bgDiag.notif ? 'Notifications are OFF — background music + lock-screen controls need them on.' :
                        !bgDiag.service ? 'Service idle right now — start a song; if it still won’t play after locking, tap Fix.' :
                        'Background playback + lock-screen controls ACTIVE ✓'}
                     </span>
+                    {bgDiag && bgDiag.diag ? <div className="w-full break-all opacity-70" style={{fontFamily:'ui-monospace,monospace',fontSize:10}}>svc: {bgDiag.diag}</div> : null}
                     {bgDiag && !bgDiag.notif ? (
                       <button onClick={()=> npOpenNotifSettings()} className="shrink-0 rounded-full bg-white px-3 py-1.5 font-bold text-black hover:bg-white/90">Turn on</button>
                     ) : bgDiag && bgDiag.plugin && !bgDiag.service ? (

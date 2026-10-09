@@ -117,7 +117,7 @@ if os.path.exists(mf):
             '<service\n        android:name=".NowPlayingService"\n'
             '        android:foregroundServiceType="mediaPlayback"\n'
             '        android:exported="false"\n'
-            '        android:stopWithTask="false" />\n    </application>', 1)
+            '        android:stopWithTask="true" />\n    </application>', 1)
     open(mf, 'w').write(s)
     log('Manifest patched')
 

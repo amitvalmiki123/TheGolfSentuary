@@ -53,6 +53,16 @@ public class NowPlayingService extends Service {
   private volatile String artist = "Music";
   private volatile String album = "";
   private volatile boolean playing = false;
+  public static volatile String lastBuildErr = "";
+
+  // One-line self-report surfaced all the way to the in-app status card (no adb needed).
+  public static String diag() {
+    NowPlayingService sv = instance;
+    if (sv == null) return "service OFF" + (lastBuildErr.isEmpty()?"":(" | " + lastBuildErr));
+    return "on | title=" + (sv.title.length() > 26 ? sv.title.substring(0,26) : sv.title)
+      + " | playing=" + sv.playing + " | session=" + (sv.mediaSession != null)
+      + (lastBuildErr.isEmpty() ? "" : " | " + lastBuildErr);
+  }
 
   @Override
   public void onCreate() {
@@ -109,7 +119,9 @@ public class NowPlayingService extends Service {
     startForegroundNow();
     handleFocus();
     setWake(playing);
-    return START_STICKY;
+    // NOT_STICKY: when the user swipes the app away from recents the notification
+    // must die with it (explicit requirement) — no zombie placeholder allowed.
+    return START_NOT_STICKY;
   }
 
   private void setWake(boolean on) {
@@ -228,7 +240,11 @@ public class NowPlayingService extends Service {
     // Always foreground while the app runs (ongoing flag only while playing). This keeps the
     // process non-cached → WebView timers keep ticking → playback/watchdog survive minimize/lock.
     Notification n;
-    try { n = buildNotification(); } catch (Exception e) { n = buildMinimal(); }
+    try { n = buildNotification(); }
+    catch (Exception e) {
+      lastBuildErr = "notif: " + e;
+      n = buildMinimal();
+    }
     try {
       if (Build.VERSION.SDK_INT >= 29) {
         startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
@@ -236,8 +252,9 @@ public class NowPlayingService extends Service {
         startForeground(NOTIF_ID, n);
       }
     } catch (Exception e1) {
+      lastBuildErr = "fgs: " + e1;
       try { startForeground(NOTIF_ID, buildMinimal()); }
-      catch (Exception e2) { try { stopSelf(); } catch (Exception ignored) {} }
+      catch (Exception e2) { lastBuildErr = "fgs2: " + e2; try { stopSelf(); } catch (Exception ignored) {} }
     }
   }
 
@@ -284,10 +301,23 @@ public class NowPlayingService extends Service {
     }).start();
   }
 
+  @Override
+  public void onTaskRemoved(Intent rootIntent) {
+    // App swiped away from recents → full stop: cancel media notification, let JS know.
+    try { send("stop"); } catch (Exception ignored) {}
+    try { stopSelf(); } catch (Exception ignored) {}
+    super.onTaskRemoved(rootIntent);
+  }
+
   // Notification action button taps land here
   @Override
   public void onDestroy() {
     setWake(false);
+    try {
+      android.app.NotificationManager nm = getSystemService(android.app.NotificationManager.class);
+      if (nm != null) nm.cancel(NOTIF_ID);
+    } catch (Exception ignored) {}
+    try { if (Build.VERSION.SDK_INT >= 24) stopForeground(Service.STOP_FOREGROUND_REMOVE); else stopForeground(true); } catch (Exception ignored) {}
     if (mediaSession != null) { mediaSession.setActive(false); mediaSession.release(); }
     instance = null;
     super.onDestroy();

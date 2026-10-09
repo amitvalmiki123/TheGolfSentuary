@@ -85,6 +85,7 @@ public class NowPlayingPlugin extends Plugin {
         g = ContextCompat.checkSelfPermission(getContext(), Manifest.permission.POST_NOTIFICATIONS)
             == PackageManager.PERMISSION_GRANTED;
       r.put("notif", g);
+      r.put("diag", NowPlayingService.diag());
     } catch (Exception ignored) {}
     call.resolve(r);
   }

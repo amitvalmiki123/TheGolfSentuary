@@ -23,8 +23,33 @@ public class NowPlayingPlugin extends Plugin {
   private boolean resumed() {
     try {
       Activity a = getActivity();
-      return a != null && a.isResumed();
+      if (a == null) return false;
+      // isResumed() lives on FragmentActivity (androidx) — framework Activity has no such method
+      if (a instanceof androidx.fragment.app.FragmentActivity)
+        return ((androidx.fragment.app.FragmentActivity) a).isResumed();
+      return true; // unknown host type: assume interactive (every dispatch below is still guarded)
     } catch (Exception e) { return false; }
+  }
+
+  // Timer-based self-heal: if we had to defer (activity not resumed), retry on the main
+  // looper — independent of any lifecycle event reaching us.
+  private void retryPending(final int n) {
+    if (n <= 0) return;
+    new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
+      @Override public void run() {
+        Intent i = pending;
+        if (i == null) return;
+        if (resumed()) {
+          pending = null;
+          try {
+            if (Build.VERSION.SDK_INT >= 26) getContext().startForegroundService(i);
+            else getContext().startService(i);
+            return;
+          } catch (Throwable t) { pending = i; }
+        }
+        retryPending(n - 1);
+      }
+    }, 1500);
   }
 
   // Resumed → start as FOREGROUND service (background protection).
@@ -41,6 +66,7 @@ public class NowPlayingPlugin extends Plugin {
       } catch (Throwable ignored) {}
     }
     pending = i;
+    retryPending(10);
     try { getContext().startService(i); } catch (Throwable ignored) {}
   }
 

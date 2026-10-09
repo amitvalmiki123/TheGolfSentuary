@@ -77,7 +77,7 @@ public class NowPlayingService extends Service {
               // SVC|<playing>|<title|engine|E:buildErr|NO-META if the app never wrote state>
               String err = "";
               if (lastBuildErr.length() > 0) {
-                String e2 = lastBuildErr.replaceAll("[^a-zA-Z0-9:. _\-]", "").substring(0, Math.min(24, lastBuildErr.length()));
+                String e2 = lastBuildErr.replaceAll("[^a-zA-Z0-9:. _-]", "").substring(0, Math.min(24, lastBuildErr.length()));
                 err = "|E" + e2;
               }
               w.evaluateJavascript(

@@ -54,6 +54,26 @@ public class NowPlayingPlugin extends Plugin {
   }
 
   @PluginMethod
+  public void lastCrash(PluginCall call) {
+    JSObject r = new JSObject();
+    String txt = "";
+    try {
+      java.io.File f = new java.io.File(getContext().getFilesDir(), "crash.txt");
+      if (f.exists()) {
+        java.io.BufferedReader rd = new java.io.BufferedReader(new java.io.FileReader(f));
+        StringBuilder sb = new StringBuilder();
+        String line; int n = 0;
+        while ((line = rd.readLine()) != null && n++ < 220) sb.append(line).append('\n');
+        rd.close();
+        txt = sb.toString();
+        f.delete();
+      }
+    } catch (Throwable ignored) {}
+    try { r.put("trace", txt); } catch (Throwable ignored) {}
+    call.resolve(r);
+  }
+
+  @PluginMethod
   public void ping(PluginCall call) {
     JSObject r = new JSObject();
     try {

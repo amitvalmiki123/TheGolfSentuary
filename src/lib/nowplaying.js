@@ -1,5 +1,8 @@
 // Native NowPlaying bridge — Capacitor plugin (foreground service + lock-screen media controls).
 // On web/PWA these are no-ops (browser MediaSession handles it there).
+export function npDisabled(){ try{ return localStorage.getItem('np_off')==='1' }catch{ return false } }
+export function npSetDisabled(v){ try{ v? localStorage.setItem('np_off','1') : localStorage.removeItem('np_off') }catch{} }
+
 const getPlugin = () => {
   try{ return (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NowPlaying) || null }catch{ return null }
 }
@@ -7,6 +10,7 @@ export const isNativeApp = () => {
   try{ return !!(window.Capacitor && ((window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) || window.Capacitor.isNative)) }catch{ return false }
 }
 export function npStart(onAction){
+  if(npDisabled()) return ()=>{}
   let p = null, stopped = false, tries = 0
   const setup = ()=>{
     if(stopped) return
@@ -21,6 +25,7 @@ export function npStart(onAction){
   return ()=>{ stopped = true; try{ p && p.removeAllListeners && p.removeAllListeners('mediaAction') }catch{} }
 }
 export function npUpdate(meta){
+  if(npDisabled()) return
   const p = getPlugin()
   if(!p) return
   try{ p.update && p.update(meta).catch(()=>{}) }catch{}
@@ -52,4 +57,10 @@ export async function npPing(){
     const r = await Promise.race([ p.ping(), new Promise((_,rej)=> setTimeout(()=>rej(new Error('timeout')), 2500)) ])
     return { plugin:true, service: !!(r && r.service), notif: !(r && r.notif===false) }
   }catch(e){ return { plugin:false, service:false, notif:true } }
+}
+
+export async function npLastCrash(){
+  const p = getPlugin()
+  if(!p || !p.lastCrash) return ''
+  try{ const r = await p.lastCrash(); return (r && r.trace) || '' }catch{ return '' }
 }

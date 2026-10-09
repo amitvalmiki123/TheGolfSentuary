@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
 import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio, searchSaavn, searchSuggestions, getLastSearchNextpage, fetchLyrics, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists } from './lib/api.js'
 import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
-import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npOpenNotifSettings, npPing } from './lib/nowplaying.js'
+import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npOpenNotifSettings, npPing, npLastCrash, npSetDisabled, npDisabled } from './lib/nowplaying.js'
 
 const BASE = import.meta.env.BASE_URL || '/'
 // In the native app (Capacitor WebView) pretend the page is always visible — stops the
@@ -123,6 +123,8 @@ export default function App(){
   const [lyrics, setLyrics] = useState(null)
   const [npPermBar, setNpPermBar] = useState(false)
   const [bgDiag, setBgDiag] = useState(null)
+  const [crashTrace, setCrashTrace] = useState('')
+  const [crashOpen, setCrashOpen] = useState(false)
   const [lyricsLoading, setLyricsLoading] = useState(false)
   const lyricsBoxRef = useRef(null)
   const lyricSeqRef = useRef(0)
@@ -400,6 +402,13 @@ export default function App(){
   // ---- NATIVE background + lock-screen controls (foreground service plugin) ----
   // Android 13+: without POST_NOTIFICATIONS the media notification (and bg protection) can't exist — nudge + re-ask
   const bgPing = async()=>{ try{ const r = await npPing(); setBgDiag(r) }catch{ setBgDiag({plugin:false,service:false,notif:true}) } }
+  // pick up last-run crash trace written by the native crash reporter
+  useEffect(()=>{
+    if(!isNativeApp()) return
+    let alive = true
+    npLastCrash().then(t=>{ if(alive && t && t.trim()){ setCrashTrace(t.trim()); setCrashOpen(true) } }).catch(()=>{})
+    return ()=>{ alive = false }
+  },[])
   useEffect(()=>{
     if(!isNativeApp()) return
     let alive = true
@@ -1704,6 +1713,22 @@ export default function App(){
             </div>
           )}
 
+          {crashTrace && crashOpen && (
+            <div className="fixed inset-0 z-[90] grid place-items-center p-4">
+              <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={()=> setCrashOpen(false)}/>
+              <div className="relative w-full max-w-lg glass-strong rounded-[20px] p-5 border border-red-500/30">
+                <h3 className="font-bold text-red-300 flex items-center gap-2">⚠︎ App crashed last time</h3>
+                <p className="text-xs text-white/60 mt-1">Ye trace developer ke liye hai — Copy karke bhej do. Iske baad Safe-mode se native player off karke bhi chala sakte ho.</p>
+                <pre className="mt-3 max-h-[36vh] overflow-auto rounded-xl bg-black/50 border border-white/10 p-3 text-[10px] leading-relaxed text-white/80 whitespace-pre-wrap break-all">{crashTrace}</pre>
+                <div className="mt-4 flex flex-wrap gap-2 justify-end">
+                  <button onClick={()=>{ try{ navigator.clipboard.writeText(crashTrace); showToast? showToast('Crash trace copied') : null }catch{ try{ const ta=document.createElement('textarea'); ta.value=crashTrace; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove() }catch{} } }} className="rounded-full bg-white px-4 py-2 text-xs font-bold text-black hover:bg-white/90">Copy trace</button>
+                  <button onClick={()=>{ npSetDisabled(true); showToast('Safe mode ON — app is restarting without native player…'); setTimeout(()=>{ try{ location.reload() }catch{} }, 600) } } className="rounded-full border border-amber-400/40 bg-amber-400/15 px-4 py-2 text-xs font-bold text-amber-200">Safe mode ON + reload</button>
+                  <button onClick={()=> setCrashOpen(false)} className="rounded-full border border-white/15 px-4 py-2 text-xs font-semibold text-white/70">Close</button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Modals */}
           {showAuth && (
             <div className="fixed inset-0 z-[70] grid place-items-center p-4"><div onClick={()=> setShowAuth(false)} className="absolute inset-0 bg-black/70 backdrop-blur-sm"/><div className="relative w-full max-w-sm glass-strong rounded-[24px] p-6">
@@ -1817,6 +1842,7 @@ function ProfileView({ user, setUser, editUser, setEditUser, liked, playlists, l
                     ) : bgDiag && bgDiag.plugin && bgDiag.service && bgDiag.notif ? (
                       <button onClick={bgPing} className="shrink-0 rounded-full border border-white/15 px-3 py-1.5 font-semibold text-white/70 hover:text-white">Re-check</button>
                     ) : null}
+                    <button onClick={()=>{ npSetDisabled(!npDisabled()); showToast(npDisabled()? 'Native player OFF (safe mode)' : 'Native player ON'); setTimeout(bgPing, 800) }} className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[10px] font-semibold text-white/60 hover:text-white">{npDisabled()? 'Safe mode: ON' : 'Safe mode: off'}</button>
                   </div>
                 )}
                 {authUser ? (

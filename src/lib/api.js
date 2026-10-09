@@ -18,7 +18,7 @@ const CORS_PROXIES = [
   (url) => `https://yacdn.org/proxy/${url}`,
   (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`
 ]
-const BACKEND_URL = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_URL) ? import.meta.env.VITE_API_URL : ''
+const BACKEND_URL = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_URL) ? import.meta.env.VITE_API_URL : 'https://sur-sangam-api.onrender.com'
 // Try backend first (if running), fallback to direct Piped/Saavn — works in memory mode too
 const SAavn_ENDPOINTS = [
   (q, limit) => `https://saavn.dev/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}`,
@@ -424,6 +424,20 @@ const _catCache = new Map()
 export async function trendingByCategory(cat, limit=20, offset=0){
   // 5-min session cache — re-click karte hi instant
   try{ const cc = _catCache.get(`${cat}|${limit}`); if(cc && Date.now()-cc.at < 5*60*1000) return cc.val }catch{}
+  // BACKEND-FIRST (works from inside the APK too): server does Saavn live search — no WebView
+  // CORS/DNS issues, real full-length tracks, no YouTube-only fallback like before.
+  if(BACKEND_URL){
+    try{
+      const ac = new AbortController(); const tm = setTimeout(()=> ac.abort(), 6000)
+      const r = await fetch(`${BACKEND_URL}/api/trending?cat=${encodeURIComponent(cat)}&limit=${limit}`, { headers:{'Accept':'application/json'}, signal: ac.signal })
+      clearTimeout(tm)
+      if(r.ok){
+        const data = await r.json()
+        const real = (data.tracks||[]).filter(x=> x && x.audio && String(x.audio).startsWith('http'))
+        if(real.length >= 6){ try{ _catCache.set(`${cat}|${limit}`, { at: Date.now(), val: real.slice(0,limit) }) }catch{}; return real.slice(0, limit) }
+      }
+    }catch(e){}
+  }
   // Try backend first (DB + live) — fast like JioSaavn; 2.6s to-out = direct path le lagega
   if(BACKEND_URL || SELF_HOSTED || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV)){
     try{

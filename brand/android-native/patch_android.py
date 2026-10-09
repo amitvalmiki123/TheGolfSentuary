@@ -64,7 +64,23 @@ public class MainActivity extends BridgeActivity {
     public static volatile android.webkit.WebView npWebView;
 
     private void bindNpWebView() {
-        try { npWebView = getBridge().getWebView(); } catch (Throwable ignored) {}
+        try { android.webkit.WebView w = getBridge().getWebView(); if (w != null) { npWebView = w; return; } } catch (Throwable ignored) {}
+        // Fallback: the bridge may fail to expose its view — the ACTUAL on-screen WebView is
+        // authoritative for the zero-bridge eval channel, so find it in the view tree.
+        try { npWebView = findWV(findViewById(android.R.id.content)); } catch (Throwable ignored) {}
+    }
+
+    private static android.webkit.WebView findWV(android.view.View v) {
+        if (v == null) return null;
+        if (v instanceof android.webkit.WebView) return (android.webkit.WebView) v;
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                android.webkit.WebView w = findWV(g.getChildAt(i));
+                if (w != null) return w;
+            }
+        }
+        return null;
     }
 
     @Override
@@ -73,6 +89,9 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(NowPlayingPlugin.class);
         super.onCreate(savedInstanceState);
         bindNpWebView();
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
+            @Override public void run() { bindNpWebView(); }
+        }, 1600);
         // Plain startService ONLY (no FGS obligation → cannot crash the process). The service
         // itself calls startForeground inside try/catch — while the app is foreground this is
         // always permitted, so the media notification + bg protection exist from app launch.

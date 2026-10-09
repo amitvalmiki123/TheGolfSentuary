@@ -48,46 +48,64 @@ public class NowPlayingService extends Service {
     try {
       final android.webkit.WebView w = MainActivity.npWebView;
       if (w == null) return;
+      // ---- PRIMARY zero-bridge channel: app writes document.title = "NP|<playing>|<title>|<artist>"
+      try {
+        String tt = w.getTitle();
+        if (tt != null && tt.startsWith("NP|")) {
+          String[] p = tt.split("\\|", 4);
+          if (p.length >= 4) {
+            boolean pl = "1".equals(p[1]);
+            String t = p[2].trim(); String a = p[3].trim();
+            boolean changed = !t.equals(title) || !a.equals(artist) || pl != playing;
+            if (!t.isEmpty()) title = t;
+            if (!a.isEmpty()) artist = a;
+            playing = pl;
+            if (changed) { updateSession(); startForegroundNow(); }
+            setWake(playing);
+          }
+        }
+      } catch (Exception ignored) {}
+      // ---- SECONDARY: richer fields (album/cover) via eval; keep-alive nudge; heartbeat
       w.evaluateJavascript(
-        "(function(){try{var n=window.__np||{};return JSON.stringify({t:n.title||'',a:n.artist||'',al:n.album||'',p:!!n.playing,art:n.artUrl||''})}catch(e){return '{}'}})()",
+        "(function(){try{var n=window.__np||{};return JSON.stringify({t:n.title||'',a:n.artist||'',al:n.album||'',p:!!n.playing,art:n.artUrl||'',e:n.engine||''})}catch(e){return '{}'}})()",
         new android.webkit.ValueCallback<String>() {
           @Override public void onReceiveValue(String raw) {
             try {
               String j = raw == null ? "{}" : raw;
               if (j.length() > 1 && j.charAt(0) == '"') j = j.substring(1, j.length() - 1);
-              j = j.replace("\\\"", "\"").replace("\\/", "/").replace("\\n", " ");
+              j = j.replace("\\\"", "\"").replace("\\/", "/");
               org.json.JSONObject o = new org.json.JSONObject(j);
-              String t = o.optString("t"); String a = o.optString("a"); String al = o.optString("al");
-              boolean pl = o.optBoolean("p");
+              String al = o.optString("al");
               String art = o.optString("art");
-              boolean changed = !t.equals(title) || !a.equals(artist) || pl != playing;
-              if (!t.isEmpty()) title = t;
-              artist = a.isEmpty() ? "Music" : a;
-              album = al;
-              playing = pl;
-              if (!art.isEmpty() && !art.equals(artUrlLoaded)) loadArt(art);
-              updateSession();
-              if (changed) startForegroundNow();
-              setWake(playing);
-              // If we believe it should be playing, tell the WebView player to make sure of it
-              // (YouTube's iframe auto-pauses when the page is hidden — this un-pauses within ~1.2s,
-              // even while the Activity is stopped, since the service's main-looper keeps ticking).
-              if (playing) w.evaluateJavascript("try{window.__npKeepAlive&&window.__npKeepAlive()}catch(e){}", null);
-              // Heartbeat back to JS (card shows it even when the Capacitor bridge is dead):
-              // SVC|<playing>|<title|engine|E:buildErr|NO-META if the app never wrote state>
-              String err = "";
-              if (lastBuildErr.length() > 0) {
-                String e2 = lastBuildErr.replaceAll("[^a-zA-Z0-9:. _-]", "").substring(0, Math.min(24, lastBuildErr.length()));
-                err = "|E" + e2;
+              String t = o.optString("t");
+              if (!t.isEmpty()) { String a = o.optString("a"); boolean pl = o.optBoolean("p");
+                boolean changed = !t.equals(title) || pl != playing;
+                title = t; if (!a.isEmpty()) artist = a; album = al; playing = pl;
+                if (changed) { updateSession(); startForegroundNow(); }
+                setWake(playing);
               }
-              w.evaluateJavascript(
-                "try{var n=window.__np||{};var info=((n.title||'NO-META')+'|'+(n.engine||'-')+'"+err+"').slice(0,46);"
-              + "document.title='SVC|"+(pl?"1":"0")+"|'+encodeURIComponent(info)}catch(e){}", null);
+              if (!art.isEmpty() && !art.equals(artUrlLoaded)) loadArt(art);
             } catch (Exception ignored) {}
           }
         });
+      if (playing) {
+        try { w.evaluateJavascript("try{window.__npKeepAlive&&window.__npKeepAlive()}catch(e){}", null); } catch (Throwable ignored) {}
+      }
+      // ---- heartbeat for the in-app card (hidden #__svc div; title stays owned by the app)
+      String info = "tick " + (playing ? "PLAYING" : "paused") + " | " + js(title) + " | " + js(artist)
+        + (lastBuildErr.length() > 0 ? " | E:" + js(crop(lastBuildErr, 24)) : "");
+      try {
+        w.evaluateJavascript("try{var d=document.getElementById('__svc');if(!d){d=document.createElement('div');d.id='__svc';d.style.display='none';document.body.appendChild(d)}d.textContent='" + info + "'}catch(e){}", null);
+      } catch (Throwable ignored) {}
     } catch (Throwable ignored) {}
   }
+
+  private static String js(String x) {
+    if (x == null) return "";
+    return x.replace("\\", " ").replace("'", " ").replace("\"", " ").replace("\n", " ").replace("\r", " ").replace("<", "(").replace(">", ")");
+  }
+  private static String crop(String x, int n) { return x == null ? "" : (x.length() <= n ? x : x.substring(0, n)); }
+
 
   public interface ActionListener { void onAction(String action); }
   public static volatile ActionListener listener;
@@ -140,6 +158,13 @@ public class NowPlayingService extends Service {
   private void send(String a) {
     ActionListener l = listener;
     if (l != null) { try { l.onAction(a); } catch (Exception ignored) {} }
+    // Zero-bridge path: talk straight to the page. Notification buttons keep working even
+    // if the Capacitor plugin/bridge never initialized.
+    try {
+      android.webkit.WebView w = MainActivity.npWebView;
+      if (w != null && ("play".equals(a) || "pause".equals(a) || "next".equals(a) || "prev".equals(a) || "stop".equals(a)))
+        w.evaluateJavascript("try{window.__npAct&&window.__npAct('" + a + "')}catch(e){}", null);
+    } catch (Throwable ignored) {}
   }
 
   @Override

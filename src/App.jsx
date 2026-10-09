@@ -115,6 +115,42 @@ function getCategoryPlaylists(cat){
 
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
+function NpDiagCard({ bgDiag, bgPing, toast }){
+  const [svc, setSvc] = useState('')
+  const T = toast || (()=>{})
+  useEffect(()=>{
+    const tick = ()=>{ try{ const el = document.getElementById('__svc'); setSvc((el && el.textContent) || '') }catch(e){ setSvc('') } }
+    tick(); const id = setInterval(tick, 1500)
+    return ()=> clearInterval(id)
+  },[])
+  let np = null
+  try{ const m = /^NP\|(\d)\|([^|]*)\|(.*)$/.exec(document.title||''); if(m) np = { play: m[1]==='1', title:(m[2]||'').trim(), artist:(m[3]||'').trim() } }catch(e){}
+  const ok = !!(bgDiag && bgDiag.plugin && bgDiag.service && bgDiag.notif)
+  const link = np ? ('app→svc: '+(np.play?'\u25b6 playing':'\u23f8 paused')+' \u00b7 '+(np.title||'')) : 'app\u2192svc: idle'
+  const svcTxt = svc ? ('svc\u2192app: '+svc) : ('svc\u2192app: '+(isNativeApp()||hasNativeBridge()||wvGuess() ? 'no heartbeat (ticker dead)' : 'browser \u2014 native engine not present'))
+  return (
+    <div className="mt-4 rounded-2xl border p-3 text-xs max-w-md"
+         style={{ background:'rgba(255,255,255,.04)', borderColor: ok? 'rgba(16,185,129,.5)' : 'rgba(245,158,11,.4)' }}>
+      <div className="flex items-center gap-2.5">
+        <span className="w-2.5 h-2.5 shrink-0 rounded-full animate-pulse" style={{ background: ok? '#10b981' : '#f59e0b' }}/>
+        <span className="min-w-0 flex-1 leading-relaxed text-white/70">
+          {link}<br/>{svcTxt}
+        </span>
+        {bgDiag && !bgDiag.notif ? (
+          <button onClick={()=> npOpenNotifSettings()} className="shrink-0 rounded-full bg-white px-3 py-1.5 font-bold text-black hover:bg-white/90">Turn on</button>
+        ) : (
+          <button onClick={bgPing} className="shrink-0 rounded-full border border-white/15 px-3 py-1.5 font-semibold text-white/70 hover:text-white">Re-check</button>
+        )}
+        <button onClick={()=>{ npSetDisabled(!npDisabled()); T(npDisabled()? 'Native player OFF (safe mode)' : 'Native player ON'); setTimeout(bgPing, 800) }}
+                className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[10px] font-semibold text-white/60 hover:text-white">{npDisabled()? 'Safe mode: ON \u2014 tap OFF' : 'Safe mode: off'}</button>
+      </div>
+      <div className="mt-1.5 break-all opacity-60" style={{ fontFamily:'ui-monospace,monospace', fontSize:10 }}>
+        bridge:{npBridgeMode()} {bgDiag && bgDiag.diag ? ('\u00b7 ping: '+bgDiag.diag) : ''}
+      </div>
+    </div>
+  )
+}
+
 export default function App(){
   // player
   const [queue, setQueue] = useState([])
@@ -318,7 +354,13 @@ export default function App(){
       }
       const q = qmap[activeCat] || activeCat
       const res = await searchPiped(q, 20, homeNextPage)
-      if(res.tracks.length){ homeFailRef.current = 0
+      if(!res.tracks || !res.tracks.length){
+        homeFailRef.current += 1
+        if(homeFailRef.current >= 2){ setHomeNextPage(null); showToast('You\u2019ve reached the end of this list') }
+        setHomeLoadingMore(false); return
+      }
+      homeFailRef.current = 0
+      if(res.tracks.length){
         setHomeTracks(prev=> {
           const seen = new Set(prev.map(x=> String(x.id)))
           const filtered = res.tracks.filter(x=> !seen.has(String(x.id)))
@@ -485,6 +527,17 @@ export default function App(){
   },[current && current.id, isPlaying])
   // Service ticker calls this every 1.2s while it believes we're playing — defeats YouTube's
   // iframe auto-pause (hidden small player) within ~1s, from native, bridge-independent.
+  // Zero-bridge meta channel: the native ticker reads WebView.getTitle() — the app encodes
+  // playing-state + track into document.title on every change. Bridge can be dead; this works.
+  useEffect(()=>{
+    try{
+      document.title = current
+        ? ('NP|'+(isPlaying?1:0)+'|'+String(current.title||'').replace(/\|/g,'\u00b7').slice(0,60)+'|'+String(current.artist||'').replace(/\|/g,'\u00b7').slice(0,40))
+        : 'Sur Sangam'
+    }catch(e){}
+  },[current && current.id, isPlaying])
+  // Native → JS actions with zero bridge: service evals window.__npAct('play'|'pause'|...)
+  useEffect(()=>{ try{ window.__npAct = (a)=>{ try{ npActionRef.current && npActionRef.current(a) }catch(e){} } }catch(e){} },[])
   window.__npKeepAlive = ()=>{
     try{
       if(!isPlaying || (scrubRef && scrubRef.current) || !current) return
@@ -1881,27 +1934,7 @@ function ProfileView({ user, setUser, editUser, setEditUser, liked, playlists, l
                   <div><div className="text-xl font-bold">{playlists.length}</div><div className="text-xs text-white/50">Playlists</div></div>
                   <div><div className="text-xl font-bold">{downloaded.length}</div><div className="text-xs text-white/50">Offline</div></div>
                 </div>
-                {isNativeApp() ? (()=>{ try{ return (<><div className="mt-4 flex items-center gap-2.5 rounded-2xl border p-3 text-xs max-w-md"
-                       style={{background:'rgba(255,255,255,.04)', borderColor: (bgDiag && bgDiag.plugin && bgDiag.service && bgDiag.notif) ? 'rgba(16,185,129,.5)':'rgba(245,158,11,.4)'}}>
-                    <span className="w-2.5 h-2.5 shrink-0 rounded-full animate-pulse" style={{background:(bgDiag && bgDiag.plugin && bgDiag.service && bgDiag.notif)?'#10b981':'#f59e0b'}}/>
-                    <span className="min-w-0 flex-1 text-white/70 leading-relaxed">
-                      {(isNativeApp()||hasNativeBridge() ? 'bridge:'+npBridgeMode() : 'bridge: not detected')+' • '}{!bgDiag ? 'Background player: checking…' :
-                       !bgDiag.plugin ? 'Background player engine not loaded — reinstall the latest APK (Actions → sur-sangam-apk).' :
-                       !bgDiag.notif ? 'Notifications are OFF — background music + lock-screen controls need them on.' :
-                       !bgDiag.service ? 'Service idle right now — start a song; if it still won’t play after locking, tap Fix.' :
-                       'Background playback + lock-screen controls ACTIVE ✓'}
-                    </span>
-                    {bgDiag && bgDiag.diag ? <div className="w-full break-all opacity-70" style={{fontFamily:'ui-monospace,monospace',fontSize:10}}>svc: {bgDiag.diag}</div> : null}
-                    {(()=>{ try{ const m=/^SVC\|(\d)\|(.*)$/.exec(document.title||''); return m ? <div className="w-full break-all" style={{fontFamily:'ui-monospace,monospace',fontSize:10}}>native link: {m[1]==='1'?'\u25b6 playing':'\u23f8 paused'} \u2022 {decodeURIComponent(m[2]||'')}</div> : null }catch(e){ return null } })()}
-                    {bgDiag && !bgDiag.notif ? (
-                      <button onClick={()=> npOpenNotifSettings()} className="shrink-0 rounded-full bg-white px-3 py-1.5 font-bold text-black hover:bg-white/90">Turn on</button>
-                    ) : bgDiag && bgDiag.plugin && !bgDiag.service ? (
-                      <button onClick={()=>{ npStart(a=>{ if(npActionRef.current) npActionRef.current(a) }); npUpdate({title:'Sur Sangam', artist:'Ready', album:'', state:'playing', artUrl:''}); setTimeout(bgPing, 1200) }} className="shrink-0 rounded-full bg-white px-3 py-1.5 font-bold text-black hover:bg-white/90">Fix</button>
-                    ) : bgDiag && bgDiag.plugin && bgDiag.service && bgDiag.notif ? (
-                      <button onClick={bgPing} className="shrink-0 rounded-full border border-white/15 px-3 py-1.5 font-semibold text-white/70 hover:text-white">Re-check</button>
-                    ) : null}
-                    <button onClick={()=>{ npSetDisabled(!npDisabled()); showToast(npDisabled()? 'Native player OFF (safe mode)' : 'Native player ON'); setTimeout(bgPing, 800) }} className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[10px] font-semibold text-white/60 hover:text-white">{npDisabled()? 'Safe mode: ON' : 'Safe mode: off'}</button>
-                  </div></>) }catch(e){ return null } })() : null}
+                <NpDiagCard bgDiag={bgDiag} bgPing={bgPing} toast={showToast}/>
                 {authUser ? (
                   <div className="mt-4 flex items-center gap-3 p-3 rounded-2xl bg-white/5 border border-white/10 max-w-md">
                     <span className="w-8 h-8 shrink-0 rounded-full bg-[#D5AA55] text-black grid place-items-center text-sm font-bold">☁</span>

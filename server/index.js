@@ -253,11 +253,82 @@ app.get('/api/search', async (req,res)=>{
   res.json(sout)
 })
 
+// ── AUDIO PROXY: server pulls plain mp3 (invidious itag=140 / piped streams) and re-serves it
+// same-origin with Range support. The APK plays THIS url in a bare <audio> element — no YouTube
+// iframe, no visibility policy, seek works via Range passthrough. Free-tier egress friendly.
+const INVID_HOSTS = [
+  'https://invidious.nerdvpn.de',
+  'https://yewtu.be',
+  'https://inv.nadeko.net',
+  'https://invidious.privacyredirect.com'
+]
+app.get('/api/audiostream', async (req,res)=>{
+  const vid = (req.query.vid||'').toString().trim().replace(/[^A-Za-z0-9_-]/g,'').slice(0,20)
+  if(!vid) return res.status(400).json({ error:'vid required' })
+  const range = req.headers.range || null
+  const tried = []
+  const tryFetch = async (url) => {
+    const ctrl = new AbortController(); const tm = setTimeout(()=>ctrl.abort(), 14000)
+    try{
+      const r = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent':'Mozilla/5.0', ...(range?{Range:range}:{}) }, redirect:'follow' })
+      clearTimeout(tm)
+      return r
+    }catch(e){ clearTimeout(tm); return null }
+  }
+  for(const h of INVID_HOSTS){
+    tried.push(h)
+    const r = await tryFetch(`${h}/latest_version?id=${vid}&local=true&itag=140`)
+    if(r && (r.status===200 || r.status===206) && r.body){
+      res.setHeader('Access-Control-Allow-Origin','*')
+      res.status(r.status)
+      res.setHeader('Content-Type', r.headers.get('content-type') || 'audio/mp4')
+      res.setHeader('Accept-Ranges','bytes')
+      const cl = r.headers.get('content-length'); if(cl) res.setHeader('Content-Length', cl)
+      const cr = r.headers.get('content-range'); if(cr) res.setHeader('Content-Range', cr)
+      const reader = r.body.getReader()
+      try{
+        for(;;){ const {done, value} = await reader.read(); if(done) break; if(!res.write(value)) await new Promise(ok=>res.once('drain',ok)) }
+      }catch(e){}
+      return res.end()
+    }
+    if(r) try{ r.body && r.body.cancel && r.body.cancel() }catch(e){}
+  }
+  // fallback: piped /streams direct URL → fetch server-side and pipe
+  for(const h of PIPED_HOSTS.slice(0,3)){
+    const r = await tryFetch(`${h}/streams/${vid}`)
+    if(!r || !r.ok){ continue }
+    try{
+      const data = await r.json()
+      const a = (data.audioStreams||[]).filter(x=>x&&x.url)
+      const best = a.find(x=>String(x.mimeType||'').includes('mp4')) || a[0]
+      if(best){
+        const s2 = await tryFetch(best.url)
+        if(s2 && (s2.status===200||s2.status===206) && s2.body){
+          res.setHeader('Access-Control-Allow-Origin','*')
+          res.status(s2.status)
+          res.setHeader('Content-Type', s2.headers.get('content-type') || 'audio/mp4')
+          res.setHeader('Accept-Ranges','bytes')
+          const cl2 = s2.headers.get('content-length'); if(cl2) res.setHeader('Content-Length', cl2)
+          const cr2 = s2.headers.get('content-range'); if(cr2) res.setHeader('Content-Range', cr2)
+          const reader2 = s2.body.getReader()
+          try{
+            for(;;){ const {done, value} = await reader2.read(); if(done) break; if(!res.write(value)) await new Promise(ok=>res.once('drain',ok)) }
+          }catch(e){}
+          return res.end()
+        }
+      }
+    }catch(e){}
+  }
+  res.status(502).json({ error:'no working upstream', tried })
+})
+
 app.get('/api/audiourl', async (req,res)=>{
   // videoId → best audio stream URL (Piped instances, tried server-side; the APK then plays
   // the mp3 in a plain <audio> element → no YouTube iframe policy → survives minimize/lock).
   const vid = (req.query.vid||'').toString().trim().replace(/[^A-Za-z0-9_-]/g,'').slice(0,20)
   if(!vid) return res.json({ url:null })
+  // Prefer our own proxy url: same-origin, no IP-binding, seek via Range.
+  return res.json({ url: `${req.protocol}://${req.get('host')}/api/audiostream?vid=${vid}`, proxy:true })
   const ak = `au:${vid}`
   const hit = memoGet(ak)
   if(hit) return res.json(hit)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Patches the CI-generated android/ project (fresh from `cap add android`) to wire
-the NowPlaying foreground-service plugin: MainActivity registration (+guarded service
-autostart), manifest permissions + service. Idempotent."""
+the NowPlaying foreground-service plugin: MainActivity (crash-guarded) + manifest
+permissions/service. Idempotent."""
 import os, sys
 
 def log(msg): print('[patch_android]', msg)
@@ -12,12 +12,11 @@ PKG  = os.path.join(BASE, 'java', 'com', 'sursangam', 'app')
 MAIN = """package com.sursangam.app;
 
 import android.Manifest;
+import android.app.Application;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -25,9 +24,34 @@ import androidx.core.content.ContextCompat;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
+
+    // Systemic protection: ForegroundService-related exceptions are posted to the main
+    // thread by the system and bypass ordinary try/catch — they were killing the whole app.
+    // Swallow ONLY those (stop the helper service, in-app playback keeps working) and
+    // forward every other crash normally.
+    private static void installFgsGuard(final Application app) {
+        final Thread.UncaughtExceptionHandler orig = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+            @Override public void uncaughtException(Thread t, Throwable e) {
+                Throwable c = e;
+                while (c != null) {
+                    String n = String.valueOf(c.getClass().getName()) + " " + String.valueOf(c.getMessage());
+                    if (n.contains("ForegroundService") || n.contains("startForeground")
+                        || n.contains("ServiceStartNotAllowed")) {
+                        try { app.stopService(new Intent(app, NowPlayingService.class)); } catch (Throwable ignored) {}
+                        return; // app survives
+                    }
+                    c = c.getCause();
+                }
+                if (orig != null) orig.uncaughtException(t, e);
+            }
+        });
+    }
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        registerPlugin(NowPlayingPlugin.class); // official pattern: before super.onCreate
+        try { installFgsGuard(getApplication()); } catch (Throwable ignored) {}
+        registerPlugin(NowPlayingPlugin.class); // builder-based; safe before super (verified in Capacitor src)
         super.onCreate(savedInstanceState);
         try {
             if (Build.VERSION.SDK_INT >= 33
@@ -37,21 +61,11 @@ public class MainActivity extends BridgeActivity {
                     new String[]{ Manifest.permission.POST_NOTIFICATIONS }, 101);
             }
         } catch (Exception ignored) {}
-        // Start NowPlaying service only AFTER the window is drawn — starting an FGS in the
-        // same moment the runtime-permission dialog dismisses can throw SecurityException on
-        // Android 13/14 and crash the process. Fully guarded: the app must NEVER die for this.
-        try {
-            new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
-                @Override public void run() {
-                    try {
-                        Intent i = new Intent(MainActivity.this, NowPlayingService.class);
-                        i.setAction(NowPlayingService.ACTION_UPDATE);
-                        if (Build.VERSION.SDK_INT >= 26) startForegroundService(i);
-                        else startService(i);
-                    } catch (Exception ignored) {}
-                }
-            }, 1400);
-        } catch (Exception ignored) {}
+        // NOTE: deliberately NO foreground-service autostart here. Starting an FGS while the
+        // runtime-permission dialog has the app paused throws
+        // ForegroundServiceStartNotAllowedException (posted to main thread, uncatchable) and
+        // crashed the app. The plugin starts the service from PLAY actions instead, when the
+        // activity is resumed — and falls back to a plain startService otherwise.
     }
 }
 """
@@ -59,7 +73,7 @@ public class MainActivity extends BridgeActivity {
 mfa = os.path.join(PKG, 'MainActivity.java')
 if os.path.exists(mfa):
     open(mfa, 'w').write(MAIN)
-    log('MainActivity written (plugin + notif permission + guarded FGS autostart)')
+    log('MainActivity written (FGS crash-guard + plugin registration + notif permission)')
 else:
     log('WARN: MainActivity.java missing'); sys.exit(1)
 

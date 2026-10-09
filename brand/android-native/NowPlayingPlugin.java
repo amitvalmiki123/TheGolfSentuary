@@ -1,6 +1,7 @@
 package com.sursangam.app;
 
 import android.Manifest;
+import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
@@ -17,13 +18,49 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 @CapacitorPlugin(name = "NowPlaying")
 public class NowPlayingPlugin extends Plugin {
 
+  private Intent pending = null;
+
+  private boolean resumed() {
+    try {
+      Activity a = getActivity();
+      return a != null && a.isResumed();
+    } catch (Exception e) { return false; }
+  }
+
+  // Resumed → start as FOREGROUND service (background protection).
+  // Not resumed (e.g. permission dialog showing) → plain startService — legal from
+  // background, and a plain start never owes the system a startForeground() call, so
+  // nothing can be posted back to crash us. The real FGS start replays on next resume.
+  private void dispatch(Intent i) {
+    if (resumed()) {
+      try {
+        if (Build.VERSION.SDK_INT >= 26) getContext().startForegroundService(i);
+        else getContext().startService(i);
+        pending = null;
+        return;
+      } catch (Throwable ignored) {}
+    }
+    pending = i;
+    try { getContext().startService(i); } catch (Throwable ignored) {}
+  }
+
+  @Override
+  protected void handleOnResume() {
+    super.handleOnResume();
+    Intent i = pending;
+    if (i != null && resumed()) {
+      pending = null;
+      try {
+        if (Build.VERSION.SDK_INT >= 26) getContext().startForegroundService(i);
+        else getContext().startService(i);
+      } catch (Throwable ignored) {}
+    }
+  }
+
   private void startService(String action) {
     Intent i = new Intent(getContext(), NowPlayingService.class);
     if (action != null) i.setAction(action);
-    try {
-      if (Build.VERSION.SDK_INT >= 26) getContext().startForegroundService(i);
-      else getContext().startService(i);
-    } catch (Exception ignored) {}
+    dispatch(i);
   }
 
   @PluginMethod
@@ -46,10 +83,7 @@ public class NowPlayingPlugin extends Plugin {
     i.putExtra("album", call.getString("album", ""));
     i.putExtra("playing", "playing".equals(call.getString("state", "paused")));
     i.putExtra("artUrl", call.getString("artUrl", ""));
-    try {
-      if (Build.VERSION.SDK_INT >= 26) getContext().startForegroundService(i);
-      else getContext().startService(i);
-    } catch (Exception ignored) {}
+    dispatch(i);
     call.resolve();
   }
 

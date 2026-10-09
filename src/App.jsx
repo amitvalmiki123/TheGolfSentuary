@@ -479,6 +479,7 @@ export default function App(){
       artist: String(current.artist||'').slice(0,140),
       album: String(current.album||'').slice(0,140),
       state: isPlaying ? 'playing' : 'paused',
+      engine: current.videoId ? 'yt' : 'audio',
       artUrl: /^https:\/\//.test(String(current.cover||'')) ? current.cover : ''
     })
   },[current && current.id, isPlaying])
@@ -502,6 +503,7 @@ export default function App(){
       artist: String(current.artist||'').slice(0,140),
       album: String(current.album||'').slice(0,140),
       state: isPlaying ? 'playing' : 'paused',
+      engine: current.videoId ? 'yt' : 'audio',
       artUrl: /^https:\/\//.test(String(current.cover||'')) ? current.cover : ''
     })
   }

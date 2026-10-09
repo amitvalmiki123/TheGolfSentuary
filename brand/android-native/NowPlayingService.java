@@ -73,8 +73,16 @@ public class NowPlayingService extends Service {
               // (YouTube's iframe auto-pauses when the page is hidden — this un-pauses within ~1.2s,
               // even while the Activity is stopped, since the service's main-looper keeps ticking).
               if (playing) w.evaluateJavascript("try{window.__npKeepAlive&&window.__npKeepAlive()}catch(e){}", null);
-              // Heartbeat back to JS (card shows it even when the Capacitor bridge is dead).
-              w.evaluateJavascript("try{document.title='SVC|'+" + (pl ? "1" : "0") + "+'|'+encodeURIComponent((window.__np&&window.__np.title||'').slice(0,40))}catch(e){}", null);
+              // Heartbeat back to JS (card shows it even when the Capacitor bridge is dead):
+              // SVC|<playing>|<title|engine|E:buildErr|NO-META if the app never wrote state>
+              String err = "";
+              if (lastBuildErr.length() > 0) {
+                String e2 = lastBuildErr.replaceAll("[^a-zA-Z0-9:. _\-]", "").substring(0, Math.min(24, lastBuildErr.length()));
+                err = "|E" + e2;
+              }
+              w.evaluateJavascript(
+                "try{var n=window.__np||{};var info=((n.title||'NO-META')+'|'+(n.engine||'-')+'"+err+"').slice(0,46);"
+              + "document.title='SVC|"+(pl?"1":"0")+"|'+encodeURIComponent(info)}catch(e){}", null);
             } catch (Exception ignored) {}
           }
         });

@@ -68,7 +68,7 @@ export function npUpdate(meta){
   // Always mirror state to the WebView — the native service READS window.__np directly
   // (evaluateJavascript ticker), so the notification works even if the Capacitor bridge
   // never initializes. Plugin/raw calls below are just the faster path when available.
-  try{ if(!npDisabled()) window.__np = Object.assign({}, window.__np||{}, meta, { playing: meta.state ? meta.state!=='paused' : true }) }catch{}
+  try{ window.__np = Object.assign({}, window.__np||{}, meta, { playing: meta.state ? meta.state!=='paused' : true }) }catch{}
   if(npDisabled()) return
   const p = getProxy()
   if(p){ try{ p.update && p.update(meta).catch(()=>{}) }catch{}; return }

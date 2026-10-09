@@ -89,6 +89,14 @@ public class NowPlayingService extends Service {
           }
         });
       if (playing) {
+        // THE background-audio trick (classic Cordova/WebView music-app fix): Android/Chromium
+        // suspends the media pipeline + throttles timers when the Activity goes hidden — the
+        // WebView itself never learns that unless asked. Calling onResume()/resumeTimers()
+        // from the service every tick keeps the renderer treating playback as foreground:
+        // audio keeps decoding (frames are simply dropped, there is no surface). Then the JS
+        // keep-alive re-asserts the YouTube player if its iframe visibility policy paused it.
+        try { w.resumeTimers(); } catch (Throwable ignored) {}
+        try { w.onResume(); } catch (Throwable ignored) {}
         try { w.evaluateJavascript("try{window.__npKeepAlive&&window.__npKeepAlive()}catch(e){}", null); } catch (Throwable ignored) {}
       }
       // ---- heartbeat for the in-app card (hidden #__svc div; title stays owned by the app)

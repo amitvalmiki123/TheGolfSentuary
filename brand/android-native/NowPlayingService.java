@@ -55,7 +55,7 @@ public class NowPlayingService extends Service {
             try {
               String j = raw == null ? "{}" : raw;
               if (j.length() > 1 && j.charAt(0) == '"') j = j.substring(1, j.length() - 1);
-              j = j.replace("\\"", "\"").replace("\\/", "/").replace("\\n", " ");
+              j = j.replace("\\\"", "\"").replace("\\/", "/").replace("\\n", " ");
               org.json.JSONObject o = new org.json.JSONObject(j);
               String t = o.optString("t"); String a = o.optString("a"); String al = o.optString("al");
               boolean pl = o.optBoolean("p");

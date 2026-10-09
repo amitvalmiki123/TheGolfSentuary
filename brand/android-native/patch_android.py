@@ -9,32 +9,37 @@ PKG  = os.path.join(BASE, 'java', 'com', 'sursangam', 'app')
 
 def log(msg): print('[patch_android]', msg)
 
-# 1. MainActivity — register plugin
+# 1. MainActivity — deterministic full rewrite: register plugin + ask POST_NOTIFICATIONS (Android 13+)
 mfa = os.path.join(PKG, 'MainActivity.java')
+MAIN = """package com.sursangam.app;
+
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.os.Build;
+import android.os.Bundle;
+
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+
+import com.getcapacitor.BridgeActivity;
+
+public class MainActivity extends BridgeActivity {
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        this.bridge.registerPlugin(NowPlayingPlugin.class);
+        if (Build.VERSION.SDK_INT >= 33
+                && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                   != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this,
+                new String[]{ Manifest.permission.POST_NOTIFICATIONS }, 101);
+        }
+    }
+}
+"""
 if os.path.exists(mfa):
-    s = open(mfa).read()
-    if 'registerPlugin' not in s:
-        if 'super.onCreate(savedInstanceState)' in s:
-            s = s.replace('super.onCreate(savedInstanceState);',
-                'super.onCreate(savedInstanceState);\n        this.bridge.registerPlugin(NowPlayingPlugin.class);', 1)
-        else:
-            # empty class body template: public class MainActivity extends BridgeActivity {}
-            s2 = re.sub(r'public class MainActivity extends BridgeActivity\s*\{\s*\}',
-                'public class MainActivity extends BridgeActivity {\n'
-                '    @Override\n'
-                '    public void onCreate(android.os.Bundle savedInstanceState) {\n'
-                '        super.onCreate(savedInstanceState);\n'
-                '        this.bridge.registerPlugin(NowPlayingPlugin.class);\n'
-                '    }\n'
-                '}', s)
-            if s2 == s:
-                log('WARN: MainActivity pattern not matched'); sys.exit(1)
-            s = s2
-        if 'import com.getcapacitor.BridgeActivity;' in s and 'import android.os.Bundle;' not in s and 'android.os.Bundle' not in s.split('import com.getcapacitor')[0]:
-            s = s.replace('import com.getcapacitor.BridgeActivity;',
-                          'import android.os.Bundle;\nimport com.getcapacitor.BridgeActivity;', 1)
-        open(mfa, 'w').write(s)
-        log('MainActivity patched')
+    open(mfa, 'w').write(MAIN)
+    log('MainActivity written (plugin + notif permission)')
 else:
     log('WARN: MainActivity.java missing'); sys.exit(1)
 
@@ -45,6 +50,7 @@ if os.path.exists(mf):
     if 'FOREGROUND_SERVICE_MEDIA_PLAYBACK' not in s:
         perms = ('<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n'
                  '    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />\n'
+                 '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n'
                  '    <uses-permission android:name="android.permission.WAKE_LOCK" />')
         anchor = '<uses-permission android:name="android.permission.INTERNET" />'
         if anchor in s:

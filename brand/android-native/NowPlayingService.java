@@ -46,6 +46,7 @@ public class NowPlayingService extends Service {
   private AudioManager audioManager;
   private AudioFocusRequest focusRequest;
 
+  private android.os.PowerManager.WakeLock wakeLock;
   private volatile Bitmap art;
   private volatile String artUrlLoaded = "";
   private volatile String title = "Sur Sangam";
@@ -79,6 +80,7 @@ public class NowPlayingService extends Service {
     String a = (intent == null) ? null : intent.getAction();
     if (ACTION_STOP.equals(a)) {
       send("stop");
+      setWake(false);
       stopSelf();
       return START_NOT_STICKY;
     }
@@ -93,7 +95,21 @@ public class NowPlayingService extends Service {
     updateSession();
     startForegroundNow();
     handleFocus();
+    setWake(playing);
     return START_STICKY;
+  }
+
+  private void setWake(boolean on) {
+    try {
+      android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+      if (pm == null) return;
+      if (on) {
+        if (wakeLock == null) wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "sur:play");
+        if (!wakeLock.isHeld()) wakeLock.acquire(10 * 60 * 60 * 1000L);
+      } else if (wakeLock != null && wakeLock.isHeld()) {
+        wakeLock.release();
+      }
+    } catch (Exception ignored) {}
   }
 
   private void createChannel() {
@@ -252,6 +268,7 @@ public class NowPlayingService extends Service {
   // Notification action button taps land here
   @Override
   public void onDestroy() {
+    setWake(false);
     if (mediaSession != null) { mediaSession.setActive(false); mediaSession.release(); }
     instance = null;
     super.onDestroy();

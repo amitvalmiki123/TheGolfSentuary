@@ -419,6 +419,22 @@ export default function App(){
       artUrl: /^https:\/\//.test(String(current.cover||'')) ? current.cover : ''
     })
   },[current && current.id, isPlaying])
+  // Native watchdog: agar WebView background me media suspend kare to wapas resume — lock pe bhi music chalta rahe
+  useEffect(()=>{
+    if(!isNativeApp() || !isPlaying) return
+    const id = setInterval(()=>{
+      try{
+        if(scrubRef && scrubRef.current) return
+        if(current && current.videoId && ytPlayerRef.current){
+          const st = ytPlayerRef.current.getPlayerState && ytPlayerRef.current.getPlayerState()
+          if(st !== undefined && st !== 1 && st !== -1) ytPlayerRef.current.playVideo()
+        } else if(audioRef.current && audioRef.current.paused){
+          audioRef.current.play().catch(()=>{})
+        }
+      }catch(e){}
+    }, 2600)
+    return ()=> clearInterval(id)
+  },[isPlaying, current && current.id])
 
   // YouTube IFrame API — for YouTube • Full tracks (YouTube Music-like)
   useEffect(()=>{

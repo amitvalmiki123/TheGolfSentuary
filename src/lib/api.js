@@ -68,6 +68,16 @@ export function warmBackend(){
     fetch(`${BACKEND_URL}/health`, { headers:{ 'Accept':'application/json' } }).catch(()=>{})
   }catch(e){}
 }
+// Search diagnostics: every search/trending call leaves a one-line summary on
+// window.__searchDiag (shown in the You-tab card) — no more guessing WHY a source
+// is missing from results.
+export function sdiag(t){
+  try{
+    const a = (window.__searchDiag = window.__searchDiag || [])
+    a.push(`${new Date().toTimeString().slice(0,8)} ${t}`.slice(0,120))
+    if(a.length > 6) a.splice(0, a.length - 6)
+  }catch(e){}
+}
 // Try backend first (if running), fallback to direct Piped/Saavn — works in memory mode too
 const SAavn_ENDPOINTS = [
   (q, limit) => `https://saavn.dev/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}`,
@@ -506,12 +516,14 @@ async function searchSaavnOfficialDevice(query, limit=18){
     }catch(e){ continue }
   }
   if(!mapped.length) throw new Error('empty')
+  try{ if(!window.__svSrc) window.__svSrc='off' }catch(e){}
   return mapped
 }
 
 // Combined Saavn: official-on-device RACED against wrapper mirrors — first with
 // results wins. Either family alive = Saavn works.
 export async function searchSaavn(query, limit=18){
+  try{ window.__svSrc='' }catch(e){}
   const need = async (p)=>{ const r = await p; if(!r || !r.length) throw new Error('empty'); return r }
   try{ return await Promise.any([ need(searchSaavnOfficialDevice(query, limit)), need(searchSaavnMirrors(query, limit)) ]) }
   catch(e){ return [] }
@@ -558,7 +570,7 @@ export async function searchSaavnMirrors(query, limit=18){
       if(!mapped.length) throw new Error('empty')
       return mapped
   }
-  try{ return await Promise.any(SAavn_ENDPOINTS.map(one)) }catch(e){ return [] }
+  try{ const r = await Promise.any(SAavn_ENDPOINTS.map(one)); try{ if(!window.__svSrc) window.__svSrc='mir' }catch(e){}; return r }catch(e){ return [] }
 }
 
 
@@ -692,6 +704,7 @@ export async function searchITunes(query, limit=6){
 export async function unifiedSearch(query, limit=24, offset=0){
   _lastSearchNextpage = null
   if(!query.trim()) return []
+  const qtag = String(query).slice(0,14)
   // Try backend (MongoDB + Saavn/Piped proxy) first — like JioSaavn/Gaana
   if(BACKEND_URL || SELF_HOSTED || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV)){
     try{
@@ -704,10 +717,12 @@ export async function unifiedSearch(query, limit=24, offset=0){
         if(data.tracks && data.tracks.length){
           // Only trust real tracks (videoId or working Saavn CDN audio) — never placeholder/fallback rows
           const real = data.tracks.filter(x=> x && !String(x.id||'').startsWith('fallback-') && (x.videoId || (typeof x.audio==='string' && x.audio.startsWith('http') && !x.audio.includes('...'))))
-          if(real.length >= 6) return real.slice(0, limit)
-        }
-      }
-    }catch(e){}
+          const nSv = real.filter(x=> String(x.source||'').startsWith('Saavn')).length
+          if(real.length >= 6){ sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}`); return real.slice(0, limit) }
+          sdiag(`s:${qtag} be:thin${real.length}`)
+        } else sdiag(`s:${qtag} be:empty`)
+      } else sdiag(`s:${qtag} be:http${r.status}`)
+    }catch(e){ sdiag(`s:${qtag} be:${/abort/i.test(String((e&&e.message)||e)) ? 'timeout' : 'fail'}`) }
   }
   const qlow=query.toLowerCase()
   const isIndian=/[\u0900-\u097F]|arijit|pritam|punjab|punjabi|hindi|sidhu|diljit|mankirt|shubh|love|90s|bollywood|bhojpuri|haryanvi|shreya|jubin|anuv|atif|sonu|kumar|alka|udit|shaan|honey|singh|kaur|yo ?yo|badshah|neha|tony|kishore|lata|asa|rafter|dhillon|gill|waraam|heera|bohra|pawande|karoran|intense/.test(qlow)
@@ -719,6 +734,7 @@ export async function unifiedSearch(query, limit=24, offset=0){
   ])
   const saavn = saavnR || []
   const piped = (pipedR && pipedR.tracks) || []
+  try{ sdiag(`s:${qtag} dev:sv${saavn.length}${window.__svSrc?'/'+window.__svSrc:''} pp${piped.length}`) }catch(e){}
   tracks = dedup(isIndian ? [...saavn, ...piped] : [...piped, ...saavn])
   _lastSearchNextpage = (pipedR && pipedR.nextpage) || null
   // preview filter
@@ -726,7 +742,7 @@ export async function unifiedSearch(query, limit=24, offset=0){
     const filtered = tracks.filter(x=> !x.isPreview)
     if(filtered.length >= 4) tracks = filtered
   }
-  if(tracks.length >= 14) return rankByRelevance(tracks, query).slice(0, limit)
+  if(tracks.length >= 14){ const out = rankByRelevance(tracks, query).slice(0, limit); try{ sdiag(`s:${qtag} out:${out.length}/sv${out.filter(x=>String(x.source||'').startsWith('Saavn')).length}`) }catch(e){}; return out }
   if(tracks.length < 12){
     const inv = await searchInvidious(query, limit - tracks.length).catch(()=>({tracks:[]}))
     tracks = dedup([...tracks, ...(inv.tracks||[])])
@@ -751,7 +767,9 @@ export async function unifiedSearch(query, limit=24, offset=0){
     const filtered = tracks.filter(x=> !x.isPreview)
     if(filtered.length >= 4) tracks = filtered
   }
-  return rankByRelevance(tracks, query).slice(0, limit)
+  const outF = rankByRelevance(tracks, query).slice(0, limit)
+  try{ sdiag(`s:${qtag} out:${outF.length}/sv${outF.filter(x=>String(x.source||'').startsWith('Saavn')).length}`) }catch(e){}
+  return outF
 }
 
 // Paginated version for infinite scroll — genuine full only
@@ -792,9 +810,10 @@ export async function trendingByCategory(cat, limit=20, offset=0){
       if(r.ok){
         const data = await r.json()
         const real = (data.tracks||[]).filter(x=> x && x.audio && String(x.audio).startsWith('http'))
-        if(real.length >= 6){ try{ _catCache.set(`${cat}|${limit}`, { at: Date.now(), val: real.slice(0,limit) }) }catch{}; return real.slice(0, limit) }
-      }
-    }catch(e){}
+        if(real.length >= 6){ sdiag(`t:${cat} be:ok${real.length}/sv${real.filter(x=>String(x.source||'').startsWith('Saavn')).length}`); try{ _catCache.set(`${cat}|${limit}`, { at: Date.now(), val: real.slice(0,limit) }) }catch{}; return real.slice(0, limit) }
+        sdiag(`t:${cat} be:thin${real.length}`)
+      } else sdiag(`t:${cat} be:http${r.status}`)
+    }catch(e){ sdiag(`t:${cat} be:${/abort/i.test(String((e&&e.message)||e)) ? 'timeout' : 'fail'}`) }
   }
   // Try backend first (DB + live) — fast like JioSaavn; 2.6s to-out = direct path le lagega
   if(BACKEND_URL || SELF_HOSTED || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV)){
@@ -829,10 +848,12 @@ export async function trendingByCategory(cat, limit=20, offset=0){
   const isIndianCat = ["Punjabi","Hindi","Love","90s","Bollywood","Indie"].includes(cat)
   if(isIndianCat){
     const saavnCat = await searchSaavn(q, 20).catch(()=>[])
+    try{ sdiag(`t:${cat} dev:sv${saavnCat.length}${window.__svSrc?'/'+window.__svSrc:''}`) }catch(e){}
     if(saavnCat.length >= 8) return strictByCategory(saavnCat, cat).slice(0, limit)
     // merge with YouTube for variety
     const pipedCat = await searchPiped(q, 12).catch(()=>({tracks:[]}))
     const mergedCat = strictByCategory(dedup([...saavnCat, ...(pipedCat.tracks||[])]), cat)
+    try{ sdiag(`t:${cat} out:${mergedCat.length}/sv${mergedCat.filter(x=>String(x.source||'').startsWith('Saavn')).length}`) }catch(e){}
     if(mergedCat.length >= 6) return mergedCat.slice(0, limit)
   }
   if(cat==="Love"){

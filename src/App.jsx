@@ -116,15 +116,17 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-4'
+const APP_BUILD = 'itrace-5'
 
 function NpDiagCard({ toast, engine }){
   // Self-contained on purpose: ProfileView and App are different components — earlier this
   // card read App-scoped state from ProfileView's JSX and ReferenceError'd the whole app.
   const [svc, setSvc] = useState('')
   const [bgDiag, setBgDiag] = useState(null)
+  const [sdl, setSdl] = useState([])
   const T = toast || (()=>{})
-  const ping = ()=>{ try{ npPing().then(r=>setBgDiag(r)).catch(()=>setBgDiag({plugin:false,service:false,notif:true})) }catch(e){ setBgDiag({plugin:false,service:false,notif:true}) } }
+  const readSdl = ()=>{ try{ setSdl((window.__searchDiag||[]).slice(-2)) }catch(e){} }
+  const ping = ()=>{ try{ npPing().then(r=>setBgDiag(r)).catch(()=>setBgDiag({plugin:false,service:false,notif:true})) }catch(e){ setBgDiag({plugin:false,service:false,notif:true}) }; readSdl() }
   useEffect(()=>{
     let tries = 0
     const id = setInterval(()=>{
@@ -158,7 +160,7 @@ function NpDiagCard({ toast, engine }){
         <button onClick={npAskBattery} className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[10px] font-semibold text-white/60 hover:text-white">Unfreeze</button>
       </div>
       <div className="mt-1.5 break-all opacity-60" style={{ fontFamily:'ui-monospace,monospace', fontSize:10 }}>
-        app:{APP_BUILD} {'\u00b7'} bridge:{npBridgeMode()} {engine ? ('\u00b7 audio: '+engine) : ''} {bgDiag && bgDiag.diag ? ('\u00b7 ping: '+bgDiag.diag) : ''}
+        app:{APP_BUILD} {'\u00b7'} bridge:{npBridgeMode()} {engine ? ('\u00b7 audio: '+engine) : ''} {bgDiag && bgDiag.diag ? ('\u00b7 ping: '+bgDiag.diag) : ''}{sdl && sdl.length ? (<><br/>search: {sdl.join(' \u00b7 ')}</>) : ''}
       </div>
     </div>
   )

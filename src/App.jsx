@@ -116,7 +116,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-12'
+const APP_BUILD = 'itrace-13'
 
 function NpDiagCard({ toast, engine }){
   // Self-contained on purpose: ProfileView and App are different components — earlier this
@@ -741,7 +741,7 @@ export default function App(){
     if(isPlaying){
       const tryPlay = ()=> a.play().catch(err=>{
         if(err?.name==="NotAllowedError") showToast("Tap Play ▶ to start audio")
-        else { setAudioError(err.message); showToast("Tap Play to start") }
+        else if(err?.name==="AbortError"){ /* benign: superseded by next switch, stay silent */ } else { setAudioError("Playback hiccup — retrying…"); showToast("Tap Play to start") }
       })
       if(a.readyState < 2){ a.load(); a.addEventListener('canplay', tryPlay, {once:true}); setTimeout(tryPlay, 200) } else tryPlay()
     } else a.pause()
@@ -859,6 +859,16 @@ export default function App(){
   const greeting = useMemo(()=>{ const h=new Date().getHours(); if(h<12) return "Good morning"; if(h<17) return "Good afternoon"; return "Good evening" },[])
 
   const showToast = (msg)=>{ setToast(msg); setTimeout(()=> setToast(null), 2200) }
+  // Real artist photos: first matching track cover wins, dicebear initials stay as fallback.
+  const artistImgFor = (name)=>{
+    try{
+      const n = String(name||'').toLowerCase().trim()
+      if(!n) return null
+      const pool = [...(homeTracks||[]), ...(recentlyPlayed||[]), ...(queue||[])]
+      const hit = pool.find(t=> t && t.cover && String(t.cover).startsWith('http') && (String(t.artist||'').toLowerCase().includes(n) || String(t.title||'').toLowerCase().includes(n)))
+      return hit ? hit.cover : null
+    }catch{ return null }
+  }
 
   const togglePlay = ()=>{
     if(current?.videoId && ytPlayerRef.current && ytReadyRef.current && !directFor){
@@ -1236,7 +1246,7 @@ export default function App(){
 
       <audio ref={audioRef} src={current?.videoId ? (directFor || undefined) : current?.audio} preload="metadata" playsInline onError={handleAudioErr} />
       <div id="yt-player" style={{position:'absolute', left:'-9999px', width:'1px', height:'1px', overflow:'hidden', opacity:0, pointerEvents:'none'}} />
-      {audioError && <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 bg-[#C35445] text-white px-4 py-2 rounded-full text-xs font-bold shadow-lg">{audioError}</div>}
+      {audioError && <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 max-w-[92vw] text-center bg-[#C35445] text-white px-4 py-2 rounded-2xl text-xs font-bold shadow-lg break-words">{audioError}</div>}
 
       <input ref={fileInputRef} type="file" accept="audio/*" multiple onChange={handleLocalFiles} className="hidden"/>
 
@@ -1369,7 +1379,7 @@ export default function App(){
             </div>
           </header>
 
-          <main className="flex-1 px-4 lg:px-6 py-6 pb-28 lg:pb-28 space-y-7">
+          <main className="flex-1 min-w-0 max-w-full overflow-x-clip px-4 lg:px-6 py-6 pb-28 lg:pb-28 space-y-7">
             {nav==='profile' ? (
               <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : ("yt-iframe (direct resolve pending/failed)" + (directErr ? " · " + directErr : ""))) : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} />
             ) : nav==='search' ? (
@@ -1731,8 +1741,8 @@ export default function App(){
                   </div>
                 </section>
 
-                <div className="grid lg:grid-cols-[1.7fr_1fr] gap-6">
-                  <section className="glass rounded-[24px] p-4 sm:p-5">
+                <div className="grid grid-cols-1 lg:grid-cols-[1.7fr_1fr] gap-6 min-w-0 max-w-full">
+                  <section className="glass rounded-[24px] p-4 sm:p-5 min-w-0 max-w-full">
                     <div className="flex items-center justify-between mb-4"><h3 className="font-bold text-lg">Recently played — {recentlyPlayed.length? `${recentlyPlayed.length} songs`:'Real history'}</h3><button onClick={()=> { if(recentlyPlayed.length){ setQueue(recentlyPlayed); setCurrentIndex(0); setIsPlaying(true) }}} className="w-8 h-8 rounded-full bg-white text-black grid place-items-center"><ChevronRight/></button></div>
                     {recentlyPlayed.length===0 ? <div className="text-center py-8 text-sm text-white/50">Play any song — it will appear here (like Spotify history, saved to DB)</div> : null}
                     <div className="space-y-1">
@@ -1751,14 +1761,14 @@ export default function App(){
                       })}
                     </div>
                   </section>
-                  <div className="space-y-6">
-                    <section className="glass rounded-[24px] p-5">
+                  <div className="space-y-6 min-w-0 max-w-full">
+                    <section className="glass rounded-[24px] p-5 min-w-0 max-w-full">
                       <div className="flex items-center justify-between mb-4"><h3 className="font-bold text-lg">{activeCat==="All"? "Top artists this month" : `${activeCat} Artists`}</h3><span className="text-xs text-white/40">{getFilteredArtists(activeCat).length} artists</span></div>
                       <div className="grid grid-cols-3 gap-3 text-center">
                         {getFilteredArtists(activeCat).slice(0,6).map(a=>(
-                          <button key={a.name} onClick={()=> handleArtistClick(a.name)} className="group text-center">
-                            <div className="relative mx-auto w-[72px] h-[72px] sm:w-20 sm:h-20 rounded-full overflow-hidden border-2 border-white/10 group-hover:border-[#D5AA55]/70 transition group-hover:scale-105"><img src={a.img} alt="" className="w-full h-full object-cover"/><div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent opacity-0 group-hover:opacity-100 transition grid place-items-end justify-center pb-2"><span className="text-[10px] font-bold bg-white text-black px-2 py-0.5 rounded-full">Play</span></div></div>
-                            <div className="text-xs font-semibold mt-2 leading-tight group-hover:text-[#D5AA55]">{a.name}</div><div className="text-[11px] text-white/40">{a.plays} • {a.cat}</div>
+                          <button key={a.name} onClick={()=> handleArtistClick(a.name)} className="group text-center min-w-0 max-w-full">
+                            <div className="relative mx-auto w-[72px] h-[72px] sm:w-20 sm:h-20 rounded-full overflow-hidden border-2 border-white/10 group-hover:border-[#D5AA55]/70 transition group-hover:scale-105"><img src={artistImgFor(a.name) || a.img} alt="" onError={e=>{ try{ e.currentTarget.onerror=null; e.currentTarget.src=a.img }catch{} }} className="w-full h-full object-cover"/><div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent opacity-0 group-hover:opacity-100 transition grid place-items-end justify-center pb-2"><span className="text-[10px] font-bold bg-white text-black px-2 py-0.5 rounded-full">Play</span></div></div>
+                            <div className="text-xs font-semibold mt-2 leading-tight break-words group-hover:text-[#D5AA55]">{a.name}</div><div className="text-[11px] text-white/40">{a.plays} • {a.cat}</div>
                           </button>
                         ))}
                       </div>

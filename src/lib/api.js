@@ -709,7 +709,7 @@ export async function searchITunes(query, limit=6){
 // background — for Indian queries they are dropped whenever Saavn is healthy.
 const _svN = (t)=> (Array.isArray(t)?t:[]).filter(x=> String(x.source||'').startsWith('Saavn')).length
 const _noVid = (t)=> (Array.isArray(t)?t:[]).filter(x=> !x.videoId)
-const _indianRe = /[\u0900-\u097F]|arijit|pritam|punjab|punjabi|hindi|sidhu|diljit|mankirt|shubh|love|90s|bollywood|bhojpuri|haryanvi|shreya|jubin|anuv|atif|sonu|kumar|alka|udit|shaan|honey|singh|kaur|yo ?yo|badshah|neha|tony|kishore|lata|asa|rafter|dhillon|gill|waraam|heera|bohra|pawande|karoran|intense/
+const _indianRe = /[\u0900-\u097F]|arijit|pritam|punjab|punjabi|hindi|sidhu|diljit|mankirt|shubh|love|90s|bollywood|bhojpuri|haryanvi|shreya|jubin|anuv|atif|sonu|kumar|alka|udit|shaan|honey|singh|kaur|yo ?yo|badshah|neha|tony|kishore|lata|asa|rafter|dhillon|gill|waraam|heera|bohra|pawande|karoran|intense|aujla|aulakh|sandhu|handa|mithoon|akhil|bhullar|paudwal|kakkar/
 export async function unifiedSearch(query, limit=24, offset=0){
   _lastSearchNextpage = null
   if(!query.trim()) return []
@@ -914,6 +914,7 @@ export async function artistSongs(artist, limit=24){
   const piped = pipedRes.tracks || []
   const invTracks = inv.tracks||[]
   const merged = dedup([...piped, ...invTracks, ...saavn])
+  if(_indianRe.test(String(artist||'').toLowerCase()) && _svN(merged) >= 2) return _noVid(merged).slice(0, limit)
   if(merged.length) return merged.slice(0, limit)
   return unifiedSearch(artist, limit).then(r=> r.slice(0,limit))
 }
@@ -937,6 +938,7 @@ export async function artistSongsPaginated(artist, limit=20, nextpage=null){
     const inv = await searchInvidious(`${artist} songs official`, 8).catch(()=>({tracks:[]}))
     tracks = dedup([...tracks, ...(inv.tracks||[])])
   }
+  if(_indianRe.test(String(artist||'').toLowerCase()) && _svN(tracks) >= 2) tracks = _noVid(tracks)
   return { tracks: tracks.slice(0,limit), nextpage: pipedRes.nextpage || null }
 }
 

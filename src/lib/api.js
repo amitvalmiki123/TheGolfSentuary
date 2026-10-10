@@ -440,7 +440,13 @@ async function searchSaavnOfficialDevice(query, limit=18){
   const n = Math.min(Math.max(Number(limit)||18,1),30)
   const target = `https://www.jiosaavn.com/api.php?__call=search.getResults&q=${encodeURIComponent(query)}&p=1&n=${n}&api_version=4&_format=json&_marker=0&ctx=web6dot0`
   const data = await fetchJsonWithCors(target, 6000)
-  const results = data && (data.results || (data.data && data.data.results) || data.songs)
+  let results = null
+  if(Array.isArray(data)) results = data
+  else if(data && typeof data==='object'){
+    results = data.results || (data.data && (Array.isArray(data.data) ? data.data : (data.data.results || data.data.songs))) || data.songs || null
+    if(!results && data.songs && Array.isArray(data.songs.data)) results = data.songs.data
+    if(!results && data.topquery && Array.isArray(data.topquery.data)) results = data.topquery.data
+  }
   if(!Array.isArray(results) || !results.length) throw new Error('empty')
   const mapped = []
   for(const s of results.slice(0,n)){

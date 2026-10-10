@@ -190,17 +190,28 @@ async function searchSaavnOfficial(query, limit=18){
   const n = Math.min(Math.max(Number(limit)||18, 1), 30)
   const url = `https://www.jiosaavn.com/api.php?__call=search.getResults&q=${encodeURIComponent(query)}&p=1&n=${n}&api_version=4&_format=json&_marker=0&ctx=web6dot0`
   const ctrl = new AbortController(); const tm = setTimeout(()=>ctrl.abort(), 7000)
+  const qshort = String(query).slice(0,30)
+  let dbgStatus = 0, dbgCtype = '', dbgHead = '', dbgKeys = ''
   try{
     const r = await fetch(url, { signal: ctrl.signal, headers: {
       'Accept':'application/json',
       'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
       'Referer':'https://www.jiosaavn.com/'
     } })
+    dbgStatus = r.status; dbgCtype = (r.headers.get('content-type')||'').split(';')[0]
     if(!r.ok) throw new Error('http '+r.status)
     const txt = await r.text()
+    dbgHead = txt.replace(/\s+/g,' ').slice(0,160)
     let data = null
     try{ data = JSON.parse(txt) }catch(e){ const i = txt.indexOf('{'); if(i>=0){ try{ data = JSON.parse(txt.slice(i)) }catch(e2){} } }
-    const results = data && (data.results || (data.data && data.data.results) || data.songs)
+    if(data && typeof data==='object') dbgKeys = (Array.isArray(data) ? '[array]' : Object.keys(data).slice(0,10).join(',')) || '?'
+    let results = null
+    if(Array.isArray(data)) results = data
+    else if(data && typeof data==='object'){
+      results = data.results || (data.data && (Array.isArray(data.data) ? data.data : (data.data.results || data.data.songs))) || data.songs || null
+      if(!results && data.songs && Array.isArray(data.songs.data)) results = data.songs.data
+      if(!results && data.topquery && Array.isArray(data.topquery.data)) results = data.topquery.data
+    }
     if(!Array.isArray(results) || !results.length) throw new Error('empty')
     const mapped = []
     for(const s of results.slice(0, n)){
@@ -230,7 +241,11 @@ async function searchSaavnOfficial(query, limit=18){
       }catch(e){ continue }
     }
     if(mapped.length) console.log(`[saavn] official ok: "${String(query).slice(0,40)}" → ${mapped.length}`)
+    else console.log(`[saavn] official ZERO-audio "${qshort}": items had no playable url | http:${dbgStatus} ${dbgCtype} | keys:${dbgKeys}`)
     return mapped
+  } catch(e){
+    console.log(`[saavn] official miss "${qshort}": ${String((e&&e.message)||e).slice(0,60)} | http:${dbgStatus} ${dbgCtype} | keys:${dbgKeys} | head:${dbgHead}`)
+    throw e
   } finally { clearTimeout(tm) }
 }
 
@@ -239,7 +254,7 @@ async function searchSaavn(query, limit=18){
   try{
     const off = await searchSaavnOfficial(query, limit)
     if(off && off.length) return off
-  }catch(e){ console.log('[saavn] official miss:', String((e&&e.message)||e).slice(0,80)) }
+  }catch(e){ /* detailed line already logged inside */ }
   // RACED: all mirrors at once, first with results wins (dead mirrors don't serialize delay)
   const one = async (buildUrl)=>{
       const url = buildUrl(query, limit)

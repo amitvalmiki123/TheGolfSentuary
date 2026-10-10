@@ -17,6 +17,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 
 // (framework-only: no androidx.media / NotificationCompat needed)
 
@@ -60,7 +61,7 @@ public class NowPlayingService extends Service {
             if (!t.isEmpty()) title = t;
             if (!a.isEmpty()) artist = a;
             playing = pl;
-            if (changed) { updateSession(); startForegroundNow(); }
+            if (changed) { posSec = 0; durSec = 0; updateSession(); startForegroundNow(); }
             setWake(playing);
           }
         }
@@ -81,7 +82,7 @@ public class NowPlayingService extends Service {
               if (!t.isEmpty()) { String a = o.optString("a"); boolean pl = o.optBoolean("p");
                 boolean changed = !t.equals(title) || pl != playing;
                 title = t; if (!a.isEmpty()) artist = a; album = al; playing = pl;
-                if (changed) { updateSession(); startForegroundNow(); }
+                if (changed) { posSec = 0; durSec = 0; updateSession(); startForegroundNow(); }
                 setWake(playing);
               }
               if (!art.isEmpty() && !art.equals(artUrlLoaded)) loadArt(art);
@@ -99,6 +100,26 @@ public class NowPlayingService extends Service {
         try { w.onResume(); } catch (Throwable ignored) {}
         try { w.evaluateJavascript("try{window.__npKeepAlive&&window.__npKeepAlive()}catch(e){}", null); } catch (Throwable ignored) {}
       }
+      // ---- position/duration for the notification seekbar (audio-engine tracks carry
+      // currentTime on the single <audio> element; YT-iframe tracks report 0|0 = no bar)
+      try {
+        w.evaluateJavascript("(function(){try{var a=document.querySelector('audio');if(!a)return'';var d=a.duration;return (a.currentTime||0)+'|'+(isFinite(d)?d:0)}catch(e){return''}})()",
+          new android.webkit.ValueCallback<String>() {
+            @Override public void onReceiveValue(String raw) {
+              try {
+                String s = raw == null ? "" : raw.trim();
+                if (s.length() > 1 && s.charAt(0) == '"') s = s.substring(1, s.length() - 1);
+                String[] pp = s.split("\\|");
+                if (pp.length < 2) return;
+                double np = Double.parseDouble(pp[0]); double nd = Double.parseDouble(pp[1]);
+                boolean pc = Math.abs(np - posSec) > 2.0;
+                boolean dc = Math.abs(nd - durSec) > 1.0;
+                posSec = np; durSec = nd;
+                if ((pc || dc) && durSec > 0) updateSession();
+              } catch (Exception ignored) {}
+            }
+          });
+      } catch (Throwable ignored) {}
       // ---- heartbeat for the in-app card (hidden #__svc div; title stays owned by the app)
       String info = "tick " + (playing ? "PLAYING" : "paused") + " | " + js(title) + " | " + js(artist)
         + (lastBuildErr.length() > 0 ? " | E:" + js(crop(lastBuildErr, 24)) : "");
@@ -130,6 +151,8 @@ public class NowPlayingService extends Service {
   private volatile String artist = "Music";
   private volatile String album = "";
   private volatile boolean playing = false;
+  private volatile double posSec = 0;
+  private volatile double durSec = 0;
   public static volatile String lastBuildErr = "";
 
   // One-line self-report surfaced all the way to the in-app status card (no adb needed).
@@ -154,6 +177,7 @@ public class NowPlayingService extends Service {
         @Override public void onPause()             { send("pause"); }
         @Override public void onSkipToNext()        { send("next"); }
         @Override public void onSkipToPrevious()    { send("prev"); }
+        @Override public void onSeekTo(long pos) { seekTo(pos); }
       });
       audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
       mTick.postDelayed(mTickRun, 1500);
@@ -172,6 +196,16 @@ public class NowPlayingService extends Service {
       android.webkit.WebView w = MainActivity.npWebView;
       if (w != null && ("play".equals(a) || "pause".equals(a) || "next".equals(a) || "prev".equals(a) || "stop".equals(a)))
         w.evaluateJavascript("try{window.__npAct&&window.__npAct('" + a + "')}catch(e){}", null);
+    } catch (Throwable ignored) {}
+  }
+
+  // Notification/lockscreen seekbar drag → seek the WebView player (audio or YT iframe).
+  private void seekTo(long posMs) {
+    try {
+      android.webkit.WebView w = MainActivity.npWebView;
+      if (w != null) w.evaluateJavascript("try{window.__npSeek&&window.__npSeek(" + (posMs/1000.0) + ")}catch(e){}", null);
+      posSec = posMs/1000.0;
+      updateSession();
     } catch (Throwable ignored) {}
   }
 
@@ -258,13 +292,15 @@ public class NowPlayingService extends Service {
       .putString(MediaMetadata.METADATA_KEY_ARTIST, artist)
       .putString(MediaMetadata.METADATA_KEY_ALBUM, album.isEmpty() ? artist : album);
     if (art != null) mb.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, art);
+    if (durSec > 0) mb.putLong(MediaMetadata.METADATA_KEY_DURATION, (long)(durSec * 1000));
     mediaSession.setMetadata(mb.build());
+    long posMs = durSec > 0 ? (long)(posSec * 1000) : PlaybackState.PLAYBACK_POSITION_UNKNOWN;
     mediaSession.setPlaybackState(new PlaybackState.Builder()
       .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE
         | PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_SKIP_TO_NEXT
-        | PlaybackState.ACTION_SKIP_TO_PREVIOUS)
+        | PlaybackState.ACTION_SKIP_TO_PREVIOUS | PlaybackState.ACTION_SEEK_TO)
       .setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED,
-        PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1f)
+        posMs, 1f, SystemClock.elapsedRealtime())
       .build());
     } catch (Exception ignored) {}
   }

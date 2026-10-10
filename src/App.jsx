@@ -116,7 +116,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-6'
+const APP_BUILD = 'itrace-7'
 
 function NpDiagCard({ toast, engine }){
   // Self-contained on purpose: ProfileView and App are different components — earlier this
@@ -541,12 +541,20 @@ export default function App(){
     return ()=>{ alive = false; window.removeEventListener('focus', recheck); document.removeEventListener('visibilitychange', recheck) }
   },[])
   const npActionRef = useRef(null)
+  const npLastActRef = useRef({})
+  const currentRef = useRef(null)
+  currentRef.current = current
   npActionRef.current = (a)=>{
+    // Service delivers every action TWICE (plugin listener + zero-bridge eval) with the
+    // same stale isPlaying — toggle-style handling made pause a no-op and next skip 2.
+    // Idempotent set + 700ms guard fixes both.
+    const now = Date.now()
+    try{ if(now - (npLastActRef.current[a]||0) < 700) return; npLastActRef.current[a] = now }catch{}
     if(a==='next') handleNext()
     else if(a==='prev') handlePrev()
-    else if(a==='play'){ if(!isPlaying) togglePlay() }
-    else if(a==='pause'){ if(isPlaying) togglePlay() }
-    else if(a==='stop'){ if(isPlaying) togglePlay(); npStop() }
+    else if(a==='play'){ if(currentRef.current) setIsPlaying(true) }
+    else if(a==='pause'){ setIsPlaying(false) }
+    else if(a==='stop'){ setIsPlaying(false); npStop() }
   }
   useEffect(()=>{
     const off = npStart(a=>{ if(npActionRef.current) npActionRef.current(a) })

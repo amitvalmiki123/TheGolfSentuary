@@ -192,6 +192,12 @@ public class NowPlayingService extends Service {
       stopSelf();
       return START_NOT_STICKY;
     }
+    // Notification buttons land here as plain startService intents — without these,
+    // prev/play/next taps fell through to the generic update path and did NOTHING.
+    if (ACTION_PLAY.equals(a))  { playing = true;  send("play");  updateSession(); startForegroundNow(); return START_NOT_STICKY; }
+    if (ACTION_PAUSE.equals(a)) { playing = false; send("pause"); updateSession(); startForegroundNow(); return START_NOT_STICKY; }
+    if (ACTION_PREV.equals(a))  { send("prev"); return START_NOT_STICKY; }
+    if (ACTION_NEXT.equals(a))  { send("next"); return START_NOT_STICKY; }
     if (intent != null) {
       String t = intent.getStringExtra("title");   if (t != null) title = t;
       String s = intent.getStringExtra("artist");   if (s != null) artist = s;

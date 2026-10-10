@@ -705,10 +705,17 @@ export async function searchITunes(query, limit=6){
 }
 
 // Unified search — Genuine full only (Spotify/Resso style): Piped+Invidious+Saavn primary, iTunes preview only as last resort and filtered out if full exists
+// Saavn-pure: videoId tracks play via the YT iframe, which Android pauses in
+// background — for Indian queries they are dropped whenever Saavn is healthy.
+const _svN = (t)=> (Array.isArray(t)?t:[]).filter(x=> String(x.source||'').startsWith('Saavn')).length
+const _noVid = (t)=> (Array.isArray(t)?t:[]).filter(x=> !x.videoId)
+const _indianRe = /[\u0900-\u097F]|arijit|pritam|punjab|punjabi|hindi|sidhu|diljit|mankirt|shubh|love|90s|bollywood|bhojpuri|haryanvi|shreya|jubin|anuv|atif|sonu|kumar|alka|udit|shaan|honey|singh|kaur|yo ?yo|badshah|neha|tony|kishore|lata|asa|rafter|dhillon|gill|waraam|heera|bohra|pawande|karoran|intense/
 export async function unifiedSearch(query, limit=24, offset=0){
   _lastSearchNextpage = null
   if(!query.trim()) return []
   const qtag = String(query).slice(0,14)
+  const qlow=query.toLowerCase()
+  const isIndian=_indianRe.test(qlow)
   // Try backend (MongoDB + Saavn/Piped proxy) first — like JioSaavn/Gaana
   if(BACKEND_URL || SELF_HOSTED || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV)){
     try{
@@ -721,14 +728,18 @@ export async function unifiedSearch(query, limit=24, offset=0){
         if(data.tracks && data.tracks.length){
           // Only trust real tracks (videoId or working Saavn CDN audio) — never placeholder/fallback rows
           const real = data.tracks.filter(x=> x && !String(x.id||'').startsWith('fallback-') && (x.videoId || (typeof x.audio==='string' && x.audio.startsWith('http') && !x.audio.includes('...'))))
-          const nSv = real.filter(x=> String(x.source||'').startsWith('Saavn')).length
-          if(real.length >= 6 && nSv >= 4){ sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}`); return real.slice(0, limit) }
+          const nSv = _svN(real)
+          if(real.length >= 6 && nSv >= 4){
+            if(isIndian){ const pure = _noVid(real); _lastSearchNextpage = null; sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}+svonly${pure.length}`); return pure.slice(0, limit) }
+            sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}`); return real.slice(0, limit)
+          }
           if(real.length >= 6 && nSv < 4){
             // Backend won with YT-only tracks — top up with device-Saavn so
             // zero-Saavn screen par bhi Saavn flavours milte rahein.
-            const top = await searchSaavn(query, 10).catch(()=>[])
+            const top = await searchSaavn(query, 16).catch(()=>[])
             const merged = dedup([...(Array.isArray(top)?top:[]), ...real]).slice(0, limit)
-            const mSv = merged.filter(x=> String(x.source||'').startsWith('Saavn')).length
+            const mSv = _svN(merged)
+            if(isIndian && mSv >= 2){ const pure = _noVid(merged); _lastSearchNextpage = null; sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}+top${mSv}+svonly${pure.length}`); return pure.slice(0, limit) }
             sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}+top${mSv}`)
             return merged
           }
@@ -737,8 +748,6 @@ export async function unifiedSearch(query, limit=24, offset=0){
       } else sdiag(`s:${qtag} be:http${r.status}`)
     }catch(e){ sdiag(`s:${qtag} be:${/abort/i.test(String((e&&e.message)||e)) ? 'timeout' : 'fail'}`) }
   }
-  const qlow=query.toLowerCase()
-  const isIndian=/[\u0900-\u097F]|arijit|pritam|punjab|punjabi|hindi|sidhu|diljit|mankirt|shubh|love|90s|bollywood|bhojpuri|haryanvi|shreya|jubin|anuv|atif|sonu|kumar|alka|udit|shaan|honey|singh|kaur|yo ?yo|badshah|neha|tony|kishore|lata|asa|rafter|dhillon|gill|waraam|heera|bohra|pawande|karoran|intense/.test(qlow)
   let tracks = []
   // SOURCES IN PARALLEL — ab koi "pehle Piped ke 4s, phir Saavn" wait nahi (honey singh jaise cases fast)
   const [saavnR, pipedR] = await Promise.all([
@@ -755,7 +764,7 @@ export async function unifiedSearch(query, limit=24, offset=0){
     const filtered = tracks.filter(x=> !x.isPreview)
     if(filtered.length >= 4) tracks = filtered
   }
-  if(tracks.length >= 14){ const out = rankByRelevance(tracks, query).slice(0, limit); try{ sdiag(`s:${qtag} out:${out.length}/sv${out.filter(x=>String(x.source||'').startsWith('Saavn')).length}`) }catch(e){}; return out }
+  if(tracks.length >= 14){ let out = rankByRelevance(tracks, query).slice(0, limit); if(isIndian && _svN(out) >= 2){ out = _noVid(out); _lastSearchNextpage = null } try{ sdiag(`s:${qtag} out:${out.length}/sv${_svN(out)}`) }catch(e){}; return out }
   if(tracks.length < 12){
     const inv = await searchInvidious(query, limit - tracks.length).catch(()=>({tracks:[]}))
     tracks = dedup([...tracks, ...(inv.tracks||[])])
@@ -806,6 +815,7 @@ export async function unifiedSearchPaginated(query, limit=20, nextpage=null){
     const filtered = tracks.filter(x=> !x.isPreview)
     if(filtered.length) tracks = filtered
   }
+  if(_indianRe.test(String(query||'').toLowerCase()) && _svN(tracks) >= 2) tracks = _noVid(tracks)
   return { tracks: rankByRelevance(tracks, query).slice(0, limit), nextpage: res.nextpage || null }
 }
 
@@ -888,7 +898,7 @@ export async function trendingByCategory(cat, limit=20, offset=0){
     const pipedB = Array.isArray(b)? b: b.tracks||[]
     const pipedC = Array.isArray(c)? c: c.tracks||[]
     const merged = dedup([...a, ...pipedB, ...pipedC])
-    if(merged.length>=6) return merged.slice(0, limit)
+    if(merged.length>=6){ const pure = _svN(merged) >= 2 ? _noVid(merged) : merged; return pure.slice(0, limit) }
   }
   return strictByCategory(await unifiedSearch(q, limit+8, offset), cat).slice(0, limit)
 }

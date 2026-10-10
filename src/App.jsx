@@ -116,7 +116,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-10'
+const APP_BUILD = 'itrace-11'
 
 function NpDiagCard({ toast, engine }){
   // Self-contained on purpose: ProfileView and App are different components — earlier this
@@ -1828,7 +1828,7 @@ export default function App(){
           </div>}
 
           {/* Full player */}
-          {current && <div className={`fixed inset-0 z-50 bg-[#060306] overflow-y-auto transition-transform duration-500 ${showFull? 'translate-y-0':'translate-y-full'}`}
+          {current && <div className={`fixed inset-0 z-50 w-full max-w-[100vw] overflow-y-auto overflow-x-hidden bg-[#060306] transition-transform duration-500 ${showFull? 'translate-y-0':'translate-y-full'}`}
             onTouchStart={e=>{ touchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() } }}
             onTouchEnd={e=>{ const s = touchRef.current; if(!s) return; const dx = e.changedTouches[0].clientX - s.x; const dy = e.changedTouches[0].clientY - s.y; if(Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy)*1.4){ if(dx < 0) handleNext(); else handlePrev(); } else if(dy > 120 && Math.abs(dy) > Math.abs(dx)*1.2){ setShowFull(false) } touchRef.current=null }}>
             <div className="min-h-screen relative">
@@ -1839,8 +1839,8 @@ export default function App(){
                   <div className="text-center"><div className="text-xs tracking-[0.18em] font-bold text-white/50">NOW PLAYING</div><div className="text-sm font-semibold">Playing from <span className="text-[#D5AA55]">{current.source || 'Sur Sangam'}</span></div></div>
                   <button className="w-10 h-10 rounded-full bg-white/10 backdrop-blur border border-white/10 grid place-items-center hover:bg-white/15"><MoreIcon/></button>
                 </div>
-                <div className="mt-6 lg:mt-10 grid lg:grid-cols-[1.1fr_0.9fr] gap-8 lg:gap-12 items-center">
-                  <div className="relative mx-auto w-full max-w-[520px]">
+                <div className="mt-6 lg:mt-10 grid grid-cols-1 lg:grid-cols-[1.1fr_0.9fr] gap-8 lg:gap-12 items-center min-w-0">
+                  <div className="relative mx-auto w-full max-w-[520px] min-w-0">
                     <div className="relative aspect-square rounded-[32px] overflow-hidden shadow-[0_30px_80px_rgba(0,0,0,0.6)] bg-black">
                       <img src={current.cover} alt="" className={`w-full h-full object-cover ${isPlaying? 'scale-[1.02]':'scale-100'} transition duration-[2000ms]`}/>
                       <div className="absolute inset-0 rounded-[32px] ring-1 ring-white/10"/>
@@ -1855,9 +1855,9 @@ export default function App(){
                       <button onClick={()=> setShowAddToPl(current)} className="w-11 h-11 rounded-full bg-white/10 backdrop-blur-xl border border-white/15 grid place-items-center text-white hover:bg-white/15"><PlusIcon/></button>
                     </div>
                   </div>
-                  <div className="flex flex-col">
+                  <div className="flex flex-col min-w-0">
                     <div className="text-center lg:text-left">
-                      <h1 className="text-[32px] lg:text-[40px] font-bold font-display leading-none tracking-tight break-words [overflow-wrap:anywhere] line-clamp-2">{current.title}</h1><p className="text-lg text-white/70 mt-2 truncate">{current.artist}</p><p className="text-sm text-white/40 mt-1">{[ (current.album && current.album!=='—')? current.album : null, /^\d+(\.\d+)?[MK]$/i.test(String(current.plays||''))? `${current.plays} plays` : null, current.source || null ].filter(Boolean).join(' • ')}</p>
+                      <h1 className="text-[32px] lg:text-[40px] font-bold font-display leading-none tracking-tight break-words [overflow-wrap:anywhere] line-clamp-2">{current.title}</h1><p className="text-lg text-white/70 mt-2 truncate">{current.artist}</p><p className="text-sm text-white/40 mt-1 break-words [overflow-wrap:anywhere]">{[ (current.album && current.album!=='—')? current.album : null, /^\d+(\.\d+)?[MK]$/i.test(String(current.plays||''))? `${current.plays} plays` : null, current.source || null ].filter(Boolean).join(' • ')}</p>
                       <div className="lg:hidden flex items-center justify-center gap-3 mt-5">
                         <button onClick={()=> toggleLike(current.id, current)} className={`w-11 h-11 rounded-full border grid place-items-center ${liked.has(current.id)? 'bg-[#C35445] border-[#C35445] text-white':'bg-white/10 border-white/10 text-white'}`}><Heart filled={liked.has(current.id)}/></button>
                         <button onClick={()=> handleDownload(current)} className={`px-5 py-2.5 rounded-full text-sm font-bold border ${downloaded.find(d=> String(d.id)===String(current.id))? 'bg-emerald-500 border-emerald-500 text-white':'bg-white/10 border-white/10 text-white'}`}>{downloaded.find(d=> String(d.id)===String(current.id))? 'Downloaded ✓':'Download'}</button>
@@ -1870,7 +1870,7 @@ export default function App(){
                           <div className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-[14px] h-[14px] rounded-full bg-white shadow-[0_0_0_3px_rgba(255,255,255,0.25),0_2px_8px_rgba(0,0,0,0.6)]" style={{left:`${duration? Math.min(100,(progress/duration)*100):0}%`}}/>
                         </div><span className="text-xs font-medium tabular-nums text-white/70 w-10">-{formatTime(Math.max(0,(duration||0)-progress))}</span></div>
                       <div className="flex items-center justify-between mt-6"><button onClick={()=> setShuffle(!shuffle)} className={`w-10 h-10 grid place-items-center rounded-full ${shuffle? 'text-[#D5AA55] bg-[#D5AA55]/15':'text-white/60 hover:text-white'}`}><ShuffleIcon active={shuffle}/></button><button onClick={handlePrev} className="w-12 h-12 grid place-items-center text-white hover:bg-white/10 rounded-full"><PrevIcon large/></button><button onClick={togglePlay} className="w-[72px] h-[72px] rounded-full bg-white text-black grid place-items-center shadow-[0_10px_30px_rgba(255,255,255,0.25)] hover:scale-[1.02] active:scale-[0.98] transition">{isPlaying? <PauseIcon large dark/>:<PlayIcon large dark/>}</button><button onClick={handleNext} className="w-12 h-12 grid place-items-center text-white hover:bg-white/10 rounded-full"><NextIcon large/></button><button onClick={()=> setRepeat(r=> (r+1)%3)} className={`w-10 h-10 grid place-items-center rounded-full ${repeat!==0? 'text-[#D5AA55] bg-[#D5AA55]/15':'text-white/60 hover:text-white'}`}><RepeatIcon mode={repeat}/></button></div>
-                      <div className="flex items-center justify-between mt-8 gap-3"><button onClick={()=> setShowLyrics(!showLyrics)} className={`flex-1 py-3 rounded-full text-sm font-bold border transition ${showLyrics? 'bg-white text-black border-white':'bg-white/10 text-white border-white/10 hover:bg-white/15'}`}>{lyricsLoading? 'Lyrics…' : showLyrics? 'Hide Lyrics':'View Lyrics'}</button><button onClick={()=> setShowQueue(!showQueue)} className={`px-5 py-3 rounded-full text-sm font-bold border ${showQueue? 'bg-white text-black border-white':'bg-white/10 text-white border-white/10'}`}>Queue</button></div>
+                      <div className="flex items-center justify-between mt-8 gap-3"><button onClick={()=> setShowLyrics(!showLyrics)} className={`flex-1 py-3 rounded-full text-sm font-bold border transition ${showLyrics? 'bg-white text-black border-white':'bg-white/10 text-white border-white/10 hover:bg-white/15'}`}>{lyricsLoading? 'Lyrics…' : showLyrics? 'Hide Lyrics':'View Lyrics'}</button><button onClick={()=> setShowQueue(!showQueue)} className={`px-5 py-3 rounded-full text-sm font-bold border shrink-0 ${showQueue? 'bg-white text-black border-white':'bg-white/10 text-white border-white/10'}`}>Queue</button></div>
                       <div className="hidden lg:flex items-center gap-3 mt-6"><VolumeIcon muted={isMuted} volume={volume}/><input type="range" min={0} max={1} step={0.01} value={isMuted?0:volume} onChange={e=>{ setVolume(Number(e.target.value)); setIsMuted(false)}} className="range flex-1 accent-white"/><button onClick={()=> setIsMuted(!isMuted)} className="text-xs font-semibold text-white/60 hover:text-white">{isMuted? 'Muted':'Volume'}</button></div>
                     </div>
                   </div>
@@ -1885,7 +1885,7 @@ export default function App(){
                       <div className="space-y-2.5 text-[15px] leading-relaxed">
                         {lyrics.lines.map((ln,i)=>{
                           const active = lyrics.synced && progress >= ln.t && (i+1 >= lyrics.lines.length || progress < lyrics.lines[i+1].t)
-                          return <p key={i} {...(active? {'data-active':'1'}:{})} className={active? 'rounded-lg bg-white text-black font-bold px-2.5 py-1 -mx-1.5' : lyrics.synced? 'text-white/40' : 'text-white/80'}>{ln.text}</p>
+                          return <p key={i} {...(active? {'data-active':'1'}:{})} className={active? 'rounded-lg bg-white text-black font-bold px-2.5 py-1 -mx-1.5' : lyrics.synced? 'text-white/40' : 'text-white/80'} style={{overflowWrap:'anywhere', wordBreak:'break-word'}}>{ln.text}</p>
                         })}
                         <p className="text-white/25 text-xs pt-3">Lyrics via LRCLIB {lyrics.synced ? '• synced to playback' : '• plain text'}</p>
                       </div>
@@ -1977,7 +1977,7 @@ export default function App(){
             </div>
           )}
 
-          {toast && <div className="fixed bottom-28 left-1/2 -translate-x-1/2 z-50 bg-white text-black px-5 py-2.5 rounded-full text-sm font-semibold shadow-xl">{toast}</div>}
+          {toast && <div className="fixed bottom-28 left-1/2 -translate-x-1/2 z-50 max-w-[92vw] text-center bg-white text-black px-5 py-2.5 rounded-2xl text-sm font-semibold shadow-xl break-words">{toast}</div>}
 
           <nav className="lg:hidden fixed bottom-[84px] left-3 right-3 z-30">
             <div className="glass-strong rounded-full px-2 py-2 flex items-center justify-around shadow-xl">

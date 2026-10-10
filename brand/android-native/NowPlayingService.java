@@ -57,11 +57,12 @@ public class NowPlayingService extends Service {
           if (p.length >= 4) {
             boolean pl = "1".equals(p[1]);
             String t = p[2].trim(); String a = p[3].trim();
-            boolean changed = !t.equals(title) || !a.equals(artist) || pl != playing;
+            boolean trackChanged = (!t.isEmpty() && !t.equals(title)) || (!a.isEmpty() && !a.equals(artist));
+            boolean changed = trackChanged || pl != playing;
             if (!t.isEmpty()) title = t;
             if (!a.isEmpty()) artist = a;
             playing = pl;
-            if (changed) { posSec = 0; durSec = 0; updateSession(); startForegroundNow(); }
+            if (changed) { if (trackChanged) { posSec = 0; durSec = 0; } reposts++; lastCause = "tick1"; updateSession(); startForegroundNow(); }
             setWake(playing);
           }
         }
@@ -79,10 +80,14 @@ public class NowPlayingService extends Service {
               String al = o.optString("al");
               String art = o.optString("art");
               String t = o.optString("t");
-              if (!t.isEmpty()) { String a = o.optString("a"); boolean pl = o.optBoolean("p");
-                boolean changed = !t.equals(title) || pl != playing;
+              if (t.length() > 60) t = t.substring(0, 60);
+              String a0 = o.optString("a");
+              if (a0.length() > 40) a0 = a0.substring(0, 40);
+              if (!t.isEmpty()) { String a = a0; boolean pl = o.optBoolean("p");
+                boolean trackChanged = !t.equals(title) || (!a.isEmpty() && !a.equals(artist));
+                boolean changed = trackChanged || pl != playing;
                 title = t; if (!a.isEmpty()) artist = a; album = al; playing = pl;
-                if (changed) { posSec = 0; durSec = 0; updateSession(); startForegroundNow(); }
+                if (changed) { if (trackChanged) { posSec = 0; durSec = 0; } reposts++; lastCause = "tick2"; updateSession(); startForegroundNow(); }
                 setWake(playing);
               }
               if (!art.isEmpty() && !art.equals(artUrlLoaded)) loadArt(art);
@@ -121,7 +126,7 @@ public class NowPlayingService extends Service {
           });
       } catch (Throwable ignored) {}
       // ---- heartbeat for the in-app card (hidden #__svc div; title stays owned by the app)
-      String info = "tick " + (playing ? "PLAYING" : "paused") + " | " + js(title) + " | " + js(artist)
+      String info = "tick " + (playing ? "PLAYING" : "paused") + " | " + js(title) + " | " + js(artist) + " | rp:" + reposts + "/" + lastCause
         + (lastBuildErr.length() > 0 ? " | E:" + js(crop(lastBuildErr, 24)) : "");
       try {
         w.evaluateJavascript("try{var d=document.getElementById('__svc');if(!d){d=document.createElement('div');d.id='__svc';d.style.display='none';document.body.appendChild(d)}d.textContent='" + info + "'}catch(e){}", null);
@@ -154,6 +159,8 @@ public class NowPlayingService extends Service {
   private volatile double posSec = 0;
   private volatile double durSec = 0;
   private volatile double durPosted = -1;
+  private volatile int reposts = 0;
+  private volatile String lastCause = "-";
   public static volatile String lastBuildErr = "";
 
   // One-line self-report surfaced all the way to the in-app status card (no adb needed).
@@ -161,7 +168,7 @@ public class NowPlayingService extends Service {
     NowPlayingService sv = instance;
     if (sv == null) return "service OFF" + (lastBuildErr.isEmpty()?"":(" | " + lastBuildErr));
     return "on | title=" + (sv.title.length() > 26 ? sv.title.substring(0,26) : sv.title)
-      + " | playing=" + sv.playing + " | session=" + (sv.mediaSession != null)
+      + " | playing=" + sv.playing + " | session=" + (sv.mediaSession != null) + " | rp=" + sv.reposts + "/" + sv.lastCause
       + (lastBuildErr.isEmpty() ? "" : " | " + lastBuildErr);
   }
 
@@ -229,8 +236,8 @@ public class NowPlayingService extends Service {
     }
     // Notification buttons land here as plain startService intents — without these,
     // prev/play/next taps fell through to the generic update path and did NOTHING.
-    if (ACTION_PLAY.equals(a))  { playing = true;  send("play");  updateSession(); startForegroundNow(); return START_NOT_STICKY; }
-    if (ACTION_PAUSE.equals(a)) { playing = false; send("pause"); updateSession(); startForegroundNow(); return START_NOT_STICKY; }
+    if (ACTION_PLAY.equals(a))  { playing = true;  send("play");  reposts++; lastCause = "act"; updateSession(); startForegroundNow(); return START_NOT_STICKY; }
+    if (ACTION_PAUSE.equals(a)) { playing = false; send("pause"); reposts++; lastCause = "act"; updateSession(); startForegroundNow(); return START_NOT_STICKY; }
     if (ACTION_PREV.equals(a))  { send("prev"); return START_NOT_STICKY; }
     if (ACTION_NEXT.equals(a))  { send("next"); return START_NOT_STICKY; }
     if (intent != null) {
@@ -247,7 +254,7 @@ public class NowPlayingService extends Service {
       if (pl != playing) { playing = pl; changed = true; }
       String url = intent.getStringExtra("artUrl");
       if (url != null && !url.isEmpty() && !url.equals(artUrlLoaded)) loadArt(url);
-      if (changed) { updateSession(); startForegroundNow(); }
+      if (changed) { reposts++; lastCause = "push"; updateSession(); startForegroundNow(); }
     } else {
       updateSession();
       startForegroundNow();
@@ -442,7 +449,7 @@ public class NowPlayingService extends Service {
         Bitmap bmp = BitmapFactory.decodeStream(c.getInputStream(), null, o2);
         if (bmp != null) {
           art = bmp;
-          new Handler(Looper.getMainLooper()).post(() -> { updateSession(); startForegroundNow(); });
+          new Handler(Looper.getMainLooper()).post(() -> { reposts++; lastCause = "art"; updateSession(); startForegroundNow(); });
         }
       } catch (Exception ignored) {
       } finally {

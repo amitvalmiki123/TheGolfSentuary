@@ -709,7 +709,7 @@ export async function searchITunes(query, limit=6){
 // background — for Indian queries they are dropped whenever Saavn is healthy.
 const _svN = (t)=> (Array.isArray(t)?t:[]).filter(x=> String(x.source||'').startsWith('Saavn')).length
 const _noVid = (t)=> (Array.isArray(t)?t:[]).filter(x=> !x.videoId)
-const _indianRe = /[\u0900-\u097F]|arijit|pritam|punjab|punjabi|hindi|sidhu|diljit|mankirt|shubh|love|90s|bollywood|bhojpuri|haryanvi|shreya|jubin|anuv|atif|sonu|kumar|alka|udit|shaan|honey|singh|kaur|yo ?yo|badshah|neha|tony|kishore|lata|asa|rafter|dhillon|gill|waraam|heera|bohra|pawande|karoran|intense|aujla|aulakh|sandhu|handa|mithoon|akhil|bhullar|paudwal|kakkar/
+const _indianRe = /[\u0900-\u097F]|arijit|pritam|punjab|punjabi|hindi|sidhu|diljit|mankirt|shubh|love|90s|bollywood|bhojpuri|haryanvi|shreya|jubin|anuv|atif|sonu|kumar|alka|udit|shaan|honey|singh|kaur|yo ?yo|badshah|neha|tony|kishore|lata|asa|rafter|dhillon|gill|waraam|heera|bohra|pawande|karoran|intense|aujla|aulakh|sandhu|handa|mithoon|akhil|bhullar|paudwal|kakkar|praak|qismat|jaani|armaan|ammy|ninja|jass|buttar|virk|gurnam|sharry|maan|talwiinder|saiyaara|riar/
 export async function unifiedSearch(query, limit=24, offset=0){
   _lastSearchNextpage = null
   if(!query.trim()) return []
@@ -730,8 +730,7 @@ export async function unifiedSearch(query, limit=24, offset=0){
           const real = data.tracks.filter(x=> x && !String(x.id||'').startsWith('fallback-') && (x.videoId || (typeof x.audio==='string' && x.audio.startsWith('http') && !x.audio.includes('...'))))
           const nSv = _svN(real)
           if(real.length >= 6 && nSv >= 4){
-            if(isIndian){ const pure = _noVid(real); _lastSearchNextpage = null; sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}+svonly${pure.length}`); return pure.slice(0, limit) }
-            sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}`); return real.slice(0, limit)
+            { const pure = _noVid(real); _lastSearchNextpage = null; sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}+svonly${pure.length}`); return pure.slice(0, limit) }
           }
           if(real.length >= 6 && nSv < 4){
             // Backend won with YT-only tracks — top up with device-Saavn so
@@ -739,7 +738,7 @@ export async function unifiedSearch(query, limit=24, offset=0){
             const top = await searchSaavn(query, 16).catch(()=>[])
             const merged = dedup([...(Array.isArray(top)?top:[]), ...real]).slice(0, limit)
             const mSv = _svN(merged)
-            if(isIndian && mSv >= 2){ const pure = _noVid(merged); _lastSearchNextpage = null; sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}+top${mSv}+svonly${pure.length}`); return pure.slice(0, limit) }
+            if(mSv >= 2){ const pure = _noVid(merged); _lastSearchNextpage = null; sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}+top${mSv}+svonly${pure.length}`); return pure.slice(0, limit) }
             sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}+top${mSv}`)
             return merged
           }
@@ -764,7 +763,7 @@ export async function unifiedSearch(query, limit=24, offset=0){
     const filtered = tracks.filter(x=> !x.isPreview)
     if(filtered.length >= 4) tracks = filtered
   }
-  if(tracks.length >= 14){ let out = rankByRelevance(tracks, query).slice(0, limit); if(isIndian && _svN(out) >= 2){ out = _noVid(out); _lastSearchNextpage = null } try{ sdiag(`s:${qtag} out:${out.length}/sv${_svN(out)}`) }catch(e){}; return out }
+  if(tracks.length >= 14){ let out = rankByRelevance(tracks, query).slice(0, limit); if(_svN(out) >= 2){ out = _noVid(out); _lastSearchNextpage = null } try{ sdiag(`s:${qtag} out:${out.length}/sv${_svN(out)}`) }catch(e){}; return out }
   if(tracks.length < 12){
     const inv = await searchInvidious(query, limit - tracks.length).catch(()=>({tracks:[]}))
     tracks = dedup([...tracks, ...(inv.tracks||[])])
@@ -790,7 +789,7 @@ export async function unifiedSearch(query, limit=24, offset=0){
     if(filtered.length >= 4) tracks = filtered
   }
   let outF = rankByRelevance(tracks, query).slice(0, limit)
-  if(isIndian && _svN(outF) >= 2){ outF = _noVid(outF); _lastSearchNextpage = null }
+  if(_svN(outF) >= 2){ outF = _noVid(outF); _lastSearchNextpage = null }
   try{ sdiag(`s:${qtag} out:${outF.length}/sv${_svN(outF)}`) }catch(e){}
   return outF
 }
@@ -816,7 +815,7 @@ export async function unifiedSearchPaginated(query, limit=20, nextpage=null){
     const filtered = tracks.filter(x=> !x.isPreview)
     if(filtered.length) tracks = filtered
   }
-  if(_indianRe.test(String(query||'').toLowerCase()) && _svN(tracks) >= 2) tracks = _noVid(tracks)
+  if(_svN(tracks) >= 2) tracks = _noVid(tracks)
   return { tracks: rankByRelevance(tracks, query).slice(0, limit), nextpage: res.nextpage || null }
 }
 
@@ -914,7 +913,7 @@ export async function artistSongs(artist, limit=24){
   const piped = pipedRes.tracks || []
   const invTracks = inv.tracks||[]
   const merged = dedup([...piped, ...invTracks, ...saavn])
-  if(_indianRe.test(String(artist||'').toLowerCase()) && _svN(merged) >= 2) return _noVid(merged).slice(0, limit)
+  if(_svN(merged) >= 2) return _noVid(merged).slice(0, limit)
   if(merged.length) return merged.slice(0, limit)
   return unifiedSearch(artist, limit).then(r=> r.slice(0,limit))
 }
@@ -938,7 +937,7 @@ export async function artistSongsPaginated(artist, limit=20, nextpage=null){
     const inv = await searchInvidious(`${artist} songs official`, 8).catch(()=>({tracks:[]}))
     tracks = dedup([...tracks, ...(inv.tracks||[])])
   }
-  if(_indianRe.test(String(artist||'').toLowerCase()) && _svN(tracks) >= 2) tracks = _noVid(tracks)
+  if(_svN(tracks) >= 2) tracks = _noVid(tracks)
   return { tracks: tracks.slice(0,limit), nextpage: pipedRes.nextpage || null }
 }
 

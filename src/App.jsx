@@ -116,7 +116,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-13'
+const APP_BUILD = 'itrace-14'
 
 function NpDiagCard({ toast, engine }){
   // Self-contained on purpose: ProfileView and App are different components — earlier this
@@ -1441,14 +1441,16 @@ export default function App(){
                               const isDl = !!downloaded.find(d=> String(d.id)===String(t.id))
                               return (
                                 <div key={t.id} className={`group flex items-center gap-3 p-2 rounded-xl transition ${String(current?.id)===String(t.id)? 'bg-white text-black':'hover:bg-white/5 border border-transparent hover:border-white/5'}`}>
-                                  <button onClick={()=> playTrack(t, [...onlineResults, ...queue])} className="relative w-12 h-12 rounded-lg overflow-hidden shrink-0">
-                                    <img src={t.cover} alt="" className="w-full h-full object-cover"/>
-                                    <span className={`absolute inset-0 grid place-items-center bg-black/40 opacity-0 group-hover:opacity-100 ${String(current?.id)===String(t.id)? '!opacity-100 bg-black/20':''}`}>{inQueue? <PauseMini dark/> : <PlayMini dark/>}</span>
+                                  <button onClick={()=> playTrack(t, [...onlineResults, ...queue])} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                                    <span className="relative block w-12 h-12 rounded-lg overflow-hidden shrink-0">
+                                      <img src={t.cover} alt="" className="w-full h-full object-cover"/>
+                                      <span className={`absolute inset-0 grid place-items-center bg-black/40 opacity-0 group-hover:opacity-100 ${String(current?.id)===String(t.id)? '!opacity-100 bg-black/20':''}`}>{inQueue? <PauseMini dark/> : <PlayMini dark/>}</span>
+                                    </span>
+                                    <span className="min-w-0 flex-1 block">
+                                      <span className={`block text-sm font-medium truncate ${String(current?.id)===String(t.id)?'text-black':'text-white'}`}>{t.title} {t.source && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full bg-white/10 border border-white/10 align-middle">{t.source}</span>}</span>
+                                      <span className={`block text-xs truncate ${String(current?.id)===String(t.id)?'text-black/60':'text-white/60'}`}>{t.artist} • {t.album}</span>
+                                    </span>
                                   </button>
-                                  <div className="min-w-0 flex-1">
-                                    <div className={`text-sm font-medium truncate ${String(current?.id)===String(t.id)?'text-black':'text-white'}`}>{t.title} {t.source && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full bg-white/10 border border-white/10 align-middle">{t.source}</span>}</div>
-                                    <div className={`text-xs truncate ${String(current?.id)===String(t.id)?'text-black/60':'text-white/60'}`}>{t.artist} • {t.album}</div>
-                                  </div>
                                   <span className={`hidden md:block text-xs ${String(current?.id)===String(t.id)?'text-black/50':'text-white/30'}`}>{t.durationLabel}</span>
                                   <button onClick={()=> toggleLike(t.id, t)} className={`w-8 h-8 grid place-items-center rounded-full ${liked.has(t.id)? 'text-[#C35445]':'text-white/30 hover:text-white'}`}><Heart filled={liked.has(t.id)} size={16}/></button>
                                   <div className="hidden sm:flex items-center gap-1">
@@ -1470,9 +1472,11 @@ export default function App(){
                             <div className="space-y-2">
                               {localSongs.filter(s=> s.title.toLowerCase().includes(search.toLowerCase()) || s.artist.toLowerCase().includes(search.toLowerCase())).slice(0,5).map(t=>(
                                 <div key={t.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5">
-                                  <img src={t.cover} alt="" className="w-12 h-12 rounded-lg object-cover"/>
-                                  <div className="flex-1 min-w-0"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist} • Local</div></div>
-                                  <button onClick={()=> playTrack(t, [...localSongs, ...queue])} className="w-8 h-8 grid place-items-center rounded-full bg-white text-black"><PlayMini size={12}/></button>
+                                  <button onClick={()=> playTrack(t, [...localSongs, ...queue])} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                                    <img src={t.cover} alt="" className="w-12 h-12 rounded-lg object-cover shrink-0"/>
+                                    <span className="flex-1 min-w-0 block"><span className="block text-sm font-medium truncate">{t.title}</span><span className="block text-xs text-white/50 truncate">{t.artist} • Local</span></span>
+                                  </button>
+                                  <button onClick={()=> playTrack(t, [...localSongs, ...queue])} className="w-8 h-8 grid place-items-center rounded-full bg-white text-black shrink-0"><PlayMini size={12}/></button>
                                 </div>
                               ))}
                             </div>
@@ -1751,8 +1755,7 @@ export default function App(){
                         return (
                           <div key={t.id+String(i)} className={`flex items-center gap-3 p-2 rounded-xl transition ${isCur? 'bg-white text-black':'hover:bg-white/5'}`}>
                             <span className={`hidden sm:block w-6 text-center text-xs font-bold ${isCur? 'text-black/40':'text-white/30'}`}>{String(i+1).padStart(2,'0')}</span>
-                            <button onClick={()=> playTrack(t)} className="relative w-11 h-11 rounded-lg overflow-hidden shrink-0"><img src={t.cover} alt="" className="w-full h-full object-cover"/><span className={`absolute inset-0 grid place-items-center bg-black/40 opacity-0 hover:opacity-100 ${isCur? 'opacity-100 bg-black/20':''}`}>{isCur && isPlaying? <PauseMini dark={!isCur}/>:<PlayMini dark={!isCur}/>}</span></button>
-                            <div className="min-w-0 flex-1"><div className={`text-sm font-medium truncate ${isCur? 'text-black':'text-white'}`}>{t.title} {t.source && <span className="text-[10px] bg-black/5 px-1.5 py-0.5 rounded-full border border-black/10 ml-1">{t.source}</span>}</div><div className={`text-xs truncate ${isCur? 'text-black/60':'text-white/50'}`}>{t.artist}</div></div>
+                            <button onClick={()=> playTrack(t)} className="flex items-center gap-3 flex-1 min-w-0 text-left"><span className="relative block w-11 h-11 rounded-lg overflow-hidden shrink-0"><img src={t.cover} alt="" className="w-full h-full object-cover"/><span className={`absolute inset-0 grid place-items-center bg-black/40 opacity-0 hover:opacity-100 ${isCur? 'opacity-100 bg-black/20':''}`}>{isCur && isPlaying? <PauseMini dark={!isCur}/>:<PlayMini dark={!isCur}/>}</span></span><span className="min-w-0 flex-1 block"><span className={`block text-sm font-medium truncate ${isCur? 'text-black':'text-white'}`}>{t.title} {t.source && <span className="text-[10px] bg-black/5 px-1.5 py-0.5 rounded-full border border-black/10 ml-1">{t.source}</span>}</span><span className={`block text-xs truncate ${isCur? 'text-black/60':'text-white/50'}`}>{t.artist}</span></span></button>
                             <button onClick={()=> toggleLike(t.id, t)} className={`hidden sm:grid w-8 h-8 place-items-center rounded-full ${liked.has(t.id)? 'text-[#C35445]': isCur? 'text-black/30':'text-white/30 hover:text-white'}`}><Heart filled={liked.has(t.id)} size={16}/></button>
                             <button onClick={()=> handleDownload(t)} className={`hidden sm:grid w-8 h-8 place-items-center rounded-full border ${downloaded.find(d=> String(d.id)===String(t.id))? 'bg-emerald-500 border-emerald-500 text-white':'border-white/10 text-white/40'}`}><DownloadIcon size={12}/></button>
                             <span className={`text-xs font-medium ${isCur? 'text-black/60':'text-white/40'}`}>{t.durationLabel}</span>

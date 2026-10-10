@@ -213,7 +213,9 @@ async function probeServerAudio(url){
   return detail
 }
 
-// Resolve to direct audio url (device InnerTube first — no server cold-start; YT player doesn't need it)
+// Resolve to direct audio url — ALL engines raced in PARALLEL, first playable URL wins.
+// Failure notes land PROGRESSIVELY on window.__ytDirectErr so the You-tab card shows
+// the diagnosis forming in real time instead of silent "pending" for 2 minutes.
 export async function resolveDirectAudio(track){
   const vid = String((track&&track.videoId)||'').slice(0,20)
   if(!vid) return null
@@ -221,19 +223,26 @@ export async function resolveDirectAudio(track){
     const cache = (window.__ytAudioCache = window.__ytAudioCache || {})
     if(vid in cache) return cache[vid] || null
   }
-  let url = null
   const notes = []
-  // #0 — InnerTube straight from the DEVICE: phone's mobile IP is trusted by YouTube
-  // (no bot-checks like datacenter IPs), and there's no 50s server cold-start.
-  try{
-    const it = await resolveInnerTubeAudio(vid, 10000)
-    if(it && it.url) url = it.url
-    else if(it && it.detail) notes.push(it.detail)
-  }catch(e){}
-  if(BACKEND_URL && !url){
+  let over = false
+  const note = (t)=>{ if(!t || over) return; notes.push(t); try{ window.__ytDirectErr = notes.join(' | ').slice(0,240) }catch(e){} }
+  if(typeof window!=='undefined'){ try{ window.__ytDirectErr = '' }catch(e){} }
+  // #0 — InnerTube straight from the DEVICE (trusted mobile IP, no cold-start).
+  // Fresh signed googlevideo URL — trusted as-is; <audio> error handler is the backstop.
+  const jobInner = (async()=>{
     try{
-      // 45s WIRED timeout: Render free-tier cold-starts take 20-50s to wake. (The old
-      // 9s timer was never even passed to fetch as a signal — cold start = fail.)
+      const it = await resolveInnerTubeAudio(vid, 8000)
+      if(it && it.url) return it.url
+      note(it && it.detail)
+    }catch(e){}
+    return null
+  })()
+  // #1 — server proxy (verified via probe; slow only when Render cold-starts)
+  const jobServer = (async()=>{
+    if(!BACKEND_URL) return null
+    let url = null
+    try{
+      // 45s WIRED timeout: Render free-tier cold-starts take 20-50s to wake.
       const ac = new AbortController(); const tm = setTimeout(()=>ac.abort(), 45000)
       let r = null
       try{
@@ -245,51 +254,61 @@ export async function resolveDirectAudio(track){
           // never hand the WebView an http:// media url from an https:// app (mixed content = silent fail)
           if(url.startsWith('http://') && /onrender\.com/.test(url)) url = 'https://'+url.slice(7)
         } }
-    }catch(e){ url = null }
-    // The SERVER proxy URL counts as direct-resolve success — but only once it proves
-    // it serves real audio. (Service is awake by now, so 30s covers the 25s ytdl
-    // budget + margin; a pass also warms the server format cache for <audio>.)
+    }catch(e){ url = null; note('srv-unreachable'); return null }
     if(url && url.includes('/api/audiostream')){
       const probe = await probeServerAudio(url)
-      if(probe.ok){ /* verified playable */ }
-      else { notes.push(probe.text); url = null }
+      if(probe.ok) return url
+      note(probe.text); return null
     }
-  }
-  if(!url){ try{ url = await resolvePipedAudio(track) }catch(e){} }
-  if(!url && typeof fetch!=='undefined'){
-    // cobalt — public audio extractor with open CORS; last good source when piped/invidious die
+    if(url) return url
+    note('srv-no-url'); return null
+  })()
+  // #2 — piped (hosts raced inside) + #3 cobalt, device-side fallbacks
+  const jobPiped = (async()=>{ try{ const u = await resolvePipedAudio(track); if(u) return u }catch(e){} note('piped-dead'); return null })()
+  const jobCobalt = (async()=>{
     try{
       const cr = await fetch('https://api.cobalt.tools/', {
         method:'POST', headers:{ 'Content-Type':'application/json', 'Accept':'application/json' },
         body: JSON.stringify({ url:`https://www.youtube.com/watch?v=${vid}`, downloadMode:'audio', audioFormat:'best' }),
         signal: (typeof AbortSignal!=='undefined' && AbortSignal.timeout) ? AbortSignal.timeout(12000) : undefined
       })
-      if(cr.ok){ const cj = await cr.json().catch(()=>null); if(cj && typeof cj.url==='string' && cj.url.startsWith('https://')) url = cj.url }
+      if(cr.ok){ const cj = await cr.json().catch(()=>null); if(cj && typeof cj.url==='string' && cj.url.startsWith('https://')) return cj.url }
     }catch(e){}
-  }
-  if(typeof window!=='undefined'){
-    try{
-      if(url){ window.__ytAudioCache[vid] = url; window.__ytDirectErr = '' }
-      else { window.__ytDirectErr = (notes.join(' | ') || 'all resolvers failed').slice(0,240) }
-    }catch(e){}
-  }
-  return url || null
+    note('cobalt-dead'); return null
+  })()
+  // First URL wins (return immediately); total failure only when EVERY engine lands.
+  const jobs = [jobInner, jobServer, jobPiped, jobCobalt]
+  return await new Promise((resolve)=>{
+    let settled = 0, won = false
+    const finish = (u)=>{
+      if(over) return; over = true
+      try{
+        if(u){ window.__ytAudioCache[vid] = u; window.__ytDirectErr = '' }
+        else { window.__ytDirectErr = (notes.join(' | ') || 'all resolvers failed').slice(0,240) }
+      }catch(e){}
+      resolve(u || null)
+    }
+    jobs.forEach(p=> p.then(u=>{
+      if(u && !won){ won = true; finish(u); return }
+      if(++settled === jobs.length && !won) finish(null)
+    }))
+  })
 }
 
 export async function resolvePipedAudio(track){
   if(track.audio && track.audio.startsWith('http')) return track.audio
   if(!track.videoId) return null
+  // RACED: all hosts at once (~8s worst instead of 7 hosts × 7s sequential)
   const hosts = track.host ? [track.host, ...PIPED_HOSTS.filter(h=> h!==track.host)] : PIPED_HOSTS
-  for(const host of hosts){
-    try{
-      const data = await fetchJsonWithCors(`${host}/streams/${track.videoId}`, 7000)
+  const one = async (host)=>{
+      const data = await fetchJsonWithCors(`${host}/streams/${track.videoId}`, 8000)
       const audioStreams = data.audioStreams || []
       const best = audioStreams.find(a=> a.mimeType?.includes('mp4') && a.url) || audioStreams.find(a=> a.url && a.mimeType?.includes('webm')) || audioStreams.find(a=> a.url)
       if(best?.url) return best.url
       if(data.hls) return data.hls
-    }catch(e){ continue }
+      throw new Error('empty')
   }
-  return null
+  try{ return await Promise.any(hosts.map(one)) }catch(e){ return null }
 }
 
 export async function searchSaavn(query, limit=18){

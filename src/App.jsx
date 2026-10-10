@@ -115,6 +115,9 @@ function getCategoryPlaylists(cat){
 
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
+// Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
+const APP_BUILD = 'itrace-1'
+
 function NpDiagCard({ toast, engine }){
   // Self-contained on purpose: ProfileView and App are different components — earlier this
   // card read App-scoped state from ProfileView's JSX and ReferenceError'd the whole app.
@@ -155,7 +158,7 @@ function NpDiagCard({ toast, engine }){
         <button onClick={npAskBattery} className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[10px] font-semibold text-white/60 hover:text-white">Unfreeze</button>
       </div>
       <div className="mt-1.5 break-all opacity-60" style={{ fontFamily:'ui-monospace,monospace', fontSize:10 }}>
-        bridge:{npBridgeMode()} {engine ? ('\u00b7 audio: '+engine) : ''} {bgDiag && bgDiag.diag ? ('\u00b7 ping: '+bgDiag.diag) : ''}
+        app:{APP_BUILD} {'\u00b7'} bridge:{npBridgeMode()} {engine ? ('\u00b7 audio: '+engine) : ''} {bgDiag && bgDiag.diag ? ('\u00b7 ping: '+bgDiag.diag) : ''}
       </div>
     </div>
   )
@@ -493,6 +496,8 @@ export default function App(){
     if(!isNativeApp() || !current?.videoId) return
     if(current.audio && String(current.audio).startsWith('http')) return
     const vid = String(current.videoId); let cancelled=false
+    // Live-sync failure notes while the race runs (diagnosis appears progressively)
+    const tick = setInterval(()=>{ if(cancelled) return; try{ const e = window.__ytDirectErr||''; setDirectErr(prev => prev===e ? prev : e) }catch(err){} }, 1200)
     ;(async()=>{
       try{
         const cache = (window.__ytAudioCache = window.__ytAudioCache || {})
@@ -500,8 +505,9 @@ export default function App(){
         const u = await resolveDirectAudio({ videoId: vid, host: current.host })
         if(!cancelled){ setYtDirect({id:vid, url:u||''}); setDirectErr(u ? '' : (window.__ytDirectErr||'')) }
       }catch(e){ if(!cancelled){ setYtDirect({id:vid, url:''}); setDirectErr(window.__ytDirectErr||'') } }
+      finally{ clearInterval(tick) }
     })()
-    return ()=>{ cancelled = true }
+    return ()=>{ cancelled = true; clearInterval(tick) }
   },[current && current.videoId])
   // pick up last-run crash trace written by the native crash reporter
   useEffect(()=>{

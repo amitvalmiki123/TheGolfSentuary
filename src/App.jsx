@@ -152,6 +152,7 @@ function NpDiagCard({ toast, engine }){
         )}
         <button onClick={()=>{ npSetDisabled(!npDisabled()); T(npDisabled()? 'Native player OFF (safe mode)' : 'Native player ON'); setTimeout(ping, 800) }}
                 className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[10px] font-semibold text-white/60 hover:text-white">{npDisabled()? 'Safe mode: ON \u2014 tap OFF' : 'Safe mode: off'}</button>
+        <button onClick={npAskBattery} className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[10px] font-semibold text-white/60 hover:text-white">Unfreeze</button>
       </div>
       <div className="mt-1.5 break-all opacity-60" style={{ fontFamily:'ui-monospace,monospace', fontSize:10 }}>
         bridge:{npBridgeMode()} {engine ? ('\u00b7 audio: '+engine) : ''} {bgDiag && bgDiag.diag ? ('\u00b7 ping: '+bgDiag.diag) : ''}

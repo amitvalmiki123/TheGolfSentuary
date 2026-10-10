@@ -146,6 +146,45 @@ export async function searchInvidious(query, limit=20){
   return { tracks: [], nextpage: null }
 }
 
+// ---------- Client-side YouTube extraction (InnerTube, device IP = trusted) ----------
+// Why this exists: datacenter IPs (Render) get YouTube bot-checks; the phone's mobile
+// IP doesn't. One POST to the InnerTube player API returns googlevideo audio URLs
+// directly — no server cold-start, no dead third-party APIs. Primary resolver.
+const YT_INNER_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW'
+const YT_INNER_CLIENTS = [
+  { clientName:'ANDROID', clientVersion:'18.11.34', androidSdkVersion:30 },
+  { clientName:'ANDROID', clientVersion:'20.10.38', androidSdkVersion:34 },
+]
+export async function resolveInnerTubeAudio(videoId, ms=10000){
+  const vid = String(videoId||'').slice(0,20)
+  if(!vid) return { url:null, detail:'it-no-vid' }
+  let lastDetail = 'it-fail'
+  for(const c of YT_INNER_CLIENTS){
+    try{
+      const sig = (typeof AbortSignal!=='undefined' && AbortSignal.timeout) ? AbortSignal.timeout(ms) : undefined
+      const r = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${YT_INNER_KEY}&prettyPrint=false`, {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'Accept':'application/json' },
+        body: JSON.stringify({ videoId: vid, context:{ client:{ ...c, hl:'en', gl:'US' } } }),
+        signal: sig
+      })
+      if(!r.ok){ lastDetail = `it-http-${r.status}`; continue }
+      const j = await r.json().catch(()=>null)
+      const ps = j && j.playabilityStatus
+      if(!ps || ps.status !== 'OK'){ lastDetail = (`it-${String((ps&&ps.status)||'no-status').toLowerCase().replace(/[^a-z]/g,'')}` || 'it-unplayable').slice(0,28); continue }
+      const fmts = (j.streamingData && j.streamingData.adaptiveFormats) || []
+      const aud = fmts.filter(f=> f && f.url && String(f.mimeType||'').startsWith('audio/'))
+        .sort((a,b)=> ((a.bitrate||a.averageBitrate||999999999)-(b.bitrate||b.averageBitrate||999999999)))
+      if(!aud.length){ lastDetail = 'it-no-audio-fmt'; continue }
+      return { url: aud[0].url, detail:'', itag: aud[0].itag }
+    }catch(e){
+      const m = String((e&&e.message)||e)
+      lastDetail = (/abort|timeout/i.test(m) ? 'it-timeout' : (/failed to fetch|network|cors|load failed/i.test(m) ? 'it-net-block' : 'it-err'))
+    }
+  }
+  return { url:null, detail:lastDetail }
+}
+
 // Probe our own server proxy: a tiny Range GET must come back as real audio bytes.
 // Any non-audio response (error JSON with tried[], HTML, challenge page) = upstream
 // failure — capture it for the You-tab card instead of handing a dead URL to <audio>.
@@ -174,7 +213,7 @@ async function probeServerAudio(url){
   return detail
 }
 
-// Resolve to direct audio url (server proxy preferred; YT player doesn't need it)
+// Resolve to direct audio url (device InnerTube first — no server cold-start; YT player doesn't need it)
 export async function resolveDirectAudio(track){
   const vid = String((track&&track.videoId)||'').slice(0,20)
   if(!vid) return null
@@ -183,8 +222,15 @@ export async function resolveDirectAudio(track){
     if(vid in cache) return cache[vid] || null
   }
   let url = null
-  let serverNote = ''
-  if(BACKEND_URL){
+  const notes = []
+  // #0 — InnerTube straight from the DEVICE: phone's mobile IP is trusted by YouTube
+  // (no bot-checks like datacenter IPs), and there's no 50s server cold-start.
+  try{
+    const it = await resolveInnerTubeAudio(vid, 10000)
+    if(it && it.url) url = it.url
+    else if(it && it.detail) notes.push(it.detail)
+  }catch(e){}
+  if(BACKEND_URL && !url){
     try{
       // 45s WIRED timeout: Render free-tier cold-starts take 20-50s to wake. (The old
       // 9s timer was never even passed to fetch as a signal — cold start = fail.)
@@ -205,7 +251,8 @@ export async function resolveDirectAudio(track){
     // budget + margin; a pass also warms the server format cache for <audio>.)
     if(url && url.includes('/api/audiostream')){
       const probe = await probeServerAudio(url)
-      if(!probe.ok){ serverNote = probe.text; url = null }
+      if(probe.ok){ /* verified playable */ }
+      else { notes.push(probe.text); url = null }
     }
   }
   if(!url){ try{ url = await resolvePipedAudio(track) }catch(e){} }
@@ -223,7 +270,7 @@ export async function resolveDirectAudio(track){
   if(typeof window!=='undefined'){
     try{
       if(url){ window.__ytAudioCache[vid] = url; window.__ytDirectErr = '' }
-      else { window.__ytDirectErr = serverNote || 'all resolvers failed' }
+      else { window.__ytDirectErr = (notes.join(' | ') || 'all resolvers failed').slice(0,240) }
     }catch(e){}
   }
   return url || null
@@ -246,10 +293,11 @@ export async function resolvePipedAudio(track){
 }
 
 export async function searchSaavn(query, limit=18){
-  for(const buildUrl of SAavn_ENDPOINTS){
-    try{
+  // RACED: all mirrors at once, first with results wins — a dead mirror no longer
+  // burns 4s before the next one is tried (old loop: 3 × 3.8s worst case).
+  const one = async (buildUrl)=>{
       const url = buildUrl(query, limit)
-      const data = await fetchJsonWithCors(url, 3800)
+      const data = await fetchJsonWithCors(url, 5000)
       let songs = []
       if(Array.isArray(data?.data?.results)) songs = data.data.results
       else if(Array.isArray(data?.data?.songs)) songs = data.data.songs
@@ -258,8 +306,8 @@ export async function searchSaavn(query, limit=18){
       else if(Array.isArray(data?.songs)) songs = data.songs
       else if(Array.isArray(data)) songs = data
       else if(data?.data && typeof data.data==='object' && data.data.id) songs=[data.data]
-      else continue
-      if(!songs.length) continue
+      else throw new Error('no-shape')
+      if(!songs.length) throw new Error('empty')
       const mapped = songs.slice(0,limit).map(s=>{
         let img = null
         if(Array.isArray(s.image)) img = s.image[2]?.url || s.image[2]?.link || s.image[1]?.url || s.image[1]?.link || s.image[0]?.url || s.image[0]?.link
@@ -282,10 +330,10 @@ export async function searchSaavn(query, limit=18){
         }
         return null
       }).filter(Boolean).filter(x=> x.audio && x.audio.startsWith('http'))
-      if(mapped.length) return mapped
-    }catch(e){ continue }
+      if(!mapped.length) throw new Error('empty')
+      return mapped
   }
-  return []
+  try{ return await Promise.any(SAavn_ENDPOINTS.map(one)) }catch(e){ return [] }
 }
 
 

@@ -161,20 +161,21 @@ async function searchPiped(query, limit=20, nextpage=null){
 const SAavn_ENDPOINTS = [
   (q, limit) => `https://saavn.dev/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}`,
   (q, limit) => `https://jiosaavn-api-privatecvc2.vercel.app/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}`,
+  (q, limit) => `https://jiosaavn-api-with-cors.vercel.app/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}`,
 ]
 
 async function searchSaavn(query, limit=18){
-  for(const buildUrl of SAavn_ENDPOINTS){
-    try{
+  // RACED: all mirrors at once, first with results wins (dead mirrors don't serialize delay)
+  const one = async (buildUrl)=>{
       const url = buildUrl(query, limit)
-      const data = await fetchJson(url, 2600)
+      const data = await fetchJson(url, 3000)
       let songs = []
       if(Array.isArray(data?.data?.results)) songs = data.data.results
       else if(Array.isArray(data?.data?.songs)) songs = data.data.songs
       else if(Array.isArray(data?.data)) songs = data.data
       else if(Array.isArray(data?.results)) songs = data.results
-      else continue
-      if(!songs.length) continue
+      else throw new Error('no-shape')
+      if(!songs.length) throw new Error('empty')
       const mapped = songs.slice(0,limit).map(s=>{
         let img = null
         if(Array.isArray(s.image)) img = s.image[2]?.url || s.image[2]?.link || s.image[1]?.url
@@ -194,10 +195,10 @@ async function searchSaavn(query, limit=18){
         }
         return null
       }).filter(Boolean)
-      if(mapped.length) return mapped
-    }catch(e){ continue }
+      if(!mapped.length) throw new Error('empty')
+      return mapped
   }
-  return []
+  try{ return await Promise.any(SAavn_ENDPOINTS.map(one)) }catch(e){ return [] }
 }
 
 // --- Auth helper ---
@@ -266,6 +267,10 @@ const INVID_HOSTS = [
 // googlevideo URLs live ~hours, so an 8-min cache makes seeks/instant-replays fast.
 const ytdlFmtCache = new Map()
 const YTDL_FMT_TTL = 8 * 60 * 1000
+// Upstream hygiene: never pipe an error page to <audio> as "success" — a 206 with
+// text/html (upstream error honoring Range, e.g. challenge/block page) must fall
+// through to the next engine, not play dead air. Missing ctype passes (some CDNs omit it).
+const ctypeAudioOk = (ct)=>{ const c=String(ct||'').toLowerCase(); if(!c) return true; return !(c.startsWith('text/')||c.includes('html')||c.includes('json')) }
 app.get('/api/audiostream', async (req,res)=>{
   const vid = (req.query.vid||'').toString().trim().replace(/[^A-Za-z0-9_-]/g,'').slice(0,20)
   if(!vid) return res.status(400).json({ error:'vid required' })
@@ -295,7 +300,7 @@ app.get('/api/audiostream', async (req,res)=>{
       if(fc && Date.now()-fc.at < YTDL_FMT_TTL && typeof fc.url === 'string'){
         try{
           const rc = await gvFetch(fc.url)
-          if((rc.status===200||rc.status===206) && rc.body) return { r: rc, mime: fc.mime||'' }
+          if((rc.status===200||rc.status===206) && rc.body && ctypeAudioOk(rc.headers.get('content-type')||'')) return { r: rc, mime: fc.mime||'' }
           try{ rc.body && rc.body.cancel && rc.body.cancel() }catch(e){}
         }catch(e){}
         ytdlFmtCache.delete(vid)
@@ -310,7 +315,8 @@ app.get('/api/audiostream', async (req,res)=>{
       }
       if(!f || !f.url) throw new Error('no audioonly format in getInfo')
       const r = await gvFetch(f.url)
-      if(!((r.status===200||r.status===206) && r.body)){ try{ r.body && r.body.cancel && r.body.cancel() }catch(e){}; throw new Error('googlevideo http '+r.status) }
+      const rct = r.headers.get('content-type')||''
+      if(!((r.status===200||r.status===206) && r.body && ctypeAudioOk(rct))){ try{ r.body && r.body.cancel && r.body.cancel() }catch(e){}; throw new Error(ctypeAudioOk(rct) ? ('googlevideo http '+r.status) : ('non-audio upstream '+rct.slice(0,40))) }
       try{ if(ytdlFmtCache.size>300) ytdlFmtCache.clear() }catch(e){}
       ytdlFmtCache.set(vid, { url: f.url, mime: f.mimeType||'', at: Date.now() })
       return { r, mime: f.mimeType||'' }
@@ -341,7 +347,8 @@ app.get('/api/audiostream', async (req,res)=>{
       const cj = await cb.json().catch(()=>null)
       if(cj && typeof cj.url==='string' && cj.url.startsWith('https://')){
         const s3 = await tryFetch(cj.url)
-        if(s3 && (s3.status===200||s3.status===206) && s3.body){
+        const s3ct = (s3 && s3.headers.get('content-type')) || ''
+        if(s3 && (s3.status===200||s3.status===206) && s3.body && ctypeAudioOk(s3ct)){
           res.setHeader('Access-Control-Allow-Origin','*')
           res.status(s3.status)
           res.setHeader('Content-Type', s3.headers.get('content-type') || 'audio/mp4')
@@ -352,7 +359,8 @@ app.get('/api/audiostream', async (req,res)=>{
           try{ for(;;){ const {done, value} = await rd3.read(); if(done) break; if(!res.write(value)) await new Promise(ok=>res.once('drain',ok)) } }catch(e){}
           return res.end()
         }
-        tried.push({ engine:'cobalt', msg:'tunnel fetch failed' })
+        try{ s3 && s3.body && s3.body.cancel && s3.body.cancel() }catch(e){}
+        tried.push({ engine:'cobalt', msg: (s3 && s3.body && !ctypeAudioOk(s3ct)) ? ('non-audio tunnel '+String(s3ct).slice(0,40)) : 'tunnel fetch failed' })
       } else {
         tried.push({ engine:'cobalt', msg:'no url in response: '+String((cj&&(cj.status||cj.error||cj.text))||'?').slice(0,80) })
       }
@@ -363,7 +371,8 @@ app.get('/api/audiostream', async (req,res)=>{
 
   for(const h of INVID_HOSTS){
     const r = await tryFetch(`${h}/latest_version?id=${vid}&local=true&itag=140`)
-    if(r && (r.status===200 || r.status===206) && r.body){
+    const rct = (r && r.headers.get('content-type')) || ''
+    if(r && (r.status===200 || r.status===206) && r.body && ctypeAudioOk(rct)){
       res.setHeader('Access-Control-Allow-Origin','*')
       res.status(r.status)
       res.setHeader('Content-Type', r.headers.get('content-type') || 'audio/mp4')
@@ -376,7 +385,7 @@ app.get('/api/audiostream', async (req,res)=>{
       }catch(e){}
       return res.end()
     }
-    tried.push({ engine:'invidious', host:h, status: r ? r.status : 'fetch-fail' })
+    tried.push(r && r.body && !ctypeAudioOk(rct) ? { engine:'invidious', host:h, msg:'non-audio '+String(rct).slice(0,40) } : { engine:'invidious', host:h, status: r ? r.status : 'fetch-fail' })
     if(r) try{ r.body && r.body.cancel && r.body.cancel() }catch(e){}
   }
   // fallback: piped /streams direct URL → fetch server-side and pipe
@@ -389,7 +398,8 @@ app.get('/api/audiostream', async (req,res)=>{
       const best = a.find(x=>String(x.mimeType||'').includes('mp4')) || a[0]
       if(best){
         const s2 = await tryFetch(best.url)
-        if(s2 && (s2.status===200||s2.status===206) && s2.body){
+        const s2ct = (s2 && s2.headers.get('content-type')) || ''
+        if(s2 && (s2.status===200||s2.status===206) && s2.body && ctypeAudioOk(s2ct)){
           res.setHeader('Access-Control-Allow-Origin','*')
           res.status(s2.status)
           res.setHeader('Content-Type', s2.headers.get('content-type') || 'audio/mp4')
@@ -402,7 +412,8 @@ app.get('/api/audiostream', async (req,res)=>{
           }catch(e){}
           return res.end()
         }
-        tried.push({ engine:'piped', host:h, msg:'stream fetch failed' })
+        try{ s2 && s2.body && s2.body.cancel && s2.body.cancel() }catch(e){}
+        tried.push({ engine:'piped', host:h, msg: (s2 && s2.body && !ctypeAudioOk(s2ct)) ? ('non-audio '+String(s2ct).slice(0,40)) : 'stream fetch failed' })
       } else {
         tried.push({ engine:'piped', host:h, msg:'no audioStreams' })
       }

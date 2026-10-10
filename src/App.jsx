@@ -1195,7 +1195,7 @@ export default function App(){
         <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-[#060306]"/>
       </div>
 
-      <audio ref={audioRef} src={current?.videoId ? (directFor || undefined) : current?.audio} preload="metadata" crossOrigin="anonymous" playsInline onError={handleAudioErr} />
+      <audio ref={audioRef} src={current?.videoId ? (directFor || undefined) : current?.audio} preload="metadata" playsInline onError={handleAudioErr} />
       <div id="yt-player" style={{position:'absolute', left:'-9999px', width:'1px', height:'1px', overflow:'hidden', opacity:0, pointerEvents:'none'}} />
       {audioError && <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 bg-[#C35445] text-white px-4 py-2 rounded-full text-xs font-bold shadow-lg">{audioError}</div>}
 

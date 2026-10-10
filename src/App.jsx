@@ -116,7 +116,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-16'
+const APP_BUILD = 'itrace-17'
 
 function NpDiagCard({ toast, engine }){
   // Self-contained on purpose: ProfileView and App are different components — earlier this
@@ -606,6 +606,7 @@ export default function App(){
       album: String(current.album||'').slice(0,140),
       state: isPlaying ? 'playing' : 'paused',
       engine: current.videoId ? 'yt' : 'audio',
+      pos: 0, dur: 0,
       artUrl: /^https:\/\//.test(String(current.cover||'')) ? current.cover : ''
     })
   },[current && current.id, isPlaying])
@@ -637,12 +638,19 @@ export default function App(){
   window.__npSeek = (s)=>{ try{ seekToTime(Number(s)||0) }catch(e){} }
   const pushNpMeta = ()=>{
     if(!current) return
+    // Authoritative pos/dur for the notification seekbar (funnelled via window.__np —
+    // the service must not depend only on scraping the <audio> element).
+    const ae = audioRef.current
+    const livePos = ae ? (ae.currentTime||0) : 0
+    const liveDur = (ae && isFinite(ae.duration)) ? (ae.duration||0) : 0
+    const isYt = !!(current.videoId && !directFor)
     npUpdate({
       title: String(current.title||'').slice(0,140),
       artist: String(current.artist||'').slice(0,140),
       album: String(current.album||'').slice(0,140),
       state: isPlaying ? 'playing' : 'paused',
       engine: current.videoId ? 'yt' : 'audio',
+      pos: isYt?0:livePos, dur: isYt?0:liveDur,
       artUrl: /^https:\/\//.test(String(current.cover||'')) ? current.cover : ''
     })
   }
@@ -928,7 +936,7 @@ export default function App(){
     setCurrentIndex(i=> (i-1+queue.length)%queue.length)
   }
   const seek = e=>{ const v=Number(e.target.value); if(current?.videoId && !directFor && ytPlayerRef.current?.seekTo){ try{ ytPlayerRef.current.seekTo(v, true); setProgress(v) }catch{} return } if(audioRef.current){ audioRef.current.currentTime=v; setProgress(v)} }
-  const seekToTime = (v)=>{ if(!current) return; v=Math.max(0, Math.min(v, duration||v)); if(current.videoId && !directFor && ytPlayerRef.current?.seekTo){ try{ ytPlayerRef.current.seekTo(v, true); setProgress(v); return }catch{} } if(audioRef.current){ try{ audioRef.current.currentTime=v }catch{} setProgress(v) } }
+  const seekToTime = (v)=>{ if(!current) return; v=Math.max(0, Math.min(v, duration||v)); if(current.videoId && !directFor && ytPlayerRef.current?.seekTo){ try{ ytPlayerRef.current.seekTo(v, true); setProgress(v); return }catch{} } if(audioRef.current){ try{ audioRef.current.currentTime=v }catch{} setProgress(v); try{ pushNpMeta() }catch{} } }
   const scrubRef = useRef(false)
   const scrubTo = (clientX, el)=>{ const r = el.getBoundingClientRect(); const frac = Math.max(0, Math.min(1, (clientX - r.left)/r.width)); seekToTime(frac * (duration||0)) }
   // playback rescue — YT/piped link toote: naya working URL dhundo (Saavn CDN ya piped resolve), swap + resume
@@ -1292,9 +1300,9 @@ export default function App(){
               <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#D5AA55] to-[#C35445] grid place-items-center font-bold text-black">♪</div>
               <div>
                 <div className="font-display font-bold leading-none text-[18px] tracking-tight">MaxMusic</div>
-                <div className="text-[11px] tracking-[0.18em] text-white/60 font-semibold uppercase">Music • India • Backend Live</div>
+                <div className="text-[11px] tracking-[0.18em] text-white/60 font-semibold uppercase">Music • India</div>
               </div>
-              <span className="ml-auto w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Backend connected"/>
+              <span className="ml-auto w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Online"/>
             </div>
             <nav className="space-y-1">
               {[
@@ -1731,7 +1739,7 @@ export default function App(){
                 </div>
 
                 <section>
-                  <div className="flex items-center justify-between mb-3"><h2 className="text-xl font-bold font-display">{activeCat==="All"? "Curated for you — Backend Playlists" : `${activeCat} Playlists • ${getCategoryPlaylists(activeCat).length || homeTracks.length || '—'} mixes`}</h2><button onClick={()=>{ setNav('library'); setLibTab('Playlists')}} className="text-sm font-semibold text-white/60 hover:text-white">Show all</button></div>
+                  <div className="flex items-center justify-between mb-3"><h2 className="text-xl font-bold font-display">{activeCat==="All"? "Curated for you" : `${activeCat} Playlists • ${getCategoryPlaylists(activeCat).length || homeTracks.length || '—'} mixes`}</h2><button onClick={()=>{ setNav('library'); setLibTab('Playlists')}} className="text-sm font-semibold text-white/60 hover:text-white">Show all</button></div>
                   <div className="flex gap-4 overflow-x-auto pb-2 -mx-4 px-4 lg:mx-0 lg:px-0 scrollbar-none snap-x">
                     {( (activeCat==="All"? playlists : getCategoryPlaylists(activeCat)).length? (activeCat==="All"? playlists : getCategoryPlaylists(activeCat)) : homeTracks.slice(0,8).map((tr,i)=> ({ id:`home-curated-${i}`, title: tr.title, subtitle: tr.artist + ' • ' + (tr.source||'Full'), cover: tr.cover, color: 'from-[#6A418E] to-[#543551]', count: tr.durationLabel, songs: [] })) ).map(pl=> (
                       <div key={pl.id} className="shrink-0 w-[172px] sm:w-[188px] glass rounded-[20px] p-3 snap-start hover:bg-white/[0.09] transition group">
@@ -1993,7 +2001,7 @@ export default function App(){
           {showAuth && (
             <div className="fixed inset-0 z-[70] grid place-items-center p-4"><div onClick={()=> setShowAuth(false)} className="absolute inset-0 bg-black/70 backdrop-blur-sm"/><div className="relative w-full max-w-sm glass-strong rounded-[24px] p-6">
               <h3 className="text-lg font-bold">{authForm.mode==='login' ? "Welcome back" : "Create your account"}</h3>
-              <p className="text-xs text-white/50 mt-1">{authForm.mode==='login' ? 'Sign in — liked songs + playlists cloud se sync honge.' : 'Naam + email se account — sab kuch MongoDB me save, device badlo, music saath.'}</p>
+              <p className="text-xs text-white/50 mt-1">{authForm.mode==='login' ? 'Sign in — liked songs + playlists cloud se sync honge.' : 'Naam + email se account — sab kuch cloud me save, device badlo, music saath.'}</p>
               {authForm.mode==='signup' && <input autoFocus value={authForm.name} onChange={e=> setAuthForm({...authForm, name:e.target.value})} placeholder="Naam" className="mt-4 w-full h-11 px-4 rounded-full bg-white/10 border border-white/10 outline-none placeholder:text-white/30"/>}
               <input type="email" value={authForm.email} onChange={e=> setAuthForm({...authForm, email:e.target.value})} placeholder="email@example.com" className={`${authForm.mode==='login'?'mt-4':''} mt-2 w-full h-11 px-4 rounded-full bg-white/10 border border-white/10 outline-none placeholder:text-white/30`}/>
               <input type="password" value={authForm.password} onChange={e=> setAuthForm({...authForm, password:e.target.value})} onKeyDown={e=>{ if(e.key==='Enter') handleAuthSubmit() }} placeholder="Password (min 6)" className="mt-2 w-full h-11 px-4 rounded-full bg-white/10 border border-white/10 outline-none placeholder:text-white/30"/>
@@ -2085,6 +2093,11 @@ export default function App(){
 
 function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, playlists, localSongs, downloaded, showToast, authUser, onSignIn, onSignOut, onDeleteAccount }){
   const [tab, setTab] = useState("Overview")
+  // Hidden diagnostics: 5 rapid taps on the avatar (or the version footer below)
+  // toggles the debug card + backend banner. Default OFF so shared installs look clean.
+  const [showDiag, setShowDiag] = useState(false)
+  const diagTap = useRef({ n:0, t:0 })
+  const pokeDiag = ()=>{ const d = diagTap.current, now = Date.now(); d.n = (now - d.t < 2000) ? d.n+1 : 1; d.t = now; if(d.n >= 5){ d.n = 0; setShowDiag(v=>!v); showToast(showDiag ? 'Diagnostics hidden' : 'Diagnostics ON \u2014 band karne ke liye dobara 5 tap') } }
   const isEditing = !!editUser
   const startEdit = ()=> setEditUser({...user})
   const saveEdit = ()=>{ const u = {...editUser}; if(!u.avatar) u.avatar = `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(u.name||'MaxMusic')}&radius=50`; setUser(u); setEditUser(null); showToast("Profile updated ✓") }
@@ -2094,7 +2107,7 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
         <div className="absolute inset-0 bg-gradient-to-br from-[#6A418E]/30 via-[#A154D6]/20 to-[#C35445]/20"/>
         <div className="relative flex flex-col md:flex-row gap-6">
           <div className="relative shrink-0">
-            <Avatar src={user.avatar} name={user.name} className="w-28 h-28 rounded-[24px] object-cover border-4 border-white/10 shadow-xl"/>
+            <span onClick={pokeDiag} className="block"><Avatar src={user.avatar} name={user.name} className="w-28 h-28 rounded-[24px] object-cover border-4 border-white/10 shadow-xl"/></span>
             <button onClick={startEdit} className="absolute -bottom-2 -right-2 w-8 h-8 rounded-full bg-white text-black grid place-items-center shadow-lg border"><PlusIcon/></button>
           </div>
           <div className="flex-1 min-w-0">
@@ -2110,11 +2123,11 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
                   <div><div className="text-xl font-bold">{playlists.length}</div><div className="text-xs text-white/50">Playlists</div></div>
                   <div><div className="text-xl font-bold">{downloaded.length}</div><div className="text-xs text-white/50">Offline</div></div>
                 </div>
-                <NpDiagCard toast={showToast} engine={npEngine}/>
+                {showDiag && <NpDiagCard toast={showToast} engine={npEngine}/>}
                 {authUser ? (
                   <div className="mt-4 flex items-center gap-3 p-3 rounded-2xl bg-white/5 border border-white/10 max-w-md">
                     <span className="w-8 h-8 shrink-0 rounded-full bg-[#D5AA55] text-black grid place-items-center text-sm font-bold">☁</span>
-                    <div className="min-w-0 flex-1"><div className="text-sm font-semibold truncate">{authUser.email}</div><div className="text-xs text-white/50">Cloud sync ON — liked + playlists MongoDB me save ho rahe hain</div></div>
+                    <div className="min-w-0 flex-1"><div className="text-sm font-semibold truncate">{authUser.email}</div><div className="text-xs text-white/50">Cloud sync ON — liked + playlists cloud me save ho rahe hain</div></div>
                     <button onClick={onSignOut} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10 hover:bg-white/15 shrink-0">Sign out</button>
                   </div>
                 ) : (
@@ -2155,7 +2168,7 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
               <div className="flex justify-between"><span className="text-white/60">Offline songs</span><span className="font-bold">{downloaded.length}</span></div>
               <div className="flex justify-between"><span className="text-white/60">Local files</span><span className="font-bold">{localSongs.length}</span></div>
             </div>
-            <div className="mt-4 p-3 rounded-2xl bg-white text-black text-sm"><span className="font-bold">Backend Live:</span> localStorage + IndexedDB + iTunes/Saavn APIs</div>
+            {showDiag && <div className="mt-4 p-3 rounded-2xl bg-white text-black text-sm"><span className="font-bold">Backend Live:</span> localStorage + IndexedDB + iTunes/Saavn APIs</div>}
           </div>
           <div className="glass rounded-[24px] p-5">
             <h3 className="font-bold mb-3">Recent Playlists</h3>
@@ -2180,10 +2193,11 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
             <div key={s.k} className="flex items-center justify-between py-3 border-b border-white/5 last:border-0"><div><div className="text-sm font-medium">{s.k}</div><div className="text-xs text-white/50">{s.v}</div></div>{s.k==="Cloud sync" ? (authUser? <button onClick={onSignOut} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">Sign out</button> : <button onClick={onSignIn} className="text-xs font-bold px-3 py-1.5 rounded-full bg-[#D5AA55] text-black">Sign in</button>) : <span className="text-xs text-emerald-400">●</span>}</div>
           ))}
           {authUser && <button onClick={onDeleteAccount} className="w-full mt-1 py-3 rounded-full bg-[#C35445]/15 text-[#C35445] border border-[#C35445]/30 text-sm font-bold">Delete cloud account (likes + playlists from server)</button>}
-          <button onClick={()=>{ localStorage.clear(); indexedDB.deleteDatabase('sur_sangam_db'); showToast("Data cleared — refresh"); setTimeout(()=> location.reload(),800)}} className="w-full mt-2 py-3 rounded-full bg-[#C35445] text-white text-sm font-bold">Clear All Data (Reset Backend)</button>
+          <button onClick={()=>{ localStorage.clear(); indexedDB.deleteDatabase('sur_sangam_db'); showToast("Data cleared — refresh"); setTimeout(()=> location.reload(),800)}} className="w-full mt-2 py-3 rounded-full bg-[#C35445] text-white text-sm font-bold">Clear All Data</button>
         </div>
       )}
-      {tab!=="Overview" && tab!=="Settings" && <div className="glass rounded-[24px] p-10 text-center text-white/50">More stats coming soon — backend ready!</div>}
+      {tab!=="Overview" && tab!=="Settings" && <div className="glass rounded-[24px] p-10 text-center text-white/50">More stats coming soon</div>}
+      <div onClick={pokeDiag} className="pt-1 text-center text-[11px] text-white/35 select-none">MaxMusic • build {String(APP_BUILD||'').replace('itrace-','')}</div>
     </div>
   )
 }

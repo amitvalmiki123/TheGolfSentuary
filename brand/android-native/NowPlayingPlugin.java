@@ -44,7 +44,7 @@ public class NowPlayingPlugin extends Plugin {
   public void update(PluginCall call) {
     Intent i = new Intent(getContext(), NowPlayingService.class);
     i.setAction(NowPlayingService.ACTION_UPDATE);
-    i.putExtra("title", call.getString("title", "Sur Sangam"));
+    i.putExtra("title", call.getString("title", "MaxMusic"));
     i.putExtra("artist", call.getString("artist", ""));
     i.putExtra("album", call.getString("album", ""));
     String st = call.getString("state");

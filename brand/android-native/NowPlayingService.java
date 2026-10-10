@@ -56,20 +56,20 @@ public class NowPlayingService extends Service {
           String[] p = tt.split("\\|", 4);
           if (p.length >= 4) {
             boolean pl = "1".equals(p[1]);
-            String t = p[2].trim(); String a = p[3].trim();
+            String t = normT(p[2]); String a = normA(p[3]);
             boolean trackChanged = (!t.isEmpty() && !t.equals(title)) || (!a.isEmpty() && !a.equals(artist));
             boolean changed = trackChanged || pl != playing;
             if (!t.isEmpty()) title = t;
             if (!a.isEmpty()) artist = a;
             playing = pl;
-            if (changed) { if (trackChanged) { posSec = 0; durSec = 0; } reposts++; lastCause = "tick1"; updateSession(); startForegroundNow(); }
+            if (changed) { reposts++; lastCause = "tick1"; if (trackChanged) { posSec = 0; durSec = 0; durPosted = -1; updateSession(); startForegroundNow(); } else updateStateOnly(); }
             setWake(playing);
           }
         }
       } catch (Exception ignored) {}
       // ---- SECONDARY: richer fields (album/cover) via eval; keep-alive nudge; heartbeat
       w.evaluateJavascript(
-        "(function(){try{var n=window.__np||{};return JSON.stringify({t:n.title||'',a:n.artist||'',al:n.album||'',p:!!n.playing,art:n.artUrl||'',e:n.engine||''})}catch(e){return '{}'}})()",
+        "(function(){try{var n=window.__np||{};return JSON.stringify({t:n.title||'',a:n.artist||'',al:n.album||'',p:!!n.playing,art:n.artUrl||'',e:n.engine||'',pos:(+n.pos||0),dur:(+n.dur||0)})}catch(e){return '{}'}})()",
         new android.webkit.ValueCallback<String>() {
           @Override public void onReceiveValue(String raw) {
             try {
@@ -77,19 +77,19 @@ public class NowPlayingService extends Service {
               if (j.length() > 1 && j.charAt(0) == '"') j = j.substring(1, j.length() - 1);
               j = j.replace("\\\"", "\"").replace("\\/", "/");
               org.json.JSONObject o = new org.json.JSONObject(j);
-              String al = o.optString("al");
+              String al = normX(o.optString("al"), 140);
               String art = o.optString("art");
-              String t = o.optString("t");
-              if (t.length() > 60) t = t.substring(0, 60);
-              String a0 = o.optString("a");
-              if (a0.length() > 40) a0 = a0.substring(0, 40);
+              String t = normT(o.optString("t"));
+              String a0 = normA(o.optString("a"));
               if (!t.isEmpty()) { String a = a0; boolean pl = o.optBoolean("p");
                 boolean trackChanged = !t.equals(title) || (!a.isEmpty() && !a.equals(artist));
                 boolean changed = trackChanged || pl != playing;
                 title = t; if (!a.isEmpty()) artist = a; album = al; playing = pl;
-                if (changed) { if (trackChanged) { posSec = 0; durSec = 0; } reposts++; lastCause = "tick2"; updateSession(); startForegroundNow(); }
+                if (changed) { reposts++; lastCause = "tick2"; if (trackChanged) { posSec = 0; durSec = 0; durPosted = -1; updateSession(); startForegroundNow(); } else updateStateOnly(); }
                 setWake(playing);
               }
+              double jpos = o.optDouble("pos", -1); double jdur = o.optDouble("dur", -1);
+              if (jpos >= 0 && jdur >= 0) ingestPos(jpos, jdur);
               if (!art.isEmpty() && !art.equals(artUrlLoaded)) loadArt(art);
             } catch (Exception ignored) {}
           }
@@ -117,10 +117,7 @@ public class NowPlayingService extends Service {
                 String[] pp = s.split("\\|");
                 if (pp.length < 2) return;
                 double np = Double.parseDouble(pp[0]); double nd = Double.parseDouble(pp[1]);
-                boolean pc = Math.abs(np - posSec) > 2.0;
-                boolean dc = Math.abs(nd - durSec) > 1.0;
-                posSec = np; durSec = nd;
-                if ((pc || dc) && durSec > 0) updatePos();
+                ingestPos(np, nd);
               } catch (Exception ignored) {}
             }
           });
@@ -139,6 +136,35 @@ public class NowPlayingService extends Service {
     return x.replace("\\", " ").replace("'", " ").replace("\"", " ").replace("\n", " ").replace("\r", " ").replace("<", "(").replace(">", ")");
   }
   private static String crop(String x, int n) { return x == null ? "" : (x.length() <= n ? x : x.substring(0, n)); }
+  // Border normalization: the 3 meta channels (NP| doc.title, window.__np, bridge push)
+  // must produce IDENTICAL strings for the same song - any format skew (pipes,
+  // edge-spaces, crop length) used to ping-pong trackChanged every tick -> notification
+  // re-posted forever = title sliding again and again + seekbar flicker.
+  private static String normX(String x, int n) {
+    if (x == null) return null;
+    String s = x.replace('|', '\u00b7').trim();
+    return s.length() <= n ? s : s.substring(0, n);
+  }
+  private static String normT(String x) { String s = normX(x, 60); return s == null ? "" : s; }
+  private static String normA(String x) { String s = normX(x, 40); return s == null ? "" : s; }
+
+  // Single funnel for ALL position/duration samples (audio-element scrape + JS mirror).
+  // Zero-duration reads must NEVER wipe a known duration (stale element / YT handoff).
+  private void ingestPos(double np, double nd) {
+    if (np < 0 || nd < 0 || !Double.isFinite(np) || !Double.isFinite(nd)) return;
+    if (nd <= 0) {
+      if (durSec > 0) return;
+      np = 0;
+    }
+    boolean pc = Math.abs(np - posSec) > 2.0;
+    boolean dc = Math.abs(nd - durSec) > 1.0;
+    posSec = np; durSec = nd;
+    if ((pc || dc) && durSec > 0) updatePos();
+  }
+
+  // Playing-only refresh: swaps the play/pause icon WITHOUT re-delivering metadata,
+  // so pause/resume never restarts the title marquee.
+  private void updateStateOnly() { updatePos(); startForegroundNow(); }
 
 
   public interface ActionListener { void onAction(String action); }
@@ -236,25 +262,26 @@ public class NowPlayingService extends Service {
     }
     // Notification buttons land here as plain startService intents — without these,
     // prev/play/next taps fell through to the generic update path and did NOTHING.
-    if (ACTION_PLAY.equals(a))  { playing = true;  send("play");  reposts++; lastCause = "act"; updateSession(); startForegroundNow(); return START_NOT_STICKY; }
-    if (ACTION_PAUSE.equals(a)) { playing = false; send("pause"); reposts++; lastCause = "act"; updateSession(); startForegroundNow(); return START_NOT_STICKY; }
+    if (ACTION_PLAY.equals(a))  { playing = true;  send("play");  reposts++; lastCause = "act"; updateStateOnly(); return START_NOT_STICKY; }
+    if (ACTION_PAUSE.equals(a)) { playing = false; send("pause"); reposts++; lastCause = "act"; updateStateOnly(); return START_NOT_STICKY; }
     if (ACTION_PREV.equals(a))  { send("prev"); return START_NOT_STICKY; }
     if (ACTION_NEXT.equals(a))  { send("next"); return START_NOT_STICKY; }
     if (intent != null) {
       // DEDUP: JS re-pushes identical meta every 2.6s (watchdog) — re-posting each time
       // restarts the notification title marquee ("same song sliding again and again").
-      boolean changed = false;
-      String t = intent.getStringExtra("title");
-      if (t != null && !t.equals(title)) { title = t; changed = true; }
-      String s = intent.getStringExtra("artist");
-      if (s != null && !s.equals(artist)) { artist = s; changed = true; }
-      String m = intent.getStringExtra("album");
-      if (m != null && !m.equals(album)) { album = m; changed = true; }
+      boolean metaChanged = false, playChanged = false;
+      String t = normX(intent.getStringExtra("title"), 60);
+      if (t != null && !t.equals(title)) { title = t; metaChanged = true; }
+      String s = normX(intent.getStringExtra("artist"), 40);
+      if (s != null && !s.equals(artist)) { artist = s; metaChanged = true; }
+      String m = normX(intent.getStringExtra("album"), 140);
+      if (m != null && !m.equals(album)) { album = m; metaChanged = true; }
       boolean pl = intent.getBooleanExtra("playing", playing);
-      if (pl != playing) { playing = pl; changed = true; }
+      if (pl != playing) { playing = pl; playChanged = true; }
       String url = intent.getStringExtra("artUrl");
       if (url != null && !url.isEmpty() && !url.equals(artUrlLoaded)) loadArt(url);
-      if (changed) { reposts++; lastCause = "push"; updateSession(); startForegroundNow(); }
+      if (metaChanged) { reposts++; lastCause = "push"; updateSession(); startForegroundNow(); }
+      else if (playChanged) { reposts++; lastCause = "push"; updateStateOnly(); }
     } else {
       updateSession();
       startForegroundNow();
@@ -318,10 +345,10 @@ public class NowPlayingService extends Service {
 
   // Position-only refresh for the seekbar tick — NEVER re-delivers metadata, so
   // system UI doesn't re-bind the title (marquee restart) every ~2s. Duration is
-  // delivered exactly once via a full post when it first becomes known.
+  // delivered via a full post when first known or refined by >1s (micro-jitter ignored).
   private void updatePos() {
     if (mediaSession == null) return;
-    if (durSec > 0 && durPosted != durSec) { updateSession(); return; }
+    if (durSec > 0 && (durPosted < 0 || Math.abs(durSec - durPosted) > 1.0)) { updateSession(); return; }
     try {
     long posMs = durSec > 0 ? (long)(posSec * 1000) : PlaybackState.PLAYBACK_POSITION_UNKNOWN;
     mediaSession.setPlaybackState(new PlaybackState.Builder()

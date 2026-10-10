@@ -2,7 +2,7 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ "arena/f257d954-thegolfsentuary", "main" ]
+    branches: [ "arena/f257d954-thegolfsentuary", "arena/dbc69e5f-thegolfsentuary", "main" ]
     paths-ignore: [ "**.md" ]
   workflow_dispatch:
 

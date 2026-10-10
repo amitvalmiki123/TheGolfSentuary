@@ -102,6 +102,7 @@ export async function npNotifGranted(){
   try{ const r = await p.hasNotifPerm(); return !!(r && r.granted) }catch{ return true }
 }
 export function npAskNotif(){ const p = getProxy(); try{ p && p.askNotifPerm && p.askNotifPerm().catch(()=>{}) }catch{} }
+export function npAskBattery(){ const p = getProxy(); try{ if(p && p.askBattery) p.askBattery().catch(()=>{}) }catch{} }
 export function npOpenNotifSettings(){ const p = getProxy(); try{ p && p.openNotifSettings && p.openNotifSettings().catch(()=>{}) }catch{} }
 
 export async function npLastCrash(){

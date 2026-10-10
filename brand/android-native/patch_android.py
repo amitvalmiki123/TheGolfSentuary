@@ -133,7 +133,8 @@ if os.path.exists(mf):
         perms = ('<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n'
                  '    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />\n'
                  '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n'
-                 '    <uses-permission android:name="android.permission.WAKE_LOCK" />')
+                 '    <uses-permission android:name="android.permission.WAKE_LOCK" />\n'
+                '    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />')
         anchor = '<uses-permission android:name="android.permission.INTERNET" />'
         if anchor in s:
             s = s.replace(anchor, anchor + '\n    ' + perms, 1)

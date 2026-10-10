@@ -114,6 +114,27 @@ public class NowPlayingPlugin extends Plugin {
   }
 
   @PluginMethod
+  public void askBattery(PluginCall call) {
+    JSObject r = new JSObject();
+    try {
+      android.os.PowerManager pm = (android.os.PowerManager) getContext().getSystemService(android.content.Context.POWER_SERVICE);
+      boolean ignoring = true;
+      if (pm != null && Build.VERSION.SDK_INT >= 23)
+        ignoring = pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
+      try { r.put("ignoring", ignoring); } catch (Throwable ignored2) {}
+      if (!ignoring) {
+        android.content.Intent i = new android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+        i.setData(android.net.Uri.parse("package:" + getContext().getPackageName()));
+        i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+        getContext().startActivity(i);
+      }
+    } catch (Throwable e) {
+      try { r.put("ignoring", false); } catch (Throwable ignored3) {}
+    }
+    call.resolve(r);
+  }
+
+  @PluginMethod
   public void openNotifSettings(PluginCall call) {
     try {
       Intent i = new Intent("android.settings.APP_NOTIFICATION_SETTINGS");

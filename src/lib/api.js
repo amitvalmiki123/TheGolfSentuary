@@ -169,6 +169,17 @@ export async function resolveDirectAudio(track){
     }catch(e){}
   }
   if(!url){ try{ url = await resolvePipedAudio(track) }catch(e){} }
+  if(!url && typeof fetch!=='undefined'){
+    // cobalt — public audio extractor with open CORS; last good source when piped/invidious die
+    try{
+      const cr = await fetch('https://api.cobalt.tools/', {
+        method:'POST', headers:{ 'Content-Type':'application/json', 'Accept':'application/json' },
+        body: JSON.stringify({ url:`https://www.youtube.com/watch?v=${vid}`, downloadMode:'audio', audioFormat:'best' }),
+        signal: (typeof AbortSignal!=='undefined' && AbortSignal.timeout) ? AbortSignal.timeout(12000) : undefined
+      })
+      if(cr.ok){ const cj = await cr.json().catch(()=>null); if(cj && typeof cj.url==='string' && cj.url.startsWith('https://')) url
+    }catch(e){}
+  }
   if(url && typeof window!=='undefined'){ try{ window.__ytAudioCache[vid] = url }catch(e){} }
   return url || null
 }

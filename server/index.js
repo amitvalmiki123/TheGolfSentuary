@@ -275,6 +275,33 @@ app.get('/api/audiostream', async (req,res)=>{
       return r
     }catch(e){ clearTimeout(tm); return null }
   }
+  // COBALT — the extractor that still survives 2025/26: POST -> audio tunnel url
+  try{
+    const cb = await fetch('https://api.cobalt.tools/', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Accept':'application/json' },
+      body: JSON.stringify({ url:`https://www.youtube.com/watch?v=${vid}`, downloadMode:'audio', audioFormat:'best' }),
+      signal: AbortSignal.timeout(13000)
+    })
+    if(cb.ok){
+      const cj = await cb.json().catch(()=>null)
+      if(cj && typeof cj.url==='string' && cj.url.startsWith('https://')){
+        const s3 = await tryFetch(cj.url)
+        if(s3 && (s3.status===200||s3.status===206) && s3.body){
+          res.setHeader('Access-Control-Allow-Origin','*')
+          res.status(s3.status)
+          res.setHeader('Content-Type', s3.headers.get('content-type') || 'audio/mp4')
+          res.setHeader('Accept-Ranges','bytes')
+          const cl3 = s3.headers.get('content-length'); if(cl3) res.setHeader('Content-Length', cl3)
+          const cr3 = s3.headers.get('content-range'); if(cr3) res.setHeader('Content-Range', cr3)
+          const rd3 = s3.body.getReader()
+          try{ for(;;){ const {done, value} = await rd3.read(); if(done) break; if(!res.write(value)) await new Promise(ok=>res.once('drain',ok)) } }catch(e){}
+          return res.end()
+        }
+      }
+    }
+  }catch(e){}
+
   for(const h of INVID_HOSTS){
     tried.push(h)
     const r = await tryFetch(`${h}/latest_version?id=${vid}&local=true&itag=140`)

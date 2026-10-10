@@ -26,7 +26,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 
 /**
- * Foreground service: keeps Sur Sangam audio alive when the app is backgrounded/locked
+ * Foreground service: keeps MaxMusic audio alive when the app is backgrounded/locked
  * and publishes MediaStyle notification + lock-screen controls (prev / play-pause / next).
  */
 public class NowPlayingService extends Service {
@@ -152,7 +152,7 @@ public class NowPlayingService extends Service {
   private android.os.PowerManager.WakeLock wakeLock;
   private volatile Bitmap art;
   private volatile String artUrlLoaded = "";
-  private volatile String title = "Sur Sangam";
+  private volatile String title = "MaxMusic";
   private volatile String artist = "Music";
   private volatile String album = "";
   private volatile boolean playing = false;
@@ -418,7 +418,7 @@ public class NowPlayingService extends Service {
   private Notification buildMinimal() {
     Notification.Builder b = (Build.VERSION.SDK_INT >= 26)
       ? new Notification.Builder(this, CHANNEL) : new Notification.Builder(this);
-    b.setSmallIcon(getDrawableId()).setContentTitle("Sur Sangam").setContentText("Music")
+    b.setSmallIcon(getDrawableId()).setContentTitle("MaxMusic").setContentText("Music")
      .setOngoing(false).setVisibility(Notification.VISIBILITY_PUBLIC);
     return (Build.VERSION.SDK_INT >= 26) ? b.build() : b.getNotification();
   }

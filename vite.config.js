@@ -10,8 +10,8 @@ export default defineConfig({
       injectRegister: false,
       includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png'],
       manifest: {
-        name: 'Sur Sangam — Music Player',
-        short_name: 'Sur Sangam',
+        name: 'MaxMusic — Music Player',
+        short_name: 'MaxMusic',
         description: 'Dark Mode Aesthetic Music Player • Like Gaana, JioSaavn, Spotify — Punjabi, Hindi, Love, 90s, Bollywood, Indie, Trending • Offline downloads • Local files • Real-time search',
         theme_color: '#060306',
         background_color: '#060306',

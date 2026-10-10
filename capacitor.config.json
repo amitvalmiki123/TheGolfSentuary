@@ -1,6 +1,6 @@
 {
   "appId": "com.sursangam.app",
-  "appName": "Sur Sangam Music",
+  "appName": "MaxMusic",
   "webDir": "dist",
   "bundledWebRuntime": false,
   "plugins": {

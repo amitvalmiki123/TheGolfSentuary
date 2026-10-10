@@ -116,7 +116,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-15'
+const APP_BUILD = 'itrace-16'
 
 function NpDiagCard({ toast, engine }){
   // Self-contained on purpose: ProfileView and App are different components — earlier this
@@ -256,7 +256,7 @@ export default function App(){
 
   // persist
   useEffect(()=>{ localStorage.setItem('sur_liked', JSON.stringify([...liked])) },[liked])
-  // cloud account state (Sur Sangam backend)
+  // cloud account state (MaxMusic backend)
   const [authUser, setAuthUser] = useState(null)
   const [showAuth, setShowAuth] = useState(false)
   const [authForm, setAuthForm] = useState({ mode:'login', name:'', email:'', password:'' })
@@ -617,7 +617,7 @@ export default function App(){
     try{
       document.title = current
         ? ('NP|'+(isPlaying?1:0)+'|'+String(current.title||'').replace(/\|/g,'\u00b7').slice(0,60)+'|'+String(current.artist||'').replace(/\|/g,'\u00b7').slice(0,40))
-        : 'Sur Sangam'
+        : 'MaxMusic'
     }catch(e){}
   },[current && current.id, isPlaying])
   // Native → JS actions with zero bridge: service evals window.__npAct('play'|'pause'|...)
@@ -1291,7 +1291,7 @@ export default function App(){
             <div className="flex items-center gap-3 mb-6">
               <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#D5AA55] to-[#C35445] grid place-items-center font-bold text-black">♪</div>
               <div>
-                <div className="font-display font-bold leading-none text-[18px] tracking-tight">Sur Sangam</div>
+                <div className="font-display font-bold leading-none text-[18px] tracking-tight">MaxMusic</div>
                 <div className="text-[11px] tracking-[0.18em] text-white/60 font-semibold uppercase">Music • India • Backend Live</div>
               </div>
               <span className="ml-auto w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Backend connected"/>
@@ -1832,7 +1832,7 @@ export default function App(){
                     <section className="relative rounded-[24px] overflow-hidden p-5 bg-gradient-to-br from-[#543551] via-[#6A418E] to-[#A154D6]">
                       <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent"/><div className="absolute -right-10 -bottom-10 w-40 h-40 rounded-full bg-white/10 blur-2xl"/>
                       <div className="relative">
-                        <div className="inline-flex items-center gap-2 text-xs font-bold tracking-widest bg-white/15 backdrop-blur px-3 py-1.5 rounded-full border border-white/10">✨ SUR SANGAM ORIGINALS</div>
+                        <div className="inline-flex items-center gap-2 text-xs font-bold tracking-widest bg-white/15 backdrop-blur px-3 py-1.5 rounded-full border border-white/10">✨ MAXMUSIC ORIGINALS</div>
                         <h3 className="text-2xl font-bold font-display leading-tight mt-3">Monsoon Mix 2025</h3><p className="text-sm text-white/80 mt-2 leading-relaxed">Baarishein, Heeriye & 30 soulful tracks for chai & late nights.</p>
                         <div className="flex items-center gap-3 mt-4"><button onClick={()=>{ if(homeTracks.length) playTrack(homeTracks[0], homeTracks); else showToast('Pehle tracks load hojne do…') }} className="px-6 py-2.5 rounded-full bg-white text-black text-sm font-bold flex items-center gap-2"><PlayMini/> Play</button><button onClick={()=>{ if(homeTracks.length){ toggleLike(homeTracks[0].id, homeTracks[0]) } }} className={`w-10 h-10 rounded-full backdrop-blur grid place-items-center border ${homeTracks.length&&liked.has(homeTracks[0].id)? 'bg-[#C35445] border-[#C35445] text-white':'bg-white/15 border-white/15 text-white'}`}><Heart filled={!!(homeTracks.length&&liked.has(homeTracks[0].id))}/></button></div>
                         <div className="flex -space-x-2 mt-5">{homeTracks.slice(0,4).map(x=> (<img key={x.id} src={x.cover} alt="" className="w-8 h-8 rounded-full object-cover border-2 border-[#6A418E]"/>))}{homeTracks.length>4 && <span className="w-8 h-8 rounded-full bg-black/30 backdrop-blur border-2 border-white/20 grid place-items-center text-xs font-bold">+{homeTracks.length-4}</span>}</div>
@@ -1895,7 +1895,7 @@ export default function App(){
               <div className="relative max-w-[980px] mx-auto px-4 lg:px-6 py-4 lg:py-6">
                 <div className="flex items-center justify-between gap-4">
                   <button onClick={()=> setShowFull(false)} className="w-10 h-10 rounded-full bg-white/10 backdrop-blur border border-white/10 grid place-items-center hover:bg-white/15"><ChevronDownLarge/></button>
-                  <div className="text-center"><div className="text-xs tracking-[0.18em] font-bold text-white/50">NOW PLAYING</div><div className="text-sm font-semibold">Playing from <span className="text-[#D5AA55]">{current.source || 'Sur Sangam'}</span></div></div>
+                  <div className="text-center"><div className="text-xs tracking-[0.18em] font-bold text-white/50">NOW PLAYING</div><div className="text-sm font-semibold">Playing from <span className="text-[#D5AA55]">{current.source || 'MaxMusic'}</span></div></div>
                   <button className="w-10 h-10 rounded-full bg-white/10 backdrop-blur border border-white/10 grid place-items-center hover:bg-white/15"><MoreIcon/></button>
                 </div>
                 <div className="mt-6 lg:mt-10 grid grid-cols-1 lg:grid-cols-[1.1fr_0.9fr] gap-8 lg:gap-12 items-center min-w-0">
@@ -2006,7 +2006,7 @@ export default function App(){
               <div className="min-h-full grid place-items-center p-4">
                 <div className="w-full max-w-sm text-center py-8 min-w-0">
                   <div className="w-16 h-16 mx-auto rounded-[20px] bg-gradient-to-br from-[#D5AA55] to-[#6A418E] grid place-items-center text-3xl shadow-2xl">🎵</div>
-                  <h1 className="text-3xl font-bold font-display mt-4">Sur Sangam</h1>
+                  <h1 className="text-3xl font-bold font-display mt-4">MaxMusic</h1>
                   <p className="text-sm text-white/50 mt-1">Full songs • background play • lock-screen controls</p>
                   {welcomeMode==='home' ? (<>
                     <button onClick={()=>{ setAuthForm(f=>({...f,mode:'login'})); setWelcomeErr(''); setWelcomeMode('login') }} className="mt-8 w-full py-3 rounded-full bg-[#D5AA55] text-black font-bold">Log in</button>
@@ -2087,7 +2087,7 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
   const [tab, setTab] = useState("Overview")
   const isEditing = !!editUser
   const startEdit = ()=> setEditUser({...user})
-  const saveEdit = ()=>{ const u = {...editUser}; if(!u.avatar) u.avatar = `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(u.name||'Sur Sangam')}&radius=50`; setUser(u); setEditUser(null); showToast("Profile updated ✓") }
+  const saveEdit = ()=>{ const u = {...editUser}; if(!u.avatar) u.avatar = `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(u.name||'MaxMusic')}&radius=50`; setUser(u); setEditUser(null); showToast("Profile updated ✓") }
   return (
     <div className="space-y-6 max-w-4xl">
       <div className="relative rounded-[32px] overflow-hidden glass p-6 md:p-8">

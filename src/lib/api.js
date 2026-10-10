@@ -177,7 +177,7 @@ export async function resolveDirectAudio(track){
         body: JSON.stringify({ url:`https://www.youtube.com/watch?v=${vid}`, downloadMode:'audio', audioFormat:'best' }),
         signal: (typeof AbortSignal!=='undefined' && AbortSignal.timeout) ? AbortSignal.timeout(12000) : undefined
       })
-      if(cr.ok){ const cj = await cr.json().catch(()=>null); if(cj && typeof cj.url==='string' && cj.url.startsWith('https://')) url
+      if(cr.ok){ const cj = await cr.json().catch(()=>null); if(cj && typeof cj.url==='string' && cj.url.startsWith('https://')) url = cj.url }
     }catch(e){}
   }
   if(url && typeof window!=='undefined'){ try{ window.__ytAudioCache[vid] = url }catch(e){} }

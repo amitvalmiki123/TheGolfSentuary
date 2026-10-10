@@ -214,23 +214,31 @@ async function searchSaavnOfficial(query, limit=18){
     }
     if(!Array.isArray(results) || !results.length) throw new Error('empty')
     const mapped = []
+    const st = { items: 0, typeSkip: 0, noUrlField: 0, decryptFail: 0 }
     for(const s of results.slice(0, n)){
       try{
         if(!s || typeof s !== 'object') continue
-        if(s.type && !/song/i.test(String(s.type))) continue
+        st.items++
+        if(s.type && !/song/i.test(String(s.type))){ st.typeSkip++; continue }
+        const mi = (s.more_info && typeof s.more_info === 'object') ? s.more_info : {}
+        // URL hunt: flat fields first, then more_info nesting, then alternates
+        const encCand = [s.encrypted_media_url, mi.encrypted_media_url, s.encrypted_media_path, mi.encrypted_media_path].find(x=> typeof x==='string' && x.length > 20)
+        const rawCand = [s.media_url, mi.media_url, s.media_urls, mi.media_urls, s.download_url, mi.download_url].find(x=> (typeof x==='string' && x.startsWith('http')) || (Array.isArray(x) && x.length))
         let urls = []
-        if(typeof s.media_url === 'string' && s.media_url.startsWith('http')) urls = [s.media_url]
-        else if(typeof s.encrypted_media_url === 'string' && s.encrypted_media_url.length > 20) urls = saavnUrls(saavnDecrypt(s.encrypted_media_url))
+        if(typeof rawCand === 'string' && rawCand.startsWith('http')) urls = [rawCand]
+        else if(Array.isArray(rawCand) && rawCand.length){ const u = rawCand.map(x=> (typeof x==='string' ? x : (x&&(x.url||x.link)))||'').find(x=> x.startsWith('http')); if(u) urls = [u] }
+        else if(encCand){ const dec = saavnDecrypt(encCand); urls = saavnUrls(dec); if(!urls.length) st.decryptFail++ }
+        else st.noUrlField++
         const audio = urls.length ? urls[urls.length-1] : null
         if(typeof audio !== 'string' || !audio.startsWith('http')) continue
-        let img = s.image || ''
+        let img = s.image || mi.image || ''
         if(Array.isArray(img)) img = img[img.length-1]?.link || img[img.length-1]?.url || ''
         if(typeof img === 'string' && img.includes('150x150')) img = img.replace('150x150','500x500')
         const title = decodeStr(s.title || s.song || s.name || 'Unknown')
-        const artistVal = s.primary_artists || s.primaryArtists || s.subtitle || s.artists || 'Unknown'
-        const album = (s.album && (s.album.name || (typeof s.album==='string' ? s.album : ''))) || s.album_name || 'Single'
-        const dur = Number(s.duration) || 0
-        const lang = String(s.language || '').trim()
+        const artistVal = s.primary_artists || s.primaryArtists || s.subtitle || s.artists || s.singers || mi.music || 'Unknown'
+        const album = (s.album && (s.album.name || (typeof s.album==='string' ? s.album : ''))) || mi.album || s.album_name || 'Single'
+        const dur = Number(s.duration) || Number(mi.duration) || 0
+        const lang = String(s.language || mi.language || '').trim()
         mapped.push({
           id:`saavn-${s.id||title}`.slice(0,60), title, artist:String(artistVal), album:String(album),
           cover: (typeof img==='string' && img.startsWith('http')) ? img : `https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=600&auto=format&fit=crop&q=60`,
@@ -240,8 +248,8 @@ async function searchSaavnOfficial(query, limit=18){
         })
       }catch(e){ continue }
     }
-    if(mapped.length) console.log(`[saavn] official ok: "${String(query).slice(0,40)}" → ${mapped.length}`)
-    else console.log(`[saavn] official ZERO-audio "${qshort}": items had no playable url | http:${dbgStatus} ${dbgCtype} | keys:${dbgKeys}`)
+    if(mapped.length) console.log(`[saavn] official ok: "${String(query).slice(0,40)}" → ${mapped.length} (items:${st.items})`)
+    else console.log(`[saavn] official ZERO-audio "${qshort}": items:${st.items} typeSkip:${st.typeSkip} noUrlField:${st.noUrlField} decryptFail:${st.decryptFail} | http:${dbgStatus} ${dbgCtype} | keys:${dbgKeys}`)
     return mapped
   } catch(e){
     console.log(`[saavn] official miss "${qshort}": ${String((e&&e.message)||e).slice(0,60)} | http:${dbgStatus} ${dbgCtype} | keys:${dbgKeys} | head:${dbgHead}`)

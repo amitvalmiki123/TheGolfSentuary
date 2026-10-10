@@ -496,23 +496,27 @@ async function searchSaavnOfficialDevice(query, limit=18){
     try{
       if(!s || typeof s !== 'object') continue
       if(s.type && !/song/i.test(String(s.type))) continue
+      const mi = (s.more_info && typeof s.more_info === 'object') ? s.more_info : {}
+      const encCand = [s.encrypted_media_url, mi.encrypted_media_url, s.encrypted_media_path, mi.encrypted_media_path].find(x=> typeof x==='string' && x.length > 20)
+      const rawCand = [s.media_url, mi.media_url, s.media_urls, mi.media_urls, s.download_url, mi.download_url].find(x=> (typeof x==='string' && x.startsWith('http')) || (Array.isArray(x) && x.length))
       let urls = []
-      if(typeof s.media_url === 'string' && s.media_url.startsWith('http')) urls = [s.media_url]
-      else if(typeof s.encrypted_media_url === 'string' && s.encrypted_media_url.length > 20) urls = saavnUrlsDevice(saavnDecryptDevice(s.encrypted_media_url))
+      if(typeof rawCand === 'string' && rawCand.startsWith('http')) urls = [rawCand]
+      else if(Array.isArray(rawCand) && rawCand.length){ const u = rawCand.map(x=> (typeof x==='string' ? x : (x&&(x.url||x.link)))||'').find(x=> x.startsWith('http')); if(u) urls = [u] }
+      else if(encCand) urls = saavnUrlsDevice(saavnDecryptDevice(encCand))
       const audio = urls.length ? urls[urls.length-1] : null
       if(typeof audio !== 'string' || !audio.startsWith('http')) continue
-      let img = s.image || ''
+      let img = s.image || mi.image || ''
       if(Array.isArray(img)) img = img[img.length-1]?.link || img[img.length-1]?.url || ''
       if(typeof img === 'string' && img.includes('150x150')) img = img.replace('150x150','500x500')
       const title = decode(s.title || s.song || s.name || 'Unknown')
-      const artistVal = s.primary_artists || s.primaryArtists || s.subtitle || s.artists || 'Unknown'
-      const album = (s.album && (s.album.name || (typeof s.album==='string' ? s.album : ''))) || s.album_name || 'Single'
-      const dur = Number(s.duration) || 0
+      const artistVal = s.primary_artists || s.primaryArtists || s.subtitle || s.artists || s.singers || mi.music || 'Unknown'
+      const album = (s.album && (s.album.name || (typeof s.album==='string' ? s.album : ''))) || mi.album || s.album_name || 'Single'
+      const dur = Number(s.duration) || Number(mi.duration) || 0
       mapped.push({ id:`saavn-${s.id||title}-${Math.random().toString(36).slice(2,5)}`, title, artist:String(artistVal), album:String(album),
         cover: (typeof img==='string' && img.startsWith('http')) ? img : 'https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=600&auto=format&fit=crop&q=60',
         audio, durationLabel: dur? formatSec(dur):'3:30', durationSec:dur||210,
         plays:`${(Math.random()*800+50).toFixed(0)}M`, color:pickColor(), source:'Saavn • Full', isPreview:false,
-        language:String(s.language||'').toLowerCase(), original:s, videoId:null })
+        language:String(s.language||mi.language||'').toLowerCase(), original:s, videoId:null })
     }catch(e){ continue }
   }
   if(!mapped.length) throw new Error('empty')
@@ -718,7 +722,16 @@ export async function unifiedSearch(query, limit=24, offset=0){
           // Only trust real tracks (videoId or working Saavn CDN audio) — never placeholder/fallback rows
           const real = data.tracks.filter(x=> x && !String(x.id||'').startsWith('fallback-') && (x.videoId || (typeof x.audio==='string' && x.audio.startsWith('http') && !x.audio.includes('...'))))
           const nSv = real.filter(x=> String(x.source||'').startsWith('Saavn')).length
-          if(real.length >= 6){ sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}`); return real.slice(0, limit) }
+          if(real.length >= 6 && nSv >= 4){ sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}`); return real.slice(0, limit) }
+          if(real.length >= 6 && nSv < 4){
+            // Backend won with YT-only tracks — top up with device-Saavn so
+            // zero-Saavn screen par bhi Saavn flavours milte rahein.
+            const top = await searchSaavn(query, 10).catch(()=>[])
+            const merged = dedup([...(Array.isArray(top)?top:[]), ...real]).slice(0, limit)
+            const mSv = merged.filter(x=> String(x.source||'').startsWith('Saavn')).length
+            sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}+top${mSv}`)
+            return merged
+          }
           sdiag(`s:${qtag} be:thin${real.length}`)
         } else sdiag(`s:${qtag} be:empty`)
       } else sdiag(`s:${qtag} be:http${r.status}`)
@@ -810,8 +823,18 @@ export async function trendingByCategory(cat, limit=20, offset=0){
       if(r.ok){
         const data = await r.json()
         const real = (data.tracks||[]).filter(x=> x && x.audio && String(x.audio).startsWith('http'))
-        if(real.length >= 6){ sdiag(`t:${cat} be:ok${real.length}/sv${real.filter(x=>String(x.source||'').startsWith('Saavn')).length}`); try{ _catCache.set(`${cat}|${limit}`, { at: Date.now(), val: real.slice(0,limit) }) }catch{}; return real.slice(0, limit) }
-        sdiag(`t:${cat} be:thin${real.length}`)
+        {
+          const nSv0 = real.filter(x=> String(x.source||'').startsWith('Saavn')).length
+          if(real.length >= 6 && nSv0 >= 4){ sdiag(`t:${cat} be:ok${real.length}/sv${nSv0}`); try{ _catCache.set(`${cat}|${limit}`, { at: Date.now(), val: real.slice(0,limit) }) }catch{}; return real.slice(0, limit) }
+          if(real.length >= 6){
+            // YT-only backend win — top up with device-Saavn for this category.
+            const top = await searchSaavn(cat==='Trending India' ? 'Trending India' : `${cat} hindi songs`, 10).catch(()=>[])
+            const merged = dedup([...(Array.isArray(top)?top:[]), ...real]).slice(0, limit)
+            const mSv = merged.filter(x=> String(x.source||'').startsWith('Saavn')).length
+            sdiag(`t:${cat} be:ok${real.length}/sv${nSv0}+top${mSv}`); try{ _catCache.set(`${cat}|${limit}`, { at: Date.now(), val: merged }) }catch{}; return merged
+          }
+          sdiag(`t:${cat} be:thin${real.length}`)
+        }
       } else sdiag(`t:${cat} be:http${r.status}`)
     }catch(e){ sdiag(`t:${cat} be:${/abort/i.test(String((e&&e.message)||e)) ? 'timeout' : 'fail'}`) }
   }

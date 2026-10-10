@@ -789,8 +789,9 @@ export async function unifiedSearch(query, limit=24, offset=0){
     const filtered = tracks.filter(x=> !x.isPreview)
     if(filtered.length >= 4) tracks = filtered
   }
-  const outF = rankByRelevance(tracks, query).slice(0, limit)
-  try{ sdiag(`s:${qtag} out:${outF.length}/sv${outF.filter(x=>String(x.source||'').startsWith('Saavn')).length}`) }catch(e){}
+  let outF = rankByRelevance(tracks, query).slice(0, limit)
+  if(isIndian && _svN(outF) >= 2){ outF = _noVid(outF); _lastSearchNextpage = null }
+  try{ sdiag(`s:${qtag} out:${outF.length}/sv${_svN(outF)}`) }catch(e){}
   return outF
 }
 
@@ -834,13 +835,14 @@ export async function trendingByCategory(cat, limit=20, offset=0){
         const data = await r.json()
         const real = (data.tracks||[]).filter(x=> x && x.audio && String(x.audio).startsWith('http'))
         {
-          const nSv0 = real.filter(x=> String(x.source||'').startsWith('Saavn')).length
-          if(real.length >= 6 && nSv0 >= 4){ sdiag(`t:${cat} be:ok${real.length}/sv${nSv0}`); try{ _catCache.set(`${cat}|${limit}`, { at: Date.now(), val: real.slice(0,limit) }) }catch{}; return real.slice(0, limit) }
+          const nSv0 = _svN(real)
+          if(real.length >= 6 && nSv0 >= 4){ const pure = _noVid(real); sdiag(`t:${cat} be:ok${real.length}/sv${nSv0}+svonly${pure.length}`); try{ _catCache.set(`${cat}|${limit}`, { at: Date.now(), val: pure.slice(0,limit) }) }catch{}; return pure.slice(0, limit) }
           if(real.length >= 6){
             // YT-only backend win — top up with device-Saavn for this category.
-            const top = await searchSaavn(cat==='Trending India' ? 'Trending India' : `${cat} hindi songs`, 10).catch(()=>[])
+            const top = await searchSaavn(cat==='Trending India' ? 'Trending India' : `${cat} hindi songs`, 16).catch(()=>[])
             const merged = dedup([...(Array.isArray(top)?top:[]), ...real]).slice(0, limit)
-            const mSv = merged.filter(x=> String(x.source||'').startsWith('Saavn')).length
+            const mSv = _svN(merged)
+            if(mSv >= 2){ const pure = _noVid(merged); sdiag(`t:${cat} be:ok${real.length}/sv${nSv0}+top${mSv}+svonly${pure.length}`); try{ _catCache.set(`${cat}|${limit}`, { at: Date.now(), val: pure.slice(0,limit) }) }catch{}; return pure.slice(0, limit) }
             sdiag(`t:${cat} be:ok${real.length}/sv${nSv0}+top${mSv}`); try{ _catCache.set(`${cat}|${limit}`, { at: Date.now(), val: merged }) }catch{}; return merged
           }
           sdiag(`t:${cat} be:thin${real.length}`)
@@ -859,7 +861,7 @@ export async function trendingByCategory(cat, limit=20, offset=0){
         const data = await r.json()
         if(data.tracks && data.tracks.length){
           const real = data.tracks.filter(x=> x && !String(x.id||'').startsWith('fallback-') && (x.videoId || (typeof x.audio==='string' && x.audio.startsWith('http') && !x.audio.includes('...'))))
-          if(real.length >= 6){ try{ _catCache.set(`${cat}|${limit}`, { at: Date.now(), val: real.slice(0,limit) }) }catch{}; return real.slice(0, limit) }
+          if(real.length >= 6){ const pure = _svN(real) >= 2 ? _noVid(real) : real; try{ _catCache.set(`${cat}|${limit}`, { at: Date.now(), val: pure.slice(0,limit) }) }catch{}; return pure.slice(0, limit) }
         }
       }
     }catch(e){}
@@ -887,7 +889,7 @@ export async function trendingByCategory(cat, limit=20, offset=0){
     const pipedCat = await searchPiped(q, 12).catch(()=>({tracks:[]}))
     const mergedCat = strictByCategory(dedup([...saavnCat, ...(pipedCat.tracks||[])]), cat)
     try{ sdiag(`t:${cat} out:${mergedCat.length}/sv${mergedCat.filter(x=>String(x.source||'').startsWith('Saavn')).length}`) }catch(e){}
-    if(mergedCat.length >= 6) return mergedCat.slice(0, limit)
+    if(mergedCat.length >= 6){ const pure = _svN(mergedCat) >= 2 ? _noVid(mergedCat) : mergedCat; return pure.slice(0, limit) }
   }
   if(cat==="Love"){
     const [a,b,c] = await Promise.all([

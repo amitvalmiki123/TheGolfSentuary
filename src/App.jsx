@@ -116,7 +116,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-7'
+const APP_BUILD = 'itrace-8'
 
 function NpDiagCard({ toast, engine }){
   // Self-contained on purpose: ProfileView and App are different components — earlier this
@@ -543,7 +543,9 @@ export default function App(){
   const npActionRef = useRef(null)
   const npLastActRef = useRef({})
   const currentRef = useRef(null)
+  const isPlayingRef = useRef(false)
   currentRef.current = current
+  isPlayingRef.current = isPlaying
   npActionRef.current = (a)=>{
     // Service delivers every action TWICE (plugin listener + zero-bridge eval) with the
     // same stale isPlaying — toggle-style handling made pause a no-op and next skip 2.
@@ -625,7 +627,7 @@ export default function App(){
       }catch(e){}
     }, 2600)
     return ()=> clearInterval(id)
-  },[isPlaying, current && current.id, isNativeApp()])
+  },[isPlaying, current && current.id, current && current.videoId, directFor, isNativeApp()])
 
   // YouTube IFrame API — for YouTube • Full tracks (YouTube Music-like)
   useEffect(()=>{
@@ -685,13 +687,13 @@ export default function App(){
     const onTime=()=> setProgress(a.currentTime)
     const onLoaded=()=> { setDuration(a.duration||0); setAudioError(null) }
     const onEnded=()=>{ if(repeat===2){ a.currentTime=0; a.play().catch(()=>{}) } else handleNext() }
-    const onErr=()=>{ 
+    const onErr=()=>{
       const src = a.currentSrc || a.src || ""
       console.error("audio error", src)
-      setAudioError("Playback failed — check network"); 
-      showToast("Audio failed — try next or check network"); 
-      setIsPlaying(false)
-      // don't auto-skip to avoid infinite loop; user can tap next
+      setAudioError("Playback failed — check network");
+      showToast("Audio failed — real audio dhundh rahe…");
+      // NO setIsPlaying(false): rescue (React onError → handleAudioErr) owns recovery —
+      // a blind false here + rescue's manual play = audible-but-paused state desync.
     }
     a.addEventListener('timeupdate', onTime); a.addEventListener('loadedmetadata', onLoaded); a.addEventListener('ended', onEnded); a.addEventListener('error', onErr)
     return ()=>{ a.removeEventListener('timeupdate',onTime); a.removeEventListener('loadedmetadata',onLoaded); a.removeEventListener('ended',onEnded); a.removeEventListener('error',onErr) }
@@ -899,11 +901,15 @@ export default function App(){
           }
         }
         if(fixed && (fixed.audio || fixed.videoId)){
+          // Kill the old engine FIRST — else iframe + audio play double until pause/resume.
+          try{ if(ytPlayerRef.current && ytPlayerRef.current.pauseVideo) ytPlayerRef.current.pauseVideo() }catch{}
+          try{ const a0 = audioRef.current; if(a0 && !a0.paused) a0.pause() }catch{}
           setQueue(prev=>{ const q=[...prev]; const i=q.findIndex(x=> String(x.id)===key); if(i>=0){ q[i] = { ...q[i], ...fixed, id: q[i].id } } return q })
-          setTimeout(()=>{ try{ const a = audioRef.current; if(a && fixed.audio){ a.src = fixed.audio; a.currentTime = 0; a.play().catch(()=>{}) } }catch{} }, 500)
+          setTimeout(()=>{ try{ const a = audioRef.current; if(a && fixed.audio){ a.src = fixed.audio; a.currentTime = 0; if(isPlayingRef.current){ a.play().catch(()=>{}); setIsPlaying(true) } } }catch{} }, 500)
           showToast('Fixed ✓ ab chal raha hai')
         } else {
           showToast('Iska source nahi mila — skip; agli baar retry hoga')
+          setIsPlaying(false)
           delete rescueRef.current[key]
         }
       }catch{ delete rescueRef.current[key] }

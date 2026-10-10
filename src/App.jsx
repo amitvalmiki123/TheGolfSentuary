@@ -116,7 +116,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-14'
+const APP_BUILD = 'itrace-15'
 
 function NpDiagCard({ toast, engine }){
   // Self-contained on purpose: ProfileView and App are different components — earlier this
@@ -261,6 +261,40 @@ export default function App(){
   const [showAuth, setShowAuth] = useState(false)
   const [authForm, setAuthForm] = useState({ mode:'login', name:'', email:'', password:'' })
   const [authBusy, setAuthBusy] = useState(false)
+  // First-run welcome gate: login/signup/guest. Fresh install (bhi delete-karke-waapas)
+  // = no sur_auth_choice + no footprint → gate. Upgraders slip through silently.
+  const [wasFresh] = useState(()=>{ try{ return !localStorage.getItem('sur_user') && !localStorage.getItem('sur_auth_choice') }catch{ return true } })
+  const [showWelcome, setShowWelcome] = useState(()=>{
+    try{
+      if(localStorage.getItem('sur_auth_choice')) return false
+      if(getAuthToken()){ try{ localStorage.setItem('sur_auth_choice','user') }catch{}; return false }
+      if(localStorage.getItem('sur_liked') || localStorage.getItem('sur_playlists') || localStorage.getItem('sur_recent') || localStorage.getItem('sur_history') || localStorage.getItem('sur_user')){ try{ localStorage.setItem('sur_auth_choice','guest') }catch{}; return false }
+      return true
+    }catch{ return true }
+  })
+  const [welcomeMode, setWelcomeMode] = useState('home')
+  const [welcomeErr, setWelcomeErr] = useState('')
+  const chooseGuest = ()=>{
+    try{ localStorage.setItem('sur_auth_choice','guest') }catch{}
+    if(wasFresh){ try{ setUser({ name:'Guest', email:'', avatar:'https://api.dicebear.com/7.x/initials/svg?seed=Guest&backgroundColor=6A418E,D5AA55&radius=50', plan:'Free', followers:0, following:0, bio:'' }) }catch{} }
+    setShowWelcome(false)
+    showToast('Guest mode — enjoy 🎧 (You tab se login kar sakte ho)')
+  }
+  const handleWelcomeSubmit = async ()=>{
+    const { mode, name, email, password } = authForm
+    if(!email.trim() || password.length < 6){ setWelcomeErr(mode==='login' ? 'Email + 6-char password chahiye' : 'Naam, email + 6-char password chahiye'); return }
+    setWelcomeErr(''); setAuthBusy(true)
+    try{
+      const u = mode==='login' ? await apiLogin(email.trim(), password) : await apiSignup(name.trim()||email.split('@')[0], email.trim(), password)
+      if(u){
+        setAuthUser(u)
+        setUser(prev=> ({ ...prev, name: u.name||prev.name, email: u.email||email.trim(), avatar: u.avatar||prev.avatar }))
+        try{ localStorage.setItem('sur_auth_choice','user') }catch{}
+        setShowWelcome(false); setAuthForm({ mode:'login', name:'', email:'', password:'' })
+        showToast(`Welcome ${u.name||''} ☁ liked + playlists ab cloud me save`)
+      } else setWelcomeErr('Server reachable nahi / galat credentials — Guest try karo')
+    } finally { setAuthBusy(false) }
+  }
   const likedMetaRef = useRef((()=>{ try{ return JSON.parse(localStorage.getItem('sur_liked_map')||'{}') }catch{ return {} } })())
   const likeSyncTimer = useRef(null)
   const plSyncTimer = useRef(null)
@@ -990,8 +1024,8 @@ export default function App(){
       } else showToast('Server reachable nahi / galat credentials — local sync phir bhi chalega')
     } finally { setAuthBusy(false) }
   }
-  const handleSignOut = ()=>{ apiLogout(); setAuthUser(null); showToast('Signed out — local data safe hai') }
-  const handleDeleteAccount = async ()=>{ const ok = await apiDeleteAccount(); setAuthUser(null); showToast(ok? 'Account cloud se delete ho gaya' : 'Server reachable nahi — session sign out kiya') }
+  const handleSignOut = ()=>{ apiLogout(); setAuthUser(null); try{ localStorage.setItem('sur_auth_choice','guest') }catch{}; showToast('Signed out — local data safe hai') }
+  const handleDeleteAccount = async ()=>{ const ok = await apiDeleteAccount(); setAuthUser(null); try{ localStorage.setItem('sur_auth_choice','guest') }catch{}; showToast(ok? 'Account cloud se delete ho gaya' : 'Server reachable nahi — session sign out kiya') }
 
   const playTrack = async (track, list)=>{
     const targetList = list || queue
@@ -1568,7 +1602,7 @@ export default function App(){
                         const isCur = String(current?.id)===String(t.id)
                         return (
                           <div key={t.id} className={`flex items-center gap-3 px-4 py-2 hover:bg-white/5 group ${isCur?'bg-white/10':''}`}>
-                            <span className="w-6 text-center text-xs text-white/30 group-hover:hidden">{String(i+1).padStart(2,'0')}</span><button onClick={()=> playTrack(t, likedTracks)} className="w-6 hidden group-hover:grid place-items-center"><PlayMini/></button>
+                            <span className="w-6 text-center text-xs text-white/30 group-hover:hidden">{String(i+1).padStart(2,'0')}</span><button onClick={()=> playTrack(t, likedTracks)} className="w-6 hidden group-hover:grid place-items-center"><PlayMini dark/></button>
                             <button onClick={()=> playTrack(t, likedTracks)} className="flex items-center gap-3 flex-1 min-w-0 text-left"><img src={t.cover} alt="" className="w-10 h-10 rounded-md object-cover"/><div className="min-w-0"><div className={`text-sm font-medium truncate ${isCur?'text-[#D5AA55]':''}`}>{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div></div></button>
                             <span className="hidden sm:block text-xs text-white/40">{t.plays}</span><span className="text-xs text-white/60">{t.durationLabel}</span>
                             <button onClick={()=> toggleLike(t.id, t)} className="w-8 h-8 grid place-items-center text-[#C35445]"><Heart filled/></button>
@@ -1755,7 +1789,7 @@ export default function App(){
                         return (
                           <div key={t.id+String(i)} className={`flex items-center gap-3 p-2 rounded-xl transition ${isCur? 'bg-white text-black':'hover:bg-white/5'}`}>
                             <span className={`hidden sm:block w-6 text-center text-xs font-bold ${isCur? 'text-black/40':'text-white/30'}`}>{String(i+1).padStart(2,'0')}</span>
-                            <button onClick={()=> playTrack(t)} className="flex items-center gap-3 flex-1 min-w-0 text-left"><span className="relative block w-11 h-11 rounded-lg overflow-hidden shrink-0"><img src={t.cover} alt="" className="w-full h-full object-cover"/><span className={`absolute inset-0 grid place-items-center bg-black/40 opacity-0 hover:opacity-100 ${isCur? 'opacity-100 bg-black/20':''}`}>{isCur && isPlaying? <PauseMini dark={!isCur}/>:<PlayMini dark={!isCur}/>}</span></span><span className="min-w-0 flex-1 block"><span className={`block text-sm font-medium truncate ${isCur? 'text-black':'text-white'}`}>{t.title} {t.source && <span className="text-[10px] bg-black/5 px-1.5 py-0.5 rounded-full border border-black/10 ml-1">{t.source}</span>}</span><span className={`block text-xs truncate ${isCur? 'text-black/60':'text-white/50'}`}>{t.artist}</span></span></button>
+                            <button onClick={()=> playTrack(t)} className="flex items-center gap-3 flex-1 min-w-0 text-left"><span className="relative block w-11 h-11 rounded-lg overflow-hidden shrink-0"><img src={t.cover} alt="" className="w-full h-full object-cover"/><span className={`absolute inset-0 grid place-items-center bg-black/40 opacity-0 hover:opacity-100 ${isCur? 'opacity-100 bg-black/20':''}`}>{isCur && isPlaying? <PauseMini dark/>:<PlayMini dark/>}</span></span><span className="min-w-0 flex-1 block"><span className={`block text-sm font-medium truncate ${isCur? 'text-black':'text-white'}`}>{t.title} {t.source && <span className="text-[10px] bg-black/5 px-1.5 py-0.5 rounded-full border border-black/10 ml-1">{t.source}</span>}</span><span className={`block text-xs truncate ${isCur? 'text-black/60':'text-white/50'}`}>{t.artist}</span></span></button>
                             <button onClick={()=> toggleLike(t.id, t)} className={`hidden sm:grid w-8 h-8 place-items-center rounded-full ${liked.has(t.id)? 'text-[#C35445]': isCur? 'text-black/30':'text-white/30 hover:text-white'}`}><Heart filled={liked.has(t.id)} size={16}/></button>
                             <button onClick={()=> handleDownload(t)} className={`hidden sm:grid w-8 h-8 place-items-center rounded-full border ${downloaded.find(d=> String(d.id)===String(t.id))? 'bg-emerald-500 border-emerald-500 text-white':'border-white/10 text-white/40'}`}><DownloadIcon size={12}/></button>
                             <span className={`text-xs font-medium ${isCur? 'text-black/60':'text-white/40'}`}>{t.durationLabel}</span>
@@ -1967,6 +2001,32 @@ export default function App(){
               <button onClick={()=> setAuthForm({...authForm, mode: authForm.mode==='login'?'signup':'login'})} className="mt-3 w-full text-xs text-white/60 hover:text-white">{authForm.mode==='login' ? 'Naya account chahiye? Sign up' : 'Pehle se account hai? Sign in'}</button>
             </div></div>
           )}
+          {showWelcome && (
+            <div className="fixed inset-0 z-[60] overflow-y-auto bg-[#060306]">
+              <div className="min-h-full grid place-items-center p-4">
+                <div className="w-full max-w-sm text-center py-8 min-w-0">
+                  <div className="w-16 h-16 mx-auto rounded-[20px] bg-gradient-to-br from-[#D5AA55] to-[#6A418E] grid place-items-center text-3xl shadow-2xl">🎵</div>
+                  <h1 className="text-3xl font-bold font-display mt-4">Sur Sangam</h1>
+                  <p className="text-sm text-white/50 mt-1">Full songs • background play • lock-screen controls</p>
+                  {welcomeMode==='home' ? (<>
+                    <button onClick={()=>{ setAuthForm(f=>({...f,mode:'login'})); setWelcomeErr(''); setWelcomeMode('login') }} className="mt-8 w-full py-3 rounded-full bg-[#D5AA55] text-black font-bold">Log in</button>
+                    <button onClick={()=>{ setAuthForm(f=>({...f,mode:'signup'})); setWelcomeErr(''); setWelcomeMode('signup') }} className="mt-3 w-full py-3 rounded-full bg-white/10 border border-white/10 font-bold">Create account</button>
+                    <button onClick={chooseGuest} className="mt-3 w-full py-3 rounded-full text-sm text-white/60 hover:text-white">Continue as Guest →</button>
+                    <p className="text-[11px] text-white/30 mt-5 leading-relaxed">Guest = full music, data stays on this device.<br/>Account = liked + playlists sync on every device ☁</p>
+                  </>) : (<>
+                    <button onClick={()=>{ setWelcomeMode('home'); setWelcomeErr('') }} className="mt-6 text-xs text-white/60 hover:text-white">← Back</button>
+                    <h3 className="text-lg font-bold mt-2">{authForm.mode==='login' ? 'Welcome back' : 'Create your account'}</h3>
+                    {authForm.mode==='signup' && <input autoFocus value={authForm.name} onChange={e=> setAuthForm({...authForm, name:e.target.value})} placeholder="Naam" className="mt-4 w-full h-12 px-4 rounded-2xl bg-white/10 border border-white/10 text-sm outline-none focus:border-[#D5AA55]/60"/>}
+                    <input type="email" value={authForm.email} onChange={e=> setAuthForm({...authForm, email:e.target.value})} placeholder="email@example.com" className="mt-3 w-full h-12 px-4 rounded-2xl bg-white/10 border border-white/10 text-sm outline-none focus:border-[#D5AA55]/60"/>
+                    <input type="password" value={authForm.password} onChange={e=> setAuthForm({...authForm, password:e.target.value})} onKeyDown={e=>{ if(e.key==='Enter') handleWelcomeSubmit() }} placeholder="Password (6+ chars)" className="mt-3 w-full h-12 px-4 rounded-2xl bg-white/10 border border-white/10 text-sm outline-none focus:border-[#D5AA55]/60"/>
+                    {welcomeErr && <div className="mt-3 text-xs font-semibold text-[#E8837A] break-words">{welcomeErr}</div>}
+                    <button onClick={handleWelcomeSubmit} disabled={authBusy} className="mt-4 w-full py-3 rounded-full bg-[#D5AA55] text-black font-bold disabled:opacity-50">{authBusy ? 'Connecting…' : (authForm.mode==='login' ? 'Log in' : 'Create account')}</button>
+                    <button onClick={()=>{ setAuthForm({...authForm, mode: authForm.mode==='login'?'signup':'login' }); setWelcomeErr('') }} className="mt-3 w-full text-xs text-white/60 hover:text-white">{authForm.mode==='login' ? 'New here? Create account' : 'Have an account? Log in'}</button>
+                  </>)}
+                </div>
+              </div>
+            </div>
+          )}
           {showCreatePl && (
             <div className="fixed inset-0 z-50 grid place-items-center p-4"><div onClick={()=> setShowCreatePl(false)} className="absolute inset-0 bg-black/70 backdrop-blur-sm"/><div className="relative w-full max-w-md glass-strong rounded-[24px] p-6"><h3 className="text-lg font-bold">Create playlist</h3><p className="text-sm text-white/60 mt-1">Give your playlist a name — you can add songs later from Search or Library.</p><input autoFocus value={newPlName} onChange={e=> setNewPlName(e.target.value)} placeholder="My Playlist #1" className="mt-4 w-full h-11 px-4 rounded-full bg-white text-black placeholder:text-black/40 outline-none"/><div className="flex gap-2 mt-4"><button onClick={()=> setShowCreatePl(false)} className="flex-1 py-2.5 rounded-full bg-white/10 border border-white/10 font-semibold">Cancel</button><button onClick={handleCreatePlaylist} className="flex-1 py-2.5 rounded-full bg-white text-black font-bold">Create</button></div></div></div>
           )}
@@ -2141,7 +2201,7 @@ function ProfileIcon({ active, size=18 }){ return <svg width={size} height={size
 function PlayIcon({ dark, large }){ const s=large?28:20; return <svg width={s} height={s} viewBox="0 0 24 24" fill={dark?"black":"white"}><path d="M8 5.14v14l11-7z"/></svg> }
 function PauseIcon({ dark, large }){ const s=large?28:20; return <svg width={s} height={s} viewBox="0 0 24 24" fill={dark?"black":"white"}><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg> }
 function PlayMini({ dark, size=16 }){ return <svg width={size} height={size} viewBox="0 0 24 24" fill={dark?"white":"black"}><path d="M8 5.14v14l11-7z"/></svg> }
-function PauseMini({ dark, size=16 }){ return <svg width={size} height={size} viewBox="0 0 24 24" fill={dark?"black":"white"}><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg> }
+function PauseMini({ dark, size=16 }){ return <svg width={size} height={size} viewBox="0 0 24 24" fill={dark?"white":"black"}><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg> }
 function PrevIcon({ large }){ const s=large?24:18; return <svg width={s} height={s} viewBox="0 0 24 24" fill="currentColor"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6z"/></svg> }
 function NextIcon({ large }){ const s=large?24:18; return <svg width={s} height={s} viewBox="0 0 24 24" fill="currentColor"><path d="M13 6v12l8.5-6zM11 6v12l-8.5-6z" /></svg> }
 function ChevronLeft(){ return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m15 18-6-6 6-6"/></svg> }

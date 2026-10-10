@@ -116,7 +116,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-1'
+const APP_BUILD = 'itrace-2'
 
 function NpDiagCard({ toast, engine }){
   // Self-contained on purpose: ProfileView and App are different components — earlier this
@@ -922,7 +922,7 @@ export default function App(){
             if(j && Array.isArray(j.tried)) d += ' tried:'+j.tried.map(t=> (t.engine||'?')+':'+(t.msg!=null ? t.msg : (t.status!=null ? t.status : '?'))).join(',')
             else if(j && j.error) d += ' '+String(j.error).slice(0,100)
           }catch(e){ if(txt) d += ' '+txt.replace(/\s+/g,' ').slice(0,120) }
-          try{ window.__ytDirectErr = d.slice(0,240); setDirectErr(window.__ytDirectErr) }catch(e){}
+          try{ window.__ytDirectErr = d.slice(0,400); setDirectErr(window.__ytDirectErr) }catch(e){}
         }).catch(e=>{ try{ setDirectErr(('srv unreachable '+String((e&&e.message)||e)).slice(0,120)) }catch(err){} })
       }catch(e){}
     }

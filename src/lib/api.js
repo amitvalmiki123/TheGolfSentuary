@@ -14,6 +14,42 @@ const INVIDIOUS_HOSTS = [
   "https://yewtu.be",
   "https://inv.tux.pizza"
 ]
+// ---- Dynamic instance discovery (hardcoded hosts keep dying — ask the living list) ----
+// Piped + Invidious publish their public instance lists as JSON; we fetch once/hour and
+// race those hosts alongside the hardcoded ones. Dead meta-list → hardcoded fallback.
+let _pipedDyn = { at:0, hosts:[] }
+async function pipedDynHosts(){
+  const now = Date.now()
+  if(_pipedDyn.hosts.length && now - _pipedDyn.at < 3600000) return _pipedDyn.hosts
+  try{
+    const sig = (typeof AbortSignal!=='undefined' && AbortSignal.timeout) ? AbortSignal.timeout(6000) : undefined
+    const r = await fetch('https://piped-instances.kavin.rocks/', { headers:{ 'Accept':'application/json' }, signal: sig })
+    if(r.ok){
+      const j = await r.json().catch(()=>null)
+      const list = [...new Set((Array.isArray(j) ? j : []).filter(x=> x && x.api && x.api_url).map(x=> String(x.api_url).replace(/\/$/,'')))]
+        .filter(u=> u.startsWith('https://')).slice(0,8)
+      if(list.length){ _pipedDyn = { at: now, hosts: list }; return list }
+    }
+  }catch(e){}
+  return null
+}
+let _invDyn = { at:0, hosts:[] }
+async function invDynHosts(){
+  const now = Date.now()
+  if(_invDyn.hosts.length && now - _invDyn.at < 3600000) return _invDyn.hosts
+  try{
+    const sig = (typeof AbortSignal!=='undefined' && AbortSignal.timeout) ? AbortSignal.timeout(6000) : undefined
+    const r = await fetch('https://api.invidious.io/instances.json', { headers:{ 'Accept':'application/json' }, signal: sig })
+    if(r.ok){
+      const j = await r.json().catch(()=>null)
+      // shape: [ [domain, {api, cors, ...}], ... ]
+      const list = [...new Set((Array.isArray(j) ? j : []).filter(x=> Array.isArray(x) && x[1] && x[1].api && x[1].cors !== false).map(x=> 'https://'+String(x[0]).replace(/\/$/,'')))]
+        .filter(u=> u.startsWith('https://')).slice(0,8)
+      if(list.length){ _invDyn = { at: now, hosts: list }; return list }
+    }
+  }catch(e){}
+  return null
+}
 const CORS_PROXIES = [
   (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
   (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
@@ -182,6 +218,28 @@ export async function resolveInnerTubeAudio(videoId, ms=10000){
       lastDetail = (/abort|timeout/i.test(m) ? 'it-timeout' : (/failed to fetch|network|cors|load failed/i.test(m) ? 'it-net-block' : 'it-err'))
     }
   }
+  // Last shot: same InnerTube POST through corsproxy.io (forwards method+body, dodges
+  // WebView CORS; proxy-egress IP may still be 429'd — diagnosis will tell).
+  try{
+    const sig = (typeof AbortSignal!=='undefined' && AbortSignal.timeout) ? AbortSignal.timeout(12000) : undefined
+    const r = await fetch('https://corsproxy.io/?'+encodeURIComponent(`https://www.youtube.com/youtubei/v1/player?key=${YT_INNER_KEY}&prettyPrint=false`), {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Accept':'application/json' },
+      body: JSON.stringify({ videoId: vid, context:{ client:{ ...YT_INNER_CLIENTS[0], hl:'en', gl:'US' } } }),
+      signal: sig
+    })
+    if(r.ok){
+      const j = await r.json().catch(()=>null)
+      const ps = j && j.playabilityStatus
+      if(ps && ps.status === 'OK'){
+        const fmts = (j.streamingData && j.streamingData.adaptiveFormats) || []
+        const aud = fmts.filter(f=> f && f.url && String(f.mimeType||'').startsWith('audio/'))
+          .sort((a,b)=> ((a.bitrate||a.averageBitrate||999999999)-(b.bitrate||b.averageBitrate||999999999)))
+        if(aud.length) return { url: aud[0].url, detail:'', itag: aud[0].itag }
+        lastDetail = 'itpx-no-audio-fmt'
+      } else lastDetail = 'itpx-' + String((ps&&ps.status)||r.status).toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,18)
+    } else lastDetail = `itpx-http-${r.status}`
+  }catch(e){ lastDetail = 'itpx-fail' }
   return { url:null, detail:lastDetail }
 }
 
@@ -206,7 +264,7 @@ async function probeServerAudio(url){
       } else if(j && j.error){ d += ' '+String(j.error).slice(0,100) }
       else if(txt){ d += ' '+txt.slice(0,100) }
     }catch(e){ if(txt) d += ' '+txt.replace(/\s+/g,' ').slice(0,120) }
-    detail.text = d.slice(0,240)
+    detail.text = d.slice(0,400)
   }catch(e){
     detail.text = ('srv probe fail '+String((e&&e.name==='TimeoutError')||String((e&&e.message)||e).includes('abort') ? 'timeout 30s' : ((e&&e.message)||e))).slice(0,160)
   }
@@ -225,7 +283,7 @@ export async function resolveDirectAudio(track){
   }
   const notes = []
   let over = false
-  const note = (t)=>{ if(!t || over) return; notes.push(t); try{ window.__ytDirectErr = notes.join(' | ').slice(0,240) }catch(e){} }
+  const note = (t)=>{ if(!t || over) return; notes.push(t); try{ window.__ytDirectErr = notes.join(' | ').slice(0,400) }catch(e){} }
   if(typeof window!=='undefined'){ try{ window.__ytDirectErr = '' }catch(e){} }
   // #0 — InnerTube straight from the DEVICE (trusted mobile IP, no cold-start).
   // Fresh signed googlevideo URL — trusted as-is; <audio> error handler is the backstop.
@@ -263,8 +321,9 @@ export async function resolveDirectAudio(track){
     if(url) return url
     note('srv-no-url'); return null
   })()
-  // #2 — piped (hosts raced inside) + #3 cobalt, device-side fallbacks
+  // #2 — piped (hosts raced inside) + #3 invidious + #4 cobalt, device-side fallbacks
   const jobPiped = (async()=>{ try{ const u = await resolvePipedAudio(track); if(u) return u }catch(e){} note('piped-dead'); return null })()
+  const jobInv = (async()=>{ try{ const u = await resolveInvidiousAudio(vid, 10000); if(u) return u }catch(e){} note('inv-dead'); return null })()
   const jobCobalt = (async()=>{
     try{
       const cr = await fetch('https://api.cobalt.tools/', {
@@ -277,14 +336,14 @@ export async function resolveDirectAudio(track){
     note('cobalt-dead'); return null
   })()
   // First URL wins (return immediately); total failure only when EVERY engine lands.
-  const jobs = [jobInner, jobServer, jobPiped, jobCobalt]
+  const jobs = [jobInner, jobServer, jobPiped, jobInv, jobCobalt]
   return await new Promise((resolve)=>{
     let settled = 0, won = false
     const finish = (u)=>{
       if(over) return; over = true
       try{
         if(u){ window.__ytAudioCache[vid] = u; window.__ytDirectErr = '' }
-        else { window.__ytDirectErr = (notes.join(' | ') || 'all resolvers failed').slice(0,240) }
+        else { window.__ytDirectErr = (notes.join(' | ') || 'all resolvers failed').slice(0,400) }
       }catch(e){}
       resolve(u || null)
     }
@@ -298,8 +357,8 @@ export async function resolveDirectAudio(track){
 export async function resolvePipedAudio(track){
   if(track.audio && track.audio.startsWith('http')) return track.audio
   if(!track.videoId) return null
-  // RACED: all hosts at once (~8s worst instead of 7 hosts × 7s sequential)
-  const hosts = track.host ? [track.host, ...PIPED_HOSTS.filter(h=> h!==track.host)] : PIPED_HOSTS
+  // RACED ×2: hardcoded hosts and dynamically-discovered hosts run CONCURRENTLY —
+  // whichever family has a living instance wins; discovery never delays hardcoded.
   const one = async (host)=>{
       const data = await fetchJsonWithCors(`${host}/streams/${track.videoId}`, 8000)
       const audioStreams = data.audioStreams || []
@@ -308,7 +367,43 @@ export async function resolvePipedAudio(track){
       if(data.hls) return data.hls
       throw new Error('empty')
   }
-  try{ return await Promise.any(hosts.map(one)) }catch(e){ return null }
+  const need = async (p)=>{ const u = await p; if(!u) throw new Error('empty'); return u }
+  const hardHosts = track.host ? [track.host, ...PIPED_HOSTS.filter(h=> h!==track.host)] : PIPED_HOSTS
+  const jobHard = (async()=>{ try{ return await Promise.any(hardHosts.map(one)) }catch(e){ return null } })()
+  const jobDyn = (async()=>{
+    try{
+      const dyn = await pipedDynHosts().catch(()=>null)
+      if(!dyn || !dyn.length) return null
+      return await Promise.any(dyn.map(one))
+    }catch(e){ return null }
+  })()
+  try{ return await Promise.any([need(jobHard), need(jobDyn)]) }catch(e){ return null }
+}
+
+// Invidious direct audio from the DEVICE: race dynamic+hardcoded hosts on
+// /latest_version itag=140, validated by a 2-byte Range probe (must be audio/*).
+export async function resolveInvidiousAudio(videoId, ms=10000){
+  const vid = String(videoId||'').slice(0,20)
+  if(!vid) return null
+  const sig = ()=> (typeof AbortSignal!=='undefined' && AbortSignal.timeout) ? AbortSignal.timeout(ms) : undefined
+  const one = async (host)=>{
+    const u = `${host}/latest_version?id=${vid}&local=true&itag=140`
+    const r = await fetch(u, { headers:{ Range:'bytes=0-1', 'Accept':'audio/*,*/*' }, signal: sig() })
+    const ct = (r.headers.get('content-type')||'').toLowerCase()
+    if((r.status===200||r.status===206) && /^(audio|video)\//.test(ct)) return u
+    try{ r.body && r.body.cancel && r.body.cancel() }catch(e){}
+    throw new Error('non-audio')
+  }
+  const need = async (p)=>{ const u = await p; if(!u) throw new Error('empty'); return u }
+  const jobHard = (async()=>{ try{ return await Promise.any(INVIDIOUS_HOSTS.map(one)) }catch(e){ return null } })()
+  const jobDyn = (async()=>{
+    try{
+      const dyn = await invDynHosts().catch(()=>null)
+      if(!dyn || !dyn.length) return null
+      return await Promise.any(dyn.map(one))
+    }catch(e){ return null }
+  })()
+  try{ return await Promise.any([need(jobHard), need(jobDyn)]) }catch(e){ return null }
 }
 
 export async function searchSaavn(query, limit=18){

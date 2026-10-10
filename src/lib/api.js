@@ -1,5 +1,6 @@
 // YouTube Music-like — Piped (YouTube) primary with Invidious fallback, Saavn for Indian, Audius for global
 import CryptoJS from 'crypto-js'
+import { nativeJson, canNativeHttp } from './nativehttp.js'
 const PIPED_HOSTS = [
   "https://pipedapi.kavin.rocks",
   "https://pipedapi.adminforge.de",
@@ -204,6 +205,34 @@ export async function resolveInnerTubeAudio(videoId, ms=10000){
   const vid = String(videoId||'').slice(0,20)
   if(!vid) return { url:null, detail:'it-no-vid' }
   let lastDetail = 'it-fail'
+  const pickAudio = (j)=>{
+    const ps = j && j.playabilityStatus
+    if(!ps || ps.status !== 'OK') return { err: (`itn-${String((ps&&ps.status)||'no-status').toLowerCase().replace(/[^a-z]/g,'')}` || 'itn-unplayable').slice(0,28) }
+    const fmts = (j.streamingData && j.streamingData.adaptiveFormats) || []
+    const aud = fmts.filter(f=> f && f.url && String(f.mimeType||'').startsWith('audio/'))
+      .sort((a,b)=> ((a.bitrate||a.averageBitrate||999999999)-(b.bitrate||b.averageBitrate||999999999)))
+    if(!aud.length) return { err:'itn-no-audio-fmt' }
+    return { url: aud[0].url, itag: aud[0].itag }
+  }
+  // #0 — NATIVE socket first (no WebView CORS, trusted device IP). This is the shot
+  // that can actually reach youtubei from inside the APK.
+  if(canNativeHttp()){
+    for(const c of YT_INNER_CLIENTS){
+      try{
+        const j = await nativeJson({
+          url:`https://www.youtube.com/youtubei/v1/player?key=${YT_INNER_KEY}&prettyPrint=false`,
+          method:'POST', headers:{ 'Content-Type':'application/json' },
+          body:{ videoId: vid, context:{ client:{ ...c, hl:'en', gl:'US' } } }, timeout: ms
+        })
+        const got = pickAudio(j)
+        if(got.url) return { url: got.url, detail:'', itag: got.itag }
+        lastDetail = got.err
+      }catch(e){
+        const m = String((e&&e.message)||e)
+        lastDetail = (/abort|timeout/i.test(m) ? 'itn-timeout' : (/http (\d+)/.test(m) ? 'itn-http-'+m.match(/http (\d+)/)[1] : 'itn-fail'))
+      }
+    }
+  }
   for(const c of YT_INNER_CLIENTS){
     try{
       const sig = (typeof AbortSignal!=='undefined' && AbortSignal.timeout) ? AbortSignal.timeout(ms) : undefined
@@ -439,7 +468,11 @@ function saavnUrlsDevice(decrypted){
 async function searchSaavnOfficialDevice(query, limit=18){
   const n = Math.min(Math.max(Number(limit)||18,1),30)
   const target = `https://www.jiosaavn.com/api.php?__call=search.getResults&q=${encodeURIComponent(query)}&p=1&n=${n}&api_version=4&_format=json&_marker=0&ctx=web6dot0`
-  const data = await fetchJsonWithCors(target, 6000)
+  // Race NATIVE socket (no CORS, India IP) against WebView fetch+proxies.
+  const need = async (p)=>{ const d = await p; if(!d || typeof d !== 'object') throw new Error('empty'); return d }
+  const jobs = [need(fetchJsonWithCors(target, 6000))]
+  if(canNativeHttp()) jobs.push(need(nativeJson({ url: target, timeout: 8000 })))
+  const data = await Promise.any(jobs)
   let results = null
   if(Array.isArray(data)) results = data
   else if(data && typeof data==='object'){

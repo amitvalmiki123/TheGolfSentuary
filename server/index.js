@@ -4,6 +4,7 @@ import dotenv from 'dotenv'
 import mongoose from 'mongoose'
 import jwt from 'jsonwebtoken'
 import bcrypt from 'bcryptjs'
+import CryptoJS from 'crypto-js'
 
 dotenv.config()
 
@@ -164,7 +165,81 @@ const SAavn_ENDPOINTS = [
   (q, limit) => `https://jiosaavn-api-with-cors.vercel.app/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}`,
 ]
 
+// ---- JioSaavn OFFICIAL api.php (no third-party mirrors): search + DES-decrypt ----
+// Same method every saavn wrapper uses, now in OUR code: official search returns
+// encrypted_media_url (DES-ECB, key 38346591) → decrypt → CDN mp3 set (96/160/320).
+// Direct CDN mp3 = instant play + background-safe + seekable, zero extraction.
+function saavnDecrypt(enc){
+  try{
+    const dec = CryptoJS.DES.decrypt(
+      { ciphertext: CryptoJS.enc.Base64.parse(String(enc||'').trim()) },
+      CryptoJS.enc.Utf8.parse('38346591'),
+      { mode: CryptoJS.mode.ECB, padding: CryptoJS.pad.Pkcs7 }
+    )
+    return dec.toString(CryptoJS.enc.Utf8) || ''
+  }catch(e){ return '' }
+}
+function saavnUrls(decrypted){
+  const d = String(decrypted||'').trim()
+  if(!d.startsWith('http')) return []
+  const m = d.match(/^(.*)_\d+\.(mp4|mp3)(\?.*)?$/)
+  if(!m) return [d]
+  return [96,160,320].map(q=> `${m[1]}_${q}.${m[2]}${m[3]||''}`)
+}
+async function searchSaavnOfficial(query, limit=18){
+  const n = Math.min(Math.max(Number(limit)||18, 1), 30)
+  const url = `https://www.jiosaavn.com/api.php?__call=search.getResults&q=${encodeURIComponent(query)}&p=1&n=${n}&api_version=4&_format=json&_marker=0&ctx=web6dot0`
+  const ctrl = new AbortController(); const tm = setTimeout(()=>ctrl.abort(), 7000)
+  try{
+    const r = await fetch(url, { signal: ctrl.signal, headers: {
+      'Accept':'application/json',
+      'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+      'Referer':'https://www.jiosaavn.com/'
+    } })
+    if(!r.ok) throw new Error('http '+r.status)
+    const txt = await r.text()
+    let data = null
+    try{ data = JSON.parse(txt) }catch(e){ const i = txt.indexOf('{'); if(i>=0){ try{ data = JSON.parse(txt.slice(i)) }catch(e2){} } }
+    const results = data && (data.results || (data.data && data.data.results) || data.songs)
+    if(!Array.isArray(results) || !results.length) throw new Error('empty')
+    const mapped = []
+    for(const s of results.slice(0, n)){
+      try{
+        if(!s || typeof s !== 'object') continue
+        if(s.type && !/song/i.test(String(s.type))) continue
+        let urls = []
+        if(typeof s.media_url === 'string' && s.media_url.startsWith('http')) urls = [s.media_url]
+        else if(typeof s.encrypted_media_url === 'string' && s.encrypted_media_url.length > 20) urls = saavnUrls(saavnDecrypt(s.encrypted_media_url))
+        const audio = urls.length ? urls[urls.length-1] : null
+        if(typeof audio !== 'string' || !audio.startsWith('http')) continue
+        let img = s.image || ''
+        if(Array.isArray(img)) img = img[img.length-1]?.link || img[img.length-1]?.url || ''
+        if(typeof img === 'string' && img.includes('150x150')) img = img.replace('150x150','500x500')
+        const title = decodeStr(s.title || s.song || s.name || 'Unknown')
+        const artistVal = s.primary_artists || s.primaryArtists || s.subtitle || s.artists || 'Unknown'
+        const album = (s.album && (s.album.name || (typeof s.album==='string' ? s.album : ''))) || s.album_name || 'Single'
+        const dur = Number(s.duration) || 0
+        const lang = String(s.language || '').trim()
+        mapped.push({
+          id:`saavn-${s.id||title}`.slice(0,60), title, artist:String(artistVal), album:String(album),
+          cover: (typeof img==='string' && img.startsWith('http')) ? img : `https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=600&auto=format&fit=crop&q=60`,
+          audio, durationLabel: dur? formatSec(dur):'3:30', durationSec: dur||210,
+          plays:`${(Math.random()*800+50).toFixed(0)}M`, color:pickColor(),
+          source:'Saavn • Full', isPreview:false, category:[lang || 'Hindi']
+        })
+      }catch(e){ continue }
+    }
+    if(mapped.length) console.log(`[saavn] official ok: "${String(query).slice(0,40)}" → ${mapped.length}`)
+    return mapped
+  } finally { clearTimeout(tm) }
+}
+
 async function searchSaavn(query, limit=18){
+  // Official API FIRST (ours, no dead mirrors); raced mirrors only as backup.
+  try{
+    const off = await searchSaavnOfficial(query, limit)
+    if(off && off.length) return off
+  }catch(e){ console.log('[saavn] official miss:', String((e&&e.message)||e).slice(0,80)) }
   // RACED: all mirrors at once, first with results wins (dead mirrors don't serialize delay)
   const one = async (buildUrl)=>{
       const url = buildUrl(query, limit)

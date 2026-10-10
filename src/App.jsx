@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
-import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio, resolveDirectAudio, searchSaavn, searchSuggestions, getLastSearchNextpage, fetchLyrics, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists } from './lib/api.js'
+import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio, resolveDirectAudio, searchSaavn, searchSuggestions, getLastSearchNextpage, fetchLyrics, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists, warmBackend } from './lib/api.js'
 import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
 import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npAskBattery, npOpenNotifSettings, npPing, npLastCrash, npSetDisabled, npDisabled, npBridgeMode, hasNativeBridge, wvGuess } from './lib/nowplaying.js'
 
@@ -116,7 +116,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-2'
+const APP_BUILD = 'itrace-3'
 
 function NpDiagCard({ toast, engine }){
   // Self-contained on purpose: ProfileView and App are different components — earlier this
@@ -515,6 +515,7 @@ export default function App(){
     let alive = true
     if(npDisabled()){ try{ setTimeout(()=>showToast('Safe mode ON — background player disabled. Turn it off in You tab.'), 1200) }catch{} }
     npLastCrash().then(t=>{ if(alive && t && t.trim()){ setCrashTrace(t.trim()); setCrashOpen(true) } }).catch(()=>{})
+    try{ warmBackend() }catch(e){}
     return ()=>{ alive = false }
   },[])
   useEffect(()=>{

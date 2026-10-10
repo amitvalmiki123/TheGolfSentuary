@@ -1,4 +1,5 @@
 // YouTube Music-like — Piped (YouTube) primary with Invidious fallback, Saavn for Indian, Audius for global
+import CryptoJS from 'crypto-js'
 const PIPED_HOSTS = [
   "https://pipedapi.kavin.rocks",
   "https://pipedapi.adminforge.de",
@@ -58,6 +59,14 @@ const CORS_PROXIES = [
   (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`
 ]
 const BACKEND_URL = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_URL) ? import.meta.env.VITE_API_URL : 'https://sur-sangam-api.onrender.com'
+// Fire-and-forget wake-up ping: Render free tier sleeps after 15min idle (50s+ cold
+// start). Calling this on app boot means the server is often warm by first search.
+export function warmBackend(){
+  try{
+    if(!BACKEND_URL || typeof fetch==='undefined') return
+    fetch(`${BACKEND_URL}/health`, { headers:{ 'Accept':'application/json' } }).catch(()=>{})
+  }catch(e){}
+}
 // Try backend first (if running), fallback to direct Piped/Saavn — works in memory mode too
 const SAavn_ENDPOINTS = [
   (q, limit) => `https://saavn.dev/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}`,
@@ -406,7 +415,70 @@ export async function resolveInvidiousAudio(videoId, ms=10000){
   try{ return await Promise.any([need(jobHard), need(jobDyn)]) }catch(e){ return null }
 }
 
+// ---- JioSaavn OFFICIAL api.php ON THE DEVICE (India IP = full catalog) ----
+// Same official endpoint the server uses, called straight from the phone (direct +
+// CORS-proxies raced) with LOCAL DES-decrypt. Zero server dependency: even with a
+// cold/dead backend, Hindi/Punjabi/Bollywood search returns instant CDN mp3s.
+function saavnDecryptDevice(enc){
+  try{
+    const dec = CryptoJS.DES.decrypt(
+      { ciphertext: CryptoJS.enc.Base64.parse(String(enc||'').trim()) },
+      CryptoJS.enc.Utf8.parse('38346591'),
+      { mode: CryptoJS.mode.ECB, padding: CryptoJS.pad.Pkcs7 }
+    )
+    return dec.toString(CryptoJS.enc.Utf8) || ''
+  }catch(e){ return '' }
+}
+function saavnUrlsDevice(decrypted){
+  const d = String(decrypted||'').trim()
+  if(!d.startsWith('http')) return []
+  const m = d.match(/^(.*)_\d+\.(mp4|mp3)(\?.*)?$/)
+  if(!m) return [d]
+  return [96,160,320].map(q=> `${m[1]}_${q}.${m[2]}${m[3]||''}`)
+}
+async function searchSaavnOfficialDevice(query, limit=18){
+  const n = Math.min(Math.max(Number(limit)||18,1),30)
+  const target = `https://www.jiosaavn.com/api.php?__call=search.getResults&q=${encodeURIComponent(query)}&p=1&n=${n}&api_version=4&_format=json&_marker=0&ctx=web6dot0`
+  const data = await fetchJsonWithCors(target, 6000)
+  const results = data && (data.results || (data.data && data.data.results) || data.songs)
+  if(!Array.isArray(results) || !results.length) throw new Error('empty')
+  const mapped = []
+  for(const s of results.slice(0,n)){
+    try{
+      if(!s || typeof s !== 'object') continue
+      if(s.type && !/song/i.test(String(s.type))) continue
+      let urls = []
+      if(typeof s.media_url === 'string' && s.media_url.startsWith('http')) urls = [s.media_url]
+      else if(typeof s.encrypted_media_url === 'string' && s.encrypted_media_url.length > 20) urls = saavnUrlsDevice(saavnDecryptDevice(s.encrypted_media_url))
+      const audio = urls.length ? urls[urls.length-1] : null
+      if(typeof audio !== 'string' || !audio.startsWith('http')) continue
+      let img = s.image || ''
+      if(Array.isArray(img)) img = img[img.length-1]?.link || img[img.length-1]?.url || ''
+      if(typeof img === 'string' && img.includes('150x150')) img = img.replace('150x150','500x500')
+      const title = decode(s.title || s.song || s.name || 'Unknown')
+      const artistVal = s.primary_artists || s.primaryArtists || s.subtitle || s.artists || 'Unknown'
+      const album = (s.album && (s.album.name || (typeof s.album==='string' ? s.album : ''))) || s.album_name || 'Single'
+      const dur = Number(s.duration) || 0
+      mapped.push({ id:`saavn-${s.id||title}-${Math.random().toString(36).slice(2,5)}`, title, artist:String(artistVal), album:String(album),
+        cover: (typeof img==='string' && img.startsWith('http')) ? img : 'https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=600&auto=format&fit=crop&q=60',
+        audio, durationLabel: dur? formatSec(dur):'3:30', durationSec:dur||210,
+        plays:`${(Math.random()*800+50).toFixed(0)}M`, color:pickColor(), source:'Saavn • Full', isPreview:false,
+        language:String(s.language||'').toLowerCase(), original:s, videoId:null })
+    }catch(e){ continue }
+  }
+  if(!mapped.length) throw new Error('empty')
+  return mapped
+}
+
+// Combined Saavn: official-on-device RACED against wrapper mirrors — first with
+// results wins. Either family alive = Saavn works.
 export async function searchSaavn(query, limit=18){
+  const need = async (p)=>{ const r = await p; if(!r || !r.length) throw new Error('empty'); return r }
+  try{ return await Promise.any([ need(searchSaavnOfficialDevice(query, limit)), need(searchSaavnMirrors(query, limit)) ]) }
+  catch(e){ return [] }
+}
+
+export async function searchSaavnMirrors(query, limit=18){
   // RACED: all mirrors at once, first with results wins — a dead mirror no longer
   // burns 4s before the next one is tried (old loop: 3 × 3.8s worst case).
   const one = async (buildUrl)=>{

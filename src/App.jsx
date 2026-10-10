@@ -116,7 +116,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-11'
+const APP_BUILD = 'itrace-12'
 
 function NpDiagCard({ toast, engine }){
   // Self-contained on purpose: ProfileView and App are different components — earlier this
@@ -889,6 +889,7 @@ export default function App(){
   const scrubTo = (clientX, el)=>{ const r = el.getBoundingClientRect(); const frac = Math.max(0, Math.min(1, (clientX - r.left)/r.width)); seekToTime(frac * (duration||0)) }
   // playback rescue — YT/piped link toote: naya working URL dhundo (Saavn CDN ya piped resolve), swap + resume
   const rescueRef = useRef({})
+  const ytFallbackTokenRef = useRef(0)
   const rescueTrack = (track)=>{
     if(!track) return false
     const key = String(track.id||'')
@@ -908,8 +909,10 @@ export default function App(){
           // Kill the old engine FIRST — else iframe + audio play double until pause/resume.
           try{ if(ytPlayerRef.current && ytPlayerRef.current.pauseVideo) ytPlayerRef.current.pauseVideo() }catch{}
           try{ const a0 = audioRef.current; if(a0 && !a0.paused) a0.pause() }catch{}
-          setQueue(prev=>{ const q=[...prev]; const i=q.findIndex(x=> String(x.id)===key); if(i>=0){ q[i] = { ...q[i], ...fixed, id: q[i].id } } return q })
-          setTimeout(()=>{ try{ const a = audioRef.current; if(a && fixed.audio){ a.src = fixed.audio; a.currentTime = 0; if(isPlayingRef.current){ a.play().catch(()=>{}); setIsPlaying(true) } } }catch{} }, 500)
+          ytFallbackTokenRef.current++
+          let swapped = false
+          setQueue(prev=>{ const q=[...prev]; const i=q.findIndex(x=> String(x.id)===key); if(i>=0){ q[i] = { ...q[i], ...fixed, id: q[i].id }; swapped = true } return q })
+          setTimeout(()=>{ try{ if(!swapped) return; const a = audioRef.current; if(a && fixed.audio){ a.src = fixed.audio; a.currentTime = 0; if(isPlayingRef.current){ a.play().catch(()=>{}); setIsPlaying(true) } } }catch{} }, 500)
           showToast('Fixed ✓ ab chal raha hai')
         } else {
           showToast('Iska source nahi mila — skip; agli baar retry hoga')
@@ -925,12 +928,21 @@ export default function App(){
   const handleAudioErr = ()=>{
     if(current?.videoId && directFor){
       const failedUrl = directFor
+      const myToken = ++ytFallbackTokenRef.current
       try{
         window.__ytAudioCache[String(current.videoId)] = ''
         setYtDirect({id:null,url:''})
         showToast('Direct link failed — player switched over')
         const v = current.videoId
-        setTimeout(()=>{ try{ const p = ytPlayerRef.current; if(p && window.YT && ytReadyRef.current) p.loadVideoById(v) }catch(e){} }, 350)
+        // Rescue below may swap this track to Saavn within the 350ms — never resurrect
+        // the iframe then (that was the YT+Saavn double). Also skip when backgrounded.
+        setTimeout(()=>{ try{
+          if(ytFallbackTokenRef.current !== myToken) return
+          if(!currentRef.current || String(currentRef.current.videoId||'') !== String(v)) return
+          if(document.hidden && isNativeApp()) return
+          const p = ytPlayerRef.current
+          if(p && window.YT && ytReadyRef.current) p.loadVideoById(v)
+        }catch(e){} }, 350)
       }catch(e){}
       try{
         fetch(failedUrl, { headers:{ Range:'bytes=0-2047' } }).then(async r=>{

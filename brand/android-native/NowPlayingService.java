@@ -115,7 +115,7 @@ public class NowPlayingService extends Service {
                 boolean pc = Math.abs(np - posSec) > 2.0;
                 boolean dc = Math.abs(nd - durSec) > 1.0;
                 posSec = np; durSec = nd;
-                if ((pc || dc) && durSec > 0) updateSession();
+                if ((pc || dc) && durSec > 0) updatePos();
               } catch (Exception ignored) {}
             }
           });
@@ -153,6 +153,7 @@ public class NowPlayingService extends Service {
   private volatile boolean playing = false;
   private volatile double posSec = 0;
   private volatile double durSec = 0;
+  private volatile double durPosted = -1;
   public static volatile String lastBuildErr = "";
 
   // One-line self-report surfaced all the way to the in-app status card (no adb needed).
@@ -205,7 +206,7 @@ public class NowPlayingService extends Service {
       android.webkit.WebView w = MainActivity.npWebView;
       if (w != null) w.evaluateJavascript("try{window.__npSeek&&window.__npSeek(" + (posMs/1000.0) + ")}catch(e){}", null);
       posSec = posMs/1000.0;
-      updateSession();
+      updatePos();
     } catch (Throwable ignored) {}
   }
 
@@ -233,15 +234,24 @@ public class NowPlayingService extends Service {
     if (ACTION_PREV.equals(a))  { send("prev"); return START_NOT_STICKY; }
     if (ACTION_NEXT.equals(a))  { send("next"); return START_NOT_STICKY; }
     if (intent != null) {
-      String t = intent.getStringExtra("title");   if (t != null) title = t;
-      String s = intent.getStringExtra("artist");   if (s != null) artist = s;
-      String m = intent.getStringExtra("album");    if (m != null) album = m;
-      playing = intent.getBooleanExtra("playing", playing);
+      // DEDUP: JS re-pushes identical meta every 2.6s (watchdog) — re-posting each time
+      // restarts the notification title marquee ("same song sliding again and again").
+      boolean changed = false;
+      String t = intent.getStringExtra("title");
+      if (t != null && !t.equals(title)) { title = t; changed = true; }
+      String s = intent.getStringExtra("artist");
+      if (s != null && !s.equals(artist)) { artist = s; changed = true; }
+      String m = intent.getStringExtra("album");
+      if (m != null && !m.equals(album)) { album = m; changed = true; }
+      boolean pl = intent.getBooleanExtra("playing", playing);
+      if (pl != playing) { playing = pl; changed = true; }
       String url = intent.getStringExtra("artUrl");
       if (url != null && !url.isEmpty() && !url.equals(artUrlLoaded)) loadArt(url);
+      if (changed) { updateSession(); startForegroundNow(); }
+    } else {
+      updateSession();
+      startForegroundNow();
     }
-    updateSession();
-    startForegroundNow();
     handleFocus();
     setWake(playing);
     // NOT_STICKY: when the user swipes the app away from recents the notification
@@ -294,6 +304,18 @@ public class NowPlayingService extends Service {
     if (art != null) mb.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, art);
     if (durSec > 0) mb.putLong(MediaMetadata.METADATA_KEY_DURATION, (long)(durSec * 1000));
     mediaSession.setMetadata(mb.build());
+    durPosted = durSec;
+    } catch (Exception ignored) {}
+    updatePos();
+  }
+
+  // Position-only refresh for the seekbar tick — NEVER re-delivers metadata, so
+  // system UI doesn't re-bind the title (marquee restart) every ~2s. Duration is
+  // delivered exactly once via a full post when it first becomes known.
+  private void updatePos() {
+    if (mediaSession == null) return;
+    if (durSec > 0 && durPosted != durSec) { updateSession(); return; }
+    try {
     long posMs = durSec > 0 ? (long)(posSec * 1000) : PlaybackState.PLAYBACK_POSITION_UNKNOWN;
     mediaSession.setPlaybackState(new PlaybackState.Builder()
       .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE

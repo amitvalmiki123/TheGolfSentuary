@@ -116,7 +116,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-9'
+const APP_BUILD = 'itrace-10'
 
 function NpDiagCard({ toast, engine }){
   // Self-contained on purpose: ProfileView and App are different components — earlier this
@@ -705,6 +705,12 @@ export default function App(){
   // play/pause reacts to isPlaying + current change — handles both YouTube and audio
   useEffect(()=>{
     if(current?.videoId && !directFor){
+      // Background me iframe guaranteed stall/fail — turant rescue, loadVideoById skip.
+      if(document.hidden && isNativeApp() && !rescueRef.current[String(current.id||'')]){
+        rescueTrack(current)
+        if(audioRef.current) audioRef.current.pause()
+        return
+      }
       const p = ytPlayerRef.current
       if(!p || !ytReadyRef.current) return
       try{
@@ -891,17 +897,13 @@ export default function App(){
     ;(async()=>{
       try{
         showToast('Playback error — real audio dhundh rahe…')
+        // RACED: piped-exact ∥ saavn-fast — jo pehle mile wahi bajega (stall-min).
+        const cleanQ = `${String(track.title||'').replace(/\([^)]*\)|\[[^\]]*\]/g,'').trim()} ${String(track.artist||'').split(',')[0]}`.trim()
+        const jobs = []
+        if(track.videoId) jobs.push((async()=>{ const url = await resolvePipedAudio(track); if(url && String(url).startsWith('http')) return { ...track, videoId: null, audio: String(url), source:'YouTube • Resolved' }; throw new Error('empty') })())
+        if(cleanQ.length > 3) jobs.push((async()=>{ const s = await searchSaavn(cleanQ, 5).catch(()=>[]); if(s && s.length) return { ...s[0], id: track.id, title: track.title||s[0].title, artist: track.artist||s[0].artist, cover: track.cover||s[0].cover }; throw new Error('empty') })())
         let fixed = null
-        if(track.videoId){
-          try{ const url = await resolvePipedAudio(track); if(url && String(url).startsWith('http')) fixed = { ...track, videoId: null, audio: String(url), source:'YouTube • Resolved' } }catch{}
-        }
-        if(!fixed){
-          const cleanQ = `${String(track.title||'').replace(/\([^)]*\)|\[[^\]]*\]/g,'').trim()} ${String(track.artist||'').split(',')[0]}`.trim()
-          if(cleanQ.length > 3){
-            const s = await searchSaavn(cleanQ, 5).catch(()=>[])
-            if(s && s.length) fixed = { ...s[0], id: track.id, title: track.title||s[0].title, artist: track.artist||s[0].artist, cover: track.cover||s[0].cover }
-          }
-        }
+        try{ fixed = jobs.length ? await Promise.any(jobs) : null }catch{ fixed = null }
         if(fixed && (fixed.audio || fixed.videoId)){
           // Kill the old engine FIRST — else iframe + audio play double until pause/resume.
           try{ if(ytPlayerRef.current && ytPlayerRef.current.pauseVideo) ytPlayerRef.current.pauseVideo() }catch{}

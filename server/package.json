@@ -7,12 +7,13 @@
     "dev": "node --watch index.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
+    "@distube/ytdl-core": "^4.16.12",
+    "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
-    "node-fetch": "^3.3.2",
     "dotenv": "^16.4.5",
-    "mongoose": "^8.9.5",
+    "express": "^4.18.2",
     "jsonwebtoken": "^9.0.2",
-    "bcryptjs": "^2.4.3"
+    "mongoose": "^8.9.5",
+    "node-fetch": "^3.3.2"
   }
 }

@@ -146,7 +146,35 @@ export async function searchInvidious(query, limit=20){
   return { tracks: [], nextpage: null }
 }
 
-// Resolve to direct googlevideo url (only for audio-element fallback, YT player doesn't need it)
+// Probe our own server proxy: a tiny Range GET must come back as real audio bytes.
+// Any non-audio response (error JSON with tried[], HTML, challenge page) = upstream
+// failure — capture it for the You-tab card instead of handing a dead URL to <audio>.
+async function probeServerAudio(url){
+  const detail = { ok:false, text:'' }
+  try{
+    const sig = (typeof AbortSignal!=='undefined' && AbortSignal.timeout) ? AbortSignal.timeout(30000) : undefined
+    const r = await fetch(url, { headers:{ Range:'bytes=0-1' }, signal: sig })
+    const ct = (r.headers.get('content-type')||'').toLowerCase()
+    const audioish = /^(audio|video)\//.test(ct) || ct.includes('octet-stream')
+    if((r.status===200||r.status===206) && audioish){ detail.ok = true; return detail }
+    let txt = ''
+    try{ txt = await r.text() }catch(e){}
+    let d = (`srv ${r.status} ${ct||'no-ctype'}`).trim()
+    try{
+      const j = JSON.parse(txt)
+      if(j && Array.isArray(j.tried) && j.tried.length){
+        d += ' tried:'+j.tried.map(t=> (t.engine||'?')+':'+(t.msg!=null ? t.msg : (t.status!=null ? t.status : '?'))).join(',')
+      } else if(j && j.error){ d += ' '+String(j.error).slice(0,100) }
+      else if(txt){ d += ' '+txt.slice(0,100) }
+    }catch(e){ if(txt) d += ' '+txt.replace(/\s+/g,' ').slice(0,120) }
+    detail.text = d.slice(0,240)
+  }catch(e){
+    detail.text = ('srv probe fail '+String((e&&e.name==='TimeoutError')||String((e&&e.message)||e).includes('abort') ? 'timeout 30s' : ((e&&e.message)||e))).slice(0,160)
+  }
+  return detail
+}
+
+// Resolve to direct audio url (server proxy preferred; YT player doesn't need it)
 export async function resolveDirectAudio(track){
   const vid = String((track&&track.videoId)||'').slice(0,20)
   if(!vid) return null
@@ -155,18 +183,30 @@ export async function resolveDirectAudio(track){
     if(vid in cache) return cache[vid] || null
   }
   let url = null
+  let serverNote = ''
   if(BACKEND_URL){
     try{
-      const ac = new AbortController(); const tm = setTimeout(()=>ac.abort(), 9000)
-      const r = await fetch(`${BACKEND_URL}/api/audiourl?vid=${vid}${track&&track.host?('&host='+encodeURIComponent(track.host)):''}`)
-      clearTimeout(tm)
-      if(r.ok){ const j = await r.json()
+      // 45s WIRED timeout: Render free-tier cold-starts take 20-50s to wake. (The old
+      // 9s timer was never even passed to fetch as a signal — cold start = fail.)
+      const ac = new AbortController(); const tm = setTimeout(()=>ac.abort(), 45000)
+      let r = null
+      try{
+        r = await fetch(`${BACKEND_URL}/api/audiourl?vid=${vid}${track&&track.host?('&host='+encodeURIComponent(track.host)):''}`, { headers:{ 'Accept':'application/json' }, signal: ac.signal })
+      } finally { clearTimeout(tm) }
+      if(r && r.ok){ const j = await r.json()
         if(j && j.url){
           url = j.url
           // never hand the WebView an http:// media url from an https:// app (mixed content = silent fail)
           if(url.startsWith('http://') && /onrender\.com/.test(url)) url = 'https://'+url.slice(7)
         } }
-    }catch(e){}
+    }catch(e){ url = null }
+    // The SERVER proxy URL counts as direct-resolve success — but only once it proves
+    // it serves real audio. (Service is awake by now, so 30s covers the 25s ytdl
+    // budget + margin; a pass also warms the server format cache for <audio>.)
+    if(url && url.includes('/api/audiostream')){
+      const probe = await probeServerAudio(url)
+      if(!probe.ok){ serverNote = probe.text; url = null }
+    }
   }
   if(!url){ try{ url = await resolvePipedAudio(track) }catch(e){} }
   if(!url && typeof fetch!=='undefined'){
@@ -180,7 +220,12 @@ export async function resolveDirectAudio(track){
       if(cr.ok){ const cj = await cr.json().catch(()=>null); if(cj && typeof cj.url==='string' && cj.url.startsWith('https://')) url = cj.url }
     }catch(e){}
   }
-  if(url && typeof window!=='undefined'){ try{ window.__ytAudioCache[vid] = url }catch(e){} }
+  if(typeof window!=='undefined'){
+    try{
+      if(url){ window.__ytAudioCache[vid] = url; window.__ytDirectErr = '' }
+      else { window.__ytDirectErr = serverNote || 'all resolvers failed' }
+    }catch(e){}
+  }
   return url || null
 }
 

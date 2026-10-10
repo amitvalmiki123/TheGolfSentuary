@@ -262,6 +262,10 @@ const INVID_HOSTS = [
   'https://inv.nadeko.net',
   'https://invidious.privacyredirect.com'
 ]
+// ytdl-core format-URL cache: getInfo is slow (seconds); each <audio> seek = fresh request.
+// googlevideo URLs live ~hours, so an 8-min cache makes seeks/instant-replays fast.
+const ytdlFmtCache = new Map()
+const YTDL_FMT_TTL = 8 * 60 * 1000
 app.get('/api/audiostream', async (req,res)=>{
   const vid = (req.query.vid||'').toString().trim().replace(/[^A-Za-z0-9_-]/g,'').slice(0,20)
   if(!vid) return res.status(400).json({ error:'vid required' })
@@ -275,7 +279,57 @@ app.get('/api/audiostream', async (req,res)=>{
       return r
     }catch(e){ clearTimeout(tm); return null }
   }
-  // COBALT — the extractor that still survives 2025/26: POST -> audio tunnel url
+  // ENGINE #0 — ytdl-core (OUR OWN extractor, primary): getInfo → lowest-bitrate
+  // audioonly format → SERVER fetches the googlevideo bytes → pipe to client with
+  // Content-Type + 206/Range passthrough so <audio> seeking works. 25s budget;
+  // ANY error falls through to cobalt → invidious → piped below.
+  let ytdlTimer = null
+  try{
+    const ytdlRun = (async()=>{
+      let ytdl = null
+      try{ const m = await import('@distube/ytdl-core'); ytdl = m.default || m }catch(e){ throw new Error('module-load: '+String((e&&e.message)||e).slice(0,80)) }
+      if(!ytdl || typeof ytdl.getInfo !== 'function') throw new Error('module has no getInfo')
+      const gvFetch = (url)=> fetch(url, { headers: { 'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36', 'Accept':'*/*', 'Referer':'https://www.youtube.com/', ...(range?{Range:range}:{}) }, redirect:'follow' })
+      // fast path: cached format URL (each <audio> seek = fresh request; skip getInfo)
+      const fc = ytdlFmtCache.get(vid)
+      if(fc && Date.now()-fc.at < YTDL_FMT_TTL && typeof fc.url === 'string'){
+        try{
+          const rc = await gvFetch(fc.url)
+          if((rc.status===200||rc.status===206) && rc.body) return { r: rc, mime: fc.mime||'' }
+          try{ rc.body && rc.body.cancel && rc.body.cancel() }catch(e){}
+        }catch(e){}
+        ytdlFmtCache.delete(vid)
+      }
+      const info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${vid}`)
+      let f = null
+      try{ f = ytdl.chooseFormat(info.formats, { quality:'lowestaudio', filter:'audioonly' }) }catch(e){ f = null }
+      if(!f || !f.url){
+        const aud = (info.formats||[]).filter(x=> x && x.url && x.hasAudio && !x.hasVideo)
+          .sort((a,b)=> (a.audioBitrate||999)-(b.audioBitrate||999))
+        f = aud[0] || null
+      }
+      if(!f || !f.url) throw new Error('no audioonly format in getInfo')
+      const r = await gvFetch(f.url)
+      if(!((r.status===200||r.status===206) && r.body)){ try{ r.body && r.body.cancel && r.body.cancel() }catch(e){}; throw new Error('googlevideo http '+r.status) }
+      try{ if(ytdlFmtCache.size>300) ytdlFmtCache.clear() }catch(e){}
+      ytdlFmtCache.set(vid, { url: f.url, mime: f.mimeType||'', at: Date.now() })
+      return { r, mime: f.mimeType||'' }
+    })()
+    const won = await Promise.race([ ytdlRun, new Promise((_,rej)=>{ ytdlTimer = setTimeout(()=>rej(new Error('timeout 25s')), 25000) }) ])
+    const yr = won.r
+    res.setHeader('Access-Control-Allow-Origin','*')
+    res.status(yr.status)
+    res.setHeader('Content-Type', yr.headers.get('content-type') || (won.mime ? String(won.mime).split(';')[0] : 'audio/mp4'))
+    res.setHeader('Accept-Ranges','bytes')
+    const ycl = yr.headers.get('content-length'); if(ycl) res.setHeader('Content-Length', ycl)
+    const ycr = yr.headers.get('content-range'); if(ycr) res.setHeader('Content-Range', ycr)
+    const yrd = yr.body.getReader()
+    try{ for(;;){ const {done, value} = await yrd.read(); if(done) break; if(!res.write(value)) await new Promise(ok=>res.once('drain',ok)) } }catch(e){}
+    return res.end()
+  }catch(e){ tried.push({ engine:'ytdl', msg: String((e&&e.message)||e).slice(0,160) }) }
+  finally{ if(ytdlTimer) clearTimeout(ytdlTimer) }
+
+  // COBALT — public extractor: POST -> audio tunnel url
   try{
     const cb = await fetch('https://api.cobalt.tools/', {
       method:'POST',
@@ -298,12 +352,16 @@ app.get('/api/audiostream', async (req,res)=>{
           try{ for(;;){ const {done, value} = await rd3.read(); if(done) break; if(!res.write(value)) await new Promise(ok=>res.once('drain',ok)) } }catch(e){}
           return res.end()
         }
+        tried.push({ engine:'cobalt', msg:'tunnel fetch failed' })
+      } else {
+        tried.push({ engine:'cobalt', msg:'no url in response: '+String((cj&&(cj.status||cj.error||cj.text))||'?').slice(0,80) })
       }
+    } else {
+      tried.push({ engine:'cobalt', status: cb.status })
     }
-  }catch(e){}
+  }catch(e){ tried.push({ engine:'cobalt', msg: String((e&&e.name==='TimeoutError'||String((e&&e.message)||e).includes('abort')) ? 'timeout/abort' : String((e&&e.message)||e)).slice(0,120) }) }
 
   for(const h of INVID_HOSTS){
-    tried.push(h)
     const r = await tryFetch(`${h}/latest_version?id=${vid}&local=true&itag=140`)
     if(r && (r.status===200 || r.status===206) && r.body){
       res.setHeader('Access-Control-Allow-Origin','*')
@@ -318,12 +376,13 @@ app.get('/api/audiostream', async (req,res)=>{
       }catch(e){}
       return res.end()
     }
+    tried.push({ engine:'invidious', host:h, status: r ? r.status : 'fetch-fail' })
     if(r) try{ r.body && r.body.cancel && r.body.cancel() }catch(e){}
   }
   // fallback: piped /streams direct URL → fetch server-side and pipe
   for(const h of PIPED_HOSTS.slice(0,3)){
     const r = await tryFetch(`${h}/streams/${vid}`)
-    if(!r || !r.ok){ continue }
+    if(!r || !r.ok){ tried.push({ engine:'piped', host:h, status: r ? r.status : 'fetch-fail' }); continue }
     try{
       const data = await r.json()
       const a = (data.audioStreams||[]).filter(x=>x&&x.url)
@@ -343,21 +402,25 @@ app.get('/api/audiostream', async (req,res)=>{
           }catch(e){}
           return res.end()
         }
+        tried.push({ engine:'piped', host:h, msg:'stream fetch failed' })
+      } else {
+        tried.push({ engine:'piped', host:h, msg:'no audioStreams' })
       }
-    }catch(e){}
+    }catch(e){ tried.push({ engine:'piped', host:h, msg:String((e&&e.message)||e).slice(0,80) }) }
   }
   // last resort: resolve via piped and 302 the CLIENT straight to the stream url (device-side
   // load avoids proxying bytes through a free tier)
   for(const h of PIPED_HOSTS.slice(0,3)){
     try{
       const rr = await fetch(`${h}/streams/${vid}`, { headers:{ 'User-Agent':'Mozilla/5.0' }, signal: AbortSignal.timeout(10000) })
-      if(!rr.ok) continue
+      if(!rr.ok){ tried.push({ engine:'piped-redirect', host:h, status: rr.status }); continue }
       const dd = await rr.json()
       const aa = (dd.audioStreams||[]).filter(x=>x&&x.url)
       const bb = aa.find(x=>String(x.mimeType||'').includes('mp4')) || aa[0]
       if(bb) return res.redirect(302, bb.url)
       if(dd.hls) return res.redirect(302, dd.hls)
-    }catch(e){}
+      tried.push({ engine:'piped-redirect', host:h, msg:'no audioStreams' })
+    }catch(e){ tried.push({ engine:'piped-redirect', host:h, msg:String((e&&e.message)||e).slice(0,80) }) }
   }
   res.status(502).json({ error:'no working upstream', tried })
 })

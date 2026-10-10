@@ -487,6 +487,7 @@ export default function App(){
   // direct mp3 stream (Piped) and play it through the plain <audio> element — no iframe policy,
   // decoder stays alive, music survives minimize/lock. Web keeps the video UI.
   const [ytDirect, setYtDirect] = useState({id:null, url:''})
+  const [directErr, setDirectErr] = useState('')
   const directFor = (current && current.videoId && ytDirect.id===String(current.videoId)) ? ytDirect.url : ''
   useEffect(()=>{
     if(!isNativeApp() || !current?.videoId) return
@@ -495,10 +496,10 @@ export default function App(){
     ;(async()=>{
       try{
         const cache = (window.__ytAudioCache = window.__ytAudioCache || {})
-        if(vid in cache){ setYtDirect({id:vid, url:cache[vid]||''}); return }
+        if(vid in cache){ setYtDirect({id:vid, url:cache[vid]||''}); if(!cancelled) setDirectErr(cache[vid] ? '' : (window.__ytDirectErr||'')); return }
         const u = await resolveDirectAudio({ videoId: vid, host: current.host })
-        if(!cancelled) setYtDirect({id:vid, url:u||''})
-      }catch(e){ if(!cancelled) setYtDirect({id:vid, url:''}) }
+        if(!cancelled){ setYtDirect({id:vid, url:u||''}); setDirectErr(u ? '' : (window.__ytDirectErr||'')) }
+      }catch(e){ if(!cancelled){ setYtDirect({id:vid, url:''}); setDirectErr(window.__ytDirectErr||'') } }
     })()
     return ()=>{ cancelled = true }
   },[current && current.videoId])
@@ -892,6 +893,35 @@ export default function App(){
     })()
     return true
   }
+  // <audio> failed on a direct (server-proxy) URL: fall back to iframe AND fetch the
+  // server's error body (tried[] diagnostics / HTML / challenge snippet) into the card.
+  const handleAudioErr = ()=>{
+    if(current?.videoId && directFor){
+      const failedUrl = directFor
+      try{
+        window.__ytAudioCache[String(current.videoId)] = ''
+        setYtDirect({id:null,url:''})
+        showToast('Direct link failed — player switched over')
+        const v = current.videoId
+        setTimeout(()=>{ try{ const p = ytPlayerRef.current; if(p && window.YT && ytReadyRef.current) p.loadVideoById(v) }catch(e){} }, 350)
+      }catch(e){}
+      try{
+        fetch(failedUrl, { headers:{ Range:'bytes=0-2047' } }).then(async r=>{
+          const ct = r.headers.get('content-type')||''
+          let txt = ''
+          try{ txt = await r.text() }catch(e){}
+          let d = (`srv ${r.status} ${ct}`).trim()
+          try{
+            const j = JSON.parse(txt)
+            if(j && Array.isArray(j.tried)) d += ' tried:'+j.tried.map(t=> (t.engine||'?')+':'+(t.msg!=null ? t.msg : (t.status!=null ? t.status : '?'))).join(',')
+            else if(j && j.error) d += ' '+String(j.error).slice(0,100)
+          }catch(e){ if(txt) d += ' '+txt.replace(/\s+/g,' ').slice(0,120) }
+          try{ window.__ytDirectErr = d.slice(0,240); setDirectErr(window.__ytDirectErr) }catch(e){}
+        }).catch(e=>{ try{ setDirectErr(('srv unreachable '+String((e&&e.message)||e)).slice(0,120)) }catch(err){} })
+      }catch(e){}
+    }
+    rescueTrack(current)
+  }
   const trackById = (id)=>{ const s=String(id); const pool=[...fallbackTracks, ...localSongs, ...homeTracks, ...queue, ...artistTracks]; return pool.find(x=> String(x.id)===s) || null }
   const toggleLike = (id, trackArg)=> setLiked(prev=>{ const n=new Set(prev); const had = n.has(id) || n.has(Number(id)) || n.has(String(id)); if(n.has(id)) n.delete(id); else n.add(id); showToast(n.has(id)? "Added to Liked Songs":"Removed from Liked Songs")
     try{ if(!had){ const tr = trackArg || trackById(id); if(tr) likedMetaRef.current[String(id)] = { tid:String(id), title:tr.title||'', artist:tr.artist||'', album:tr.album||'', cover:tr.cover||'', audio:tr.audio||null, videoId:tr.videoId||null, durationLabel:tr.durationLabel||'', source:tr.source||'' } } else { delete likedMetaRef.current[String(id)] }
@@ -1165,7 +1195,7 @@ export default function App(){
         <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-[#060306]"/>
       </div>
 
-      <audio ref={audioRef} src={current?.videoId ? (directFor || undefined) : current?.audio} preload="metadata" crossOrigin="anonymous" playsInline onError={()=>{ if(current?.videoId && directFor){ try{ window.__ytAudioCache[String(current.videoId)] = ''; setYtDirect({id:null,url:''}); showToast('Direct link failed — player switched over'); const v = current.videoId; setTimeout(()=>{ try{ const p = ytPlayerRef.current; if(p && window.YT && ytReadyRef.current) p.loadVideoById(v) }catch(e){} }, 350) }catch(e){} } rescueTrack(current) }} />
+      <audio ref={audioRef} src={current?.videoId ? (directFor || undefined) : current?.audio} preload="metadata" crossOrigin="anonymous" playsInline onError={handleAudioErr} />
       <div id="yt-player" style={{position:'absolute', left:'-9999px', width:'1px', height:'1px', overflow:'hidden', opacity:0, pointerEvents:'none'}} />
       {audioError && <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 bg-[#C35445] text-white px-4 py-2 rounded-full text-xs font-bold shadow-lg">{audioError}</div>}
 
@@ -1302,7 +1332,7 @@ export default function App(){
 
           <main className="flex-1 px-4 lg:px-6 py-6 pb-28 lg:pb-28 space-y-7">
             {nav==='profile' ? (
-              <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : "yt-iframe (direct resolve pending/failed)") : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} />
+              <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : ("yt-iframe (direct resolve pending/failed)" + (directErr ? " · " + directErr : ""))) : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} />
             ) : nav==='search' ? (
               <>
                 <div className="flex flex-wrap items-baseline justify-between gap-2">

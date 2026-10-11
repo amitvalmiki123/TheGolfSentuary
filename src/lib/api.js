@@ -505,6 +505,10 @@ async function searchSaavnOfficialDevice(query, limit=18){
       else if(encCand) urls = saavnUrlsDevice(saavnDecryptDevice(encCand))
       const audio = urls.length ? urls[urls.length-1] : null
       if(typeof audio !== 'string' || !audio.startsWith('http')) continue
+      // Multi-quality: CDN exposes [96,160,320] — Pro HD=320, else 160/96
+      let audioQ = null
+      if(urls.length >= 3) audioQ = { eco: urls[0], std: urls[1], hd: urls[2] }
+      else if(urls.length === 2) audioQ = { eco: urls[0], std: urls[1], hd: urls[1] }
       let img = s.image || mi.image || ''
       if(Array.isArray(img)) img = img[img.length-1]?.link || img[img.length-1]?.url || ''
       if(typeof img === 'string' && img.includes('150x150')) img = img.replace('150x150','500x500')
@@ -514,7 +518,7 @@ async function searchSaavnOfficialDevice(query, limit=18){
       const dur = Number(s.duration) || Number(mi.duration) || 0
       mapped.push({ id:`saavn-${s.id||title}-${Math.random().toString(36).slice(2,5)}`, title, artist:String(artistVal), album:String(album),
         cover: (typeof img==='string' && img.startsWith('http')) ? img : 'https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=600&auto=format&fit=crop&q=60',
-        audio, durationLabel: dur? formatSec(dur):'3:30', durationSec:dur||210,
+        audio, audioQ, durationLabel: dur? formatSec(dur):'3:30', durationSec:dur||210,
         plays:`${(Math.random()*800+50).toFixed(0)}M`, color:pickColor(), source:'Saavn • Full', isPreview:false,
         language:String(s.language||mi.language||'').toLowerCase(), original:s, videoId:null })
     }catch(e){ continue }
@@ -879,7 +883,7 @@ export async function trendingByCategory(cat, limit=20, offset=0){
   }
   const q = qmap[cat] || cat
   // JioSaavn FIRST for categories (like JioSaavn/Gaana — fast, specific)
-  const isIndianCat = ["Punjabi","Hindi","Love","90s","Bollywood","Indie"].includes(cat)
+  const isIndianCat = ["Punjabi","Hindi","Love","90s","Bollywood","Indie","Trending"].includes(cat)
   if(isIndianCat){
     const saavnCat = await searchSaavn(q, 20).catch(()=>[])
     try{ sdiag(`t:${cat} dev:sv${saavnCat.length}${window.__svSrc?'/'+window.__svSrc:''}`) }catch(e){}

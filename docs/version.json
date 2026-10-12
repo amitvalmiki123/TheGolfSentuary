@@ -1,11 +1,13 @@
 {
   "app": "MaxMusic",
   "version": "1.0.0",
-  "build": 106,
+  "build": 107,
   "apk": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/download/latest/MaxMusic.apk",
   "page": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/latest",
   "notes": [
-    "Auto-update system agle build me"
+    "itrace-27: auto-update system (stable signing, releases, in-app updater, download site)",
+    "itrace-26: unicode literals fix, subscribe layout, server Pro redeem+persist per user, dedup cloud card, delete-account confirm",
+    "itrace-25: self-healing equalizer (live apply, silence watchdog, CORS fallback) + remove notification nag banner"
   ],
   "date": "2026-10-12"
 }

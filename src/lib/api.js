@@ -969,12 +969,38 @@ export async function getRelatedTracks(videoId, limit=12){
   return []
 }
 
+// Same-recording detection: title core + sorted artist tokens + version tag + duration bucket.
+// Catches "same song from 8 compilations" while keeping Reprise/Unplugged/Remix distinct.
+function trackKey(s){
+  try{
+    const rawT = String((s&&s.title)||'')
+    const vt = (rawT+' '+((s&&s.album)||'')).toLowerCase()
+    const vm = vt.match(/reprise|unplugged|remix|\blive\b|acoustic|lofi|slowed|reverb|\bcover\b|version|\bmix\b|\bclub\b|\bdj\b|instrumental|karaoke|mashup|\b8d\b|sped ?up|pitch|unwind/) || []
+    const T = rawT.toLowerCase().replace(/\([^)]*\)/g,' ').replace(/\[[^\]]*\]/g,' ').replace(/from\s+["'][^"']*["']/g,' ').replace(/["']/g,'').replace(/[^\p{L}\p{N} ]/gu,' ').replace(/\s+/g,' ').trim()
+    const A = String((s&&s.artist)||'').toLowerCase().split(/[,;&/]/).map(x=> x.replace(/[^\p{L}\p{N} ]/gu,' ').replace(/\s+/g,' ').trim()).filter(Boolean).sort().join('|')
+    let D = ''
+    const dd = Number(s&&s.durationSec)||0
+    if(dd > 0) D = String(Math.round(dd/15))
+    return T+'|'+A+'|'+vm.join('+')+'|'+D
+  }catch{ return 'k'+String(Math.random()) }
+}
 function dedup(arr){
   const seen=new Set()
-  return arr.filter(s=>{
-    const k=(s.title+s.artist).toLowerCase().replace(/\s/g,'').slice(0,60)
+  return (arr||[]).filter(s=>{
+    if(!s) return false
+    const k=trackKey(s)
     if(seen.has(k)) return false
     seen.add(k); return true
+  })
+}
+export function mergeDedup(prev, incoming){
+  const ids=new Set((prev||[]).map(s=> String(s&&s.id)))
+  const keys=new Set((prev||[]).map(s=> trackKey(s)))
+  return (incoming||[]).filter(s=>{
+    if(!s) return false
+    const k=trackKey(s)
+    if(ids.has(String(s.id))||keys.has(k)) return false
+    ids.add(String(s.id)); keys.add(k); return true
   })
 }
 function formatMs(ms){ if(!ms) return "3:30"; const s=Math.floor(ms/1000); return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}` }

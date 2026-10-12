@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
-import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio, resolveDirectAudio, searchSaavn, searchSuggestions, getLastSearchNextpage, fetchLyrics, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists, warmBackend } from './lib/api.js'
+import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio, resolveDirectAudio, searchSaavn, searchSuggestions, getLastSearchNextpage, fetchLyrics, mergeDedup, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists, warmBackend } from './lib/api.js'
 import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
 import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npAskBattery, npOpenNotifSettings, npPing, npLastCrash, npSetDisabled, npDisabled, npBridgeMode, hasNativeBridge, wvGuess } from './lib/nowplaying.js'
 
@@ -116,13 +116,13 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-19'
+const APP_BUILD = 'itrace-20'
 const APP_VERSION = '2.5'
 const FREE_DL_MAX = 5
 const PRO_CODES = ['MAXMUSIC79']
 const STR = {
-en:{nav_home:'Home',nav_search:'Search',nav_library:'Your Library',nav_profile:'Profile',navb_home:'Home',navb_search:'Search',navb_library:'Library',navb_profile:'You',gm_morning:'Good morning',gm_afternoon:'Good afternoon',gm_evening:'Good evening',searchPh:'Search songs, artists, albums…',curated:'Curated for you',recent:'Recently played',showall:'Show all',playall:'Play All',retry:'Retry',loadmore:'Load more — scroll for auto-load',loadingmore:'Loading more music…',theend:'End of list • try another vibe',showing:'Showing',tracksWd:'tracks',scrollauto:'Scroll down for auto-load (total, not just 20-25)',ylib:'Your Library',wd_liked:'liked',wd_playlists:'playlists',wd_local:'local',wd_offline:'offline',newpl:'New Playlist',addlocal:'Add Local',libtab_Playlists:'Playlists',libtab_Liked:'Liked',libtab_Local:'Local',libtab_Downloads:'Downloads',libtab_Songs:'Songs',tab_Overview:'Overview',tab_Playlists:'Playlists',tab_Listening:'Listening',tab_Settings:'Settings',playlists:'Playlists',downloads:'Downloads',liked:'Liked',listeningstats:'Listening Stats',minutes:'Minutes streamed',songsplayed:'Songs played',topgenre:'Top genre',likedsongs:'Liked songs',offlinesongs:'Offline songs',localfiles:'Local files',recentpl:'Recent Playlists',nopl:'No playlists yet',share:'Share Profile',editp:'Edit Profile',save:'Save',cancel:'Cancel',settings:'Settings',pro:'MaxMusic Pro',goPro:'Go Pro ₹79',quality:'Streaming Quality',eq:'Equalizer',muslang:'Music Languages',applang:'App Language',sleep:'Sleep Timer',off:'Off',onlinemusic:'Online music',offlinemode:'Offline Mode',cloudsync:'Cloud sync',signin:'Sign in',signout:'Sign out',clearhist:'Clear recent history',clearsearch:'Clear recent searches',clearall:'Clear All Data',version:'Version',follow:'Follow',following:'Following'},
-hi:{nav_home:'होम',nav_search:'खोजें',nav_library:'आपकी लाइब्रेरी',nav_profile:'प्रोफ़ाइल',navb_home:'होम',navb_search:'खोजें',navb_library:'लाइब्रेरी',navb_profile:'आप',gm_morning:'सुप्रभात',gm_afternoon:'नमस्ते',gm_evening:'शुभ संध्या',searchPh:'गाने, कलाकार, एल्बम खोजें…',curated:'आपके लिए',recent:'हाल में बजाए',showall:'सभी देखें',playall:'सभी बजाएं',retry:'फिर कोशिश',loadmore:'और लोड करें — स्क्रॉल पे ऑटो',loadingmore:'और गाने आ रहे…',theend:'सूची खत्म • कोई और vibe देखो',showing:'दिख रहे',tracksWd:'गाने',scrollauto:'नीचे स्क्रॉल पे ऑटो-लोड (पूरे, सिर्फ 20-25 नहीं)',ylib:'आपकी लाइब्रेरी',wd_liked:'पसंदीदा',wd_playlists:'प्लेलिस्ट',wd_local:'लोकल',wd_offline:'ऑफ़लाइन',newpl:'नई प्लेलिस्ट',addlocal:'लोकल जोड़ें',libtab_Playlists:'प्लेलिस्ट',libtab_Liked:'पसंदीदा',libtab_Local:'लोकल',libtab_Downloads:'डाउनलोड',libtab_Songs:'गाने',tab_Overview:'झलक',tab_Playlists:'प्लेलिस्ट',tab_Listening:'सुनना',tab_Settings:'सेटिंग्स',playlists:'प्लेलिस्ट',downloads:'डाउनलोड',liked:'पसंदीदा',listeningstats:'सुनने के आंकड़े',minutes:'मिनट सुने',songsplayed:'गाने बजाए',topgenre:'टॉप जॉनर',likedsongs:'पसंदीदा गाने',offlinesongs:'ऑफ़लाइन गाने',localfiles:'लोकल फ़ाइलें',recentpl:'ताज़ा प्लेलिस्ट',nopl:'अभी कोई प्लेलिस्ट नहीं',share:'प्रोफ़ाइल शेयर करें',editp:'प्रोफ़ाइल बदलें',save:'सेव',cancel:'रद्द',settings:'सेटिंग्स',pro:'MaxMusic Pro',goPro:'Pro लें ₹79',quality:'स्ट्रीमिंग क्वालिटी',eq:'इक्वलाइज़र',muslang:'म्यूज़िक भाषाएं',applang:'ऐप भाषा',sleep:'स्लीप टाइमर',off:'बंद',onlinemusic:'ऑनलाइन म्यूज़िक',offlinemode:'ऑफ़लाइन मोड',cloudsync:'क्लाउड सिंक',signin:'साइन इन',signout:'साइन आउट',clearhist:'हाल की हिस्ट्री साफ़ करें',clearsearch:'हाल की खोज साफ़ करें',clearall:'सारा डेटा साफ़ करें',version:'वर्ज़न',follow:'फ़ॉलो',following:'फ़ॉलोइंग'}}
+en:{nav_home:'Home',nav_search:'Search',nav_library:'Your Library',nav_profile:'Profile',navb_home:'Home',navb_search:'Search',navb_library:'Library',navb_profile:'You',gm_morning:'Good morning',gm_afternoon:'Good afternoon',gm_evening:'Good evening',searchPh:'Search songs, artists, albums…',curated:'Curated for you',recent:'Recently played',showall:'Show all',playall:'Play All',retry:'Retry',loadmore:'Load more — scroll for auto-load',loadingmore:'Loading more music…',theend:'End of list • try another vibe',showing:'Showing',tracksWd:'tracks',scrollauto:'Scroll down for auto-load (total, not just 20-25)',ylib:'Your Library',wd_liked:'liked',wd_playlists:'playlists',wd_local:'local',wd_offline:'offline',newpl:'New Playlist',addlocal:'Add Local',libtab_Playlists:'Playlists',libtab_Liked:'Liked',libtab_Local:'Local',libtab_Downloads:'Downloads',libtab_Songs:'Songs',tab_Overview:'Overview',tab_Playlists:'Playlists',tab_Listening:'Listening',tab_Settings:'Settings',playlists:'Playlists',downloads:'Downloads',liked:'Liked',listeningstats:'Listening Stats',minutes:'Minutes streamed',songsplayed:'Songs played',topgenre:'Top genre',likedsongs:'Liked songs',offlinesongs:'Offline songs',localfiles:'Local files',recentpl:'Recent Playlists',nopl:'No playlists yet',share:'Share Profile',editp:'Edit Profile',save:'Save',cancel:'Cancel',settings:'Settings',pro:'MaxMusic Pro',goPro:'Go Pro ₹79',quality:'Streaming Quality',eq:'Equalizer',muslang:'Music Languages',applang:'App Language',sleep:'Sleep Timer',off:'Off',onlinemusic:'Online music',offlinemode:'Offline Mode',cloudsync:'Cloud sync',signin:'Sign in',signout:'Sign out',clearhist:'Clear recent history',clearsearch:'Clear recent searches',clearall:'Clear All Data',version:'Version',follow:'Follow',following:'Following',autoplay:'Autoplay',on:'On'},
+hi:{nav_home:'होम',nav_search:'खोजें',nav_library:'आपकी लाइब्रेरी',nav_profile:'प्रोफ़ाइल',navb_home:'होम',navb_search:'खोजें',navb_library:'लाइब्रेरी',navb_profile:'आप',gm_morning:'सुप्रभात',gm_afternoon:'नमस्ते',gm_evening:'शुभ संध्या',searchPh:'गाने, कलाकार, एल्बम खोजें…',curated:'आपके लिए',recent:'हाल में बजाए',showall:'सभी देखें',playall:'सभी बजाएं',retry:'फिर कोशिश',loadmore:'और लोड करें — स्क्रॉल पे ऑटो',loadingmore:'और गाने आ रहे…',theend:'सूची खत्म • कोई और vibe देखो',showing:'दिख रहे',tracksWd:'गाने',scrollauto:'नीचे स्क्रॉल पे ऑटो-लोड (पूरे, सिर्फ 20-25 नहीं)',ylib:'आपकी लाइब्रेरी',wd_liked:'पसंदीदा',wd_playlists:'प्लेलिस्ट',wd_local:'लोकल',wd_offline:'ऑफ़लाइन',newpl:'नई प्लेलिस्ट',addlocal:'लोकल जोड़ें',libtab_Playlists:'प्लेलिस्ट',libtab_Liked:'पसंदीदा',libtab_Local:'लोकल',libtab_Downloads:'डाउनलोड',libtab_Songs:'गाने',tab_Overview:'झलक',tab_Playlists:'प्लेलिस्ट',tab_Listening:'सुनना',tab_Settings:'सेटिंग्स',playlists:'प्लेलिस्ट',downloads:'डाउनलोड',liked:'पसंदीदा',listeningstats:'सुनने के आंकड़े',minutes:'मिनट सुने',songsplayed:'गाने बजाए',topgenre:'टॉप जॉनर',likedsongs:'पसंदीदा गाने',offlinesongs:'ऑफ़लाइन गाने',localfiles:'लोकल फ़ाइलें',recentpl:'ताज़ा प्लेलिस्ट',nopl:'अभी कोई प्लेलिस्ट नहीं',share:'प्रोफ़ाइल शेयर करें',editp:'प्रोफ़ाइल बदलें',save:'सेव',cancel:'रद्द',settings:'सेटिंग्स',pro:'MaxMusic Pro',goPro:'Pro लें ₹79',quality:'स्ट्रीमिंग क्वालिटी',eq:'इक्वलाइज़र',muslang:'म्यूज़िक भाषाएं',applang:'ऐप भाषा',sleep:'स्लीप टाइमर',off:'बंद',onlinemusic:'ऑनलाइन म्यूज़िक',offlinemode:'ऑफ़लाइन मोड',cloudsync:'क्लाउड सिंक',signin:'साइन इन',signout:'साइन आउट',clearhist:'हाल की हिस्ट्री साफ़ करें',clearsearch:'हाल की खोज साफ़ करें',clearall:'सारा डेटा साफ़ करें',version:'वर्ज़न',follow:'फ़ॉलो',following:'फ़ॉलोइंग',autoplay:'ऑटोप्ले',on:'चालू'}}
 const EQ_PRESETS = { Flat:[0,0,0,0,0], Pop:[3,1,0,1,3], Rock:[5,3,-1,2,4], Bass:[7,5,1,0,0], Dance:[5,3,0,2,4], Vocal:[-1,1,3,4,2], Treble:[-1,0,1,4,6] }
 const EQ_FREQS = ['60 Hz','230 Hz','910 Hz','3.6 kHz','14 kHz']
 // Float tracks matching the user's Music Languages to the top (unknown-language tracks stay)
@@ -133,14 +133,6 @@ function floatLangs(tracks, langs){
     const rank = x=>{ const l=String(x.language||'').toLowerCase(); if(!l) return 1; return L.some(s=> l.includes(String(s).toLowerCase()))?0:2 }
     return [...tracks].sort((a,b)=> rank(a)-rank(b))
   }catch{ return tracks }
-}
-// Drop repeats across pages: same id OR same normalized title+artist
-// (Saavn ids carry a random suffix, so id-compare alone can't catch dupes)
-function dedupTracks(prev, incoming){
-  const ta = x=> (String(x.title||'').toLowerCase().replace(/\s+/g,' ').trim()+'|'+String(x.artist||'').toLowerCase().replace(/\s+/g,' ').trim())
-  const seen = new Set((prev||[]).map(x=> String(x.id)))
-  const seenTA = new Set((prev||[]).map(ta))
-  return (incoming||[]).filter(x=>{ if(!x) return false; const id=String(x.id); const k=ta(x); if(seen.has(id)||seenTA.has(k)) return false; seen.add(id); seenTA.add(k); return true })
 }
 
 function NpDiagCard({ toast, engine }){
@@ -302,6 +294,7 @@ export default function App(){
   const [quality, setQuality] = useState(()=>{ try{ return localStorage.getItem('sur_quality')||'std' }catch{ return 'std' } })
   const [langs, setLangs] = useState(()=>{ try{ const v=JSON.parse(localStorage.getItem('sur_langs')||'null'); return Array.isArray(v)&&v.length?v:['hindi','punjabi','english'] }catch{ return ['hindi','punjabi','english'] } })
   const [sleepMin, setSleepMin] = useState(()=>{ try{ return Number(localStorage.getItem('sur_sleep')||0)||0 }catch{ return 0 } })
+  const [autoplay, setAutoplay] = useState(()=>{ try{ const v=localStorage.getItem('sur_autoplay'); return v===null?true:v==='1' }catch{ return true } })
   const [eq, setEq] = useState(()=>{ try{ const v=JSON.parse(localStorage.getItem('sur_eq')||'null'); if(v&&Array.isArray(v.gains)&&v.gains.length===5) return {on:!!v.on,preset:v.preset||'Flat',gains:v.gains} }catch{}; return {on:false,preset:'Flat',gains:[0,0,0,0,0]} })
   const [showEQ, setShowEQ] = useState(false)
   const [stats, setStats] = useState(()=>{ try{ const v=JSON.parse(localStorage.getItem('sur_stats')||'null'); if(v&&typeof v==='object') return {secs:v.secs||0,plays:v.plays||0,langs:v.langs||{}} }catch{}; return {secs:0,plays:0,langs:{}} })
@@ -313,6 +306,7 @@ export default function App(){
   useEffect(()=>{ try{ localStorage.setItem('sur_quality', quality) }catch{} },[quality])
   useEffect(()=>{ try{ localStorage.setItem('sur_langs', JSON.stringify(langs)) }catch{} },[langs])
   useEffect(()=>{ try{ localStorage.setItem('sur_sleep', String(sleepMin)) }catch{} },[sleepMin])
+  useEffect(()=>{ try{ localStorage.setItem('sur_autoplay', autoplay?'1':'0') }catch{} },[autoplay])
   useEffect(()=>{ try{ localStorage.setItem('sur_eq', JSON.stringify(eq)) }catch{} },[eq])
   useEffect(()=>{ if(showSubscribe){ setProStep('plans'); setProErr(''); setProCode('') } },[showSubscribe])
   const [authForm, setAuthForm] = useState({ mode:'login', name:'', email:'', password:'' })
@@ -416,7 +410,7 @@ export default function App(){
       if(cancelled) return
       if(t && t.length){
         const full = t.filter(x=> !x.isPreview)
-        const list = floatLangs(full.length >= 6 ? full : t)
+        const list = floatLangs(mergeDedup([], full.length >= 6 ? full : t))
         try{ localStorage.setItem('sur_home_'+qcat, JSON.stringify({ at: Date.now(), tracks: list.slice(0,30) })) }catch{}
         setHomeTracks(list)
         const qmap = {
@@ -477,16 +471,16 @@ export default function App(){
       const saavnTopup = async ()=>{
         const page = homePageRef.current++
         const qq = `${q} ${svSuffix[page % svSuffix.length]}`.trim()
-        const sv = await withTimeout(searchSaavn(qq, 20).catch(()=>[]), 15000).catch(()=>[])
+        const sv = await withTimeout(searchSaavn(qq, 20).catch(()=>[]), 10000).catch(()=>[])
         if(activeCatRef.current !== catAtStart) return false
-        const fresh = dedupTracks(homeTracksRef.current || [], (sv||[]).filter(x=> x && x.audio))
-        if(fresh.length){ setHomeTracks(prev=> [...prev, ...dedupTracks(prev, fresh)]); return true }
+        const fresh = mergeDedup(homeTracksRef.current || [], (sv||[]).filter(x=> x && x.audio))
+        if(fresh.length){ setHomeTracks(prev=> [...prev, ...mergeDedup(prev, fresh)]); return true }
         return false
       }
       const token = homeNextRef.current
       const catAtStart = activeCat
       let res = null
-      if(token !== 'saavn'){ try{ res = await withTimeout(searchPiped(q, 20, token), 15000) }catch(e){ res = null } }
+      if(token !== 'saavn'){ try{ res = await withTimeout(searchPiped(q, 20, token), 10000) }catch(e){ res = null } }
       if(activeCatRef.current !== catAtStart) return
       if(token === 'saavn' || !res || !res.tracks || !res.tracks.length){
         let ok = false
@@ -499,8 +493,8 @@ export default function App(){
         }
       } else {
         homeFailRef.current = 0
-        const batch = dedupTracks(homeTracksRef.current || [], res.tracks)
-        if(batch.length) setHomeTracks(prev=> [...prev, ...dedupTracks(prev, batch)])
+        const batch = mergeDedup(homeTracksRef.current || [], res.tracks)
+        if(batch.length) setHomeTracks(prev=> [...prev, ...mergeDedup(prev, batch)])
         if(res.nextpage) setNext(res.nextpage)
         else{
           let ok = false
@@ -527,6 +521,18 @@ export default function App(){
     io.observe(el)
     return ()=> io.disconnect()
   }, [homeLoading, homeNextPage, homeTracks.length])
+  // Scroll backup — if the observer ever misses, near-bottom scroll still auto-loads
+  useEffect(()=>{
+    let last = 0
+    const onScroll = ()=>{
+      const now = Date.now(); if(now - last < 350) return; last = now
+      if(homeLoadingRef.current || !homeNextRef.current) return
+      const el = homeSentinelRef.current; if(!el) return
+      try{ if(el.getBoundingClientRect().top < window.innerHeight + 500){ homeLoadMoreRef.current && homeLoadMoreRef.current() } }catch{}
+    }
+    window.addEventListener('scroll', onScroll, { passive:true })
+    return ()=> window.removeEventListener('scroll', onScroll)
+  },[])
   // REAL lyrics: fetch per track (LRCLIB synced LRC); nothing shown until verified — no dummy ever
   useEffect(()=>{
     if(!current){ setLyrics(null); setShowLyrics(false); return }
@@ -859,6 +865,29 @@ export default function App(){
     }, sleepMin*60*1000)
     return ()=> clearTimeout(id)
   },[sleepMin])
+  // Autoplay prefetch — near queue end, silently queue related songs (JioSaavn style, zero gap)
+  const relatedFetchedRef = useRef([])
+  useEffect(()=>{
+    if(!autoplay || !current || queue.length < 3 || queue.length > 60) return
+    if(currentIndex < queue.length - 2) return
+    const id = String(current.id||'')
+    if(!id || relatedFetchedRef.current.includes(id)) return
+    relatedFetchedRef.current.push(id)
+    if(relatedFetchedRef.current.length > 50) relatedFetchedRef.current.shift()
+    ;(async()=>{
+      try{
+        let rel = []
+        if(current.videoId){ try{ rel = await getRelatedTracks(current.videoId, 8) }catch{} }
+        if(!rel || !rel.length){
+          const fa = String(current.artist||'').split(/[,;&/]/)[0].trim()
+          if(fa){ try{ rel = await artistSongs(fa, 10) }catch{} }
+        }
+        if(!rel || !rel.length){ try{ rel = await searchSaavn(`${current.title||''} ${current.artist||''}`, 10) }catch{} }
+        rel = mergeDedup(queue, (rel||[]).filter(x=> x && String(x.id)!==id)).slice(0,6)
+        if(rel.length) setQueue(prev=> [...prev, ...mergeDedup(prev, rel)])
+      }catch{}
+    })()
+  },[currentIndex, queue.length])
   // Equalizer — Web Audio 5-band on the <audio> element (streaming + downloads; YT iframe can't be processed)
   const eqRef = useRef(null)
   const ensureEq = ()=>{
@@ -1589,7 +1618,7 @@ export default function App(){
 
           <main className="flex-1 min-w-0 max-w-full overflow-x-clip px-4 lg:px-6 py-6 pb-28 lg:pb-28 space-y-7">
             {nav==='profile' ? (
-              <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : ("yt-iframe (direct resolve pending/failed)" + (directErr ? " · " + directErr : ""))) : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} x={{ t, lang, setLang, quality, qCycle, langs, toggleLang, sleepMin, cycleSleep, eqOn:eq.on, eqPreset:eq.preset, onOpenEQ:()=>setShowEQ(true), isPro, stats, followedCount:followed.size, onSubscribe:()=>setShowSubscribe(true), onClearHistory, onClearSearches, onShareProfile }} />
+              <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : ("yt-iframe (direct resolve pending/failed)" + (directErr ? " · " + directErr : ""))) : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} x={{ t, lang, setLang, quality, qCycle, langs, toggleLang, sleepMin, cycleSleep, eqOn:eq.on, eqPreset:eq.preset, onOpenEQ:()=>setShowEQ(true), isPro, stats, followedCount:followed.size, onSubscribe:()=>setShowSubscribe(true), onClearHistory, onClearSearches, onShareProfile, autoplay, setAutoplay }} />
             ) : nav==='search' ? (
               <>
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -1893,7 +1922,7 @@ export default function App(){
                     })}
                   </div>}
                   <div ref={homeSentinelRef} className="h-1" />
-                  {homeNextPage ? <div className="text-center py-3"><button onClick={handleLoadMoreHome} disabled={homeLoadingMore} className="px-6 py-2 rounded-full bg-white/10 border border-white/10 text-sm font-bold hover:bg-white hover:text-black disabled:opacity-50">{homeLoadingMore? t('loadingmore') : t('loadmore')}</button></div> : (homeEnded && !homeLoading && homeTracks.length>0 && <div className="text-center py-3 text-xs text-white/30">{t('theend')}</div>)}
+                  {homeNextPage ? <div className="text-center py-3"><button onClick={handleLoadMoreHome} disabled={homeLoadingMore} className="px-6 py-2 min-w-[280px] rounded-full bg-white/10 border border-white/10 text-sm font-bold hover:bg-white hover:text-black disabled:cursor-wait disabled:opacity-80">{homeLoadingMore? t('loadingmore') : t('loadmore')}</button></div> : (homeEnded && !homeLoading && homeTracks.length>0 && <div className="text-center py-3 text-xs text-white/30">{t('theend')}</div>)}
                   <div className="text-center text-xs text-white/30">{t('showing')} {homeTracks.length} {activeCat} {t('tracksWd')} • {t('scrollauto')}</div>
                   {localSongs.length>0 && (
                     <div className="mt-4 glass rounded-2xl p-3 flex items-center gap-3">
@@ -2214,14 +2243,14 @@ export default function App(){
               <div className="relative w-full max-w-md glass-strong rounded-[24px] p-6 max-h-[90vh] overflow-y-auto">
                 <div className="flex items-center justify-between mb-1"><h3 className="text-xl font-bold font-display">{t('eq')}</h3><button onClick={()=> setShowEQ(false)} className="w-8 h-8 grid place-items-center rounded-full bg-white/10"><CloseIcon/></button></div>
                 {!isPro ? (
-                  <div className="text-center py-6"><div className="text-4xl mb-2">🎚️</div><p className="text-sm text-white/70">Equalizer <b>MaxMusic Pro</b> me unlocked hai</p><button onClick={()=>{ setShowEQ(false); setShowSubscribe(true) }} className="mt-4 px-6 py-2.5 rounded-full bg-[#D5AA55] text-black text-sm font-bold">Go Pro ₹79</button></div>
+                  <div className="text-center py-6"><div className="text-4xl mb-2">🎚️</div><p className="text-sm text-white/70">Equalizer is unlocked with <b>MaxMusic Pro</b></p><button onClick={()=>{ setShowEQ(false); setShowSubscribe(true) }} className="mt-4 px-6 py-2.5 rounded-full bg-[#D5AA55] text-black text-sm font-bold">Go Pro ₹79</button></div>
                 ) : (<>
                   <div className="flex items-center justify-between py-3"><span className="text-sm font-semibold">Equalizer {eq.on?'ON':'OFF'}</span><button onClick={()=> setEq(e=> ({...e, on:!e.on}))} className={`w-12 h-7 rounded-full transition ${eq.on?'bg-emerald-500':'bg-white/15'}`}><span className={`block w-5 h-5 mx-1 rounded-full bg-white transition ${eq.on?'translate-x-5':''}`}/></button></div>
                   <div className="flex flex-wrap gap-2 mb-4">{Object.keys(EQ_PRESETS).map(p=> <button key={p} onClick={()=> setEq({on:true, preset:p, gains:[...EQ_PRESETS[p]]})} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${eq.preset===p?'bg-white text-black border-white':'bg-white/10 border-white/10 text-white/70'}`}>{p}</button>)}</div>
                   {EQ_FREQS.map((f,i)=> (
                     <div key={f} className="flex items-center gap-3 py-1.5"><span className="w-14 text-xs text-white/60">{f}</span><input type="range" min="-12" max="12" step="1" value={eq.gains[i]||0} onChange={e=>{ const v=Number(e.target.value); setEq(prev=>{ const g=[...prev.gains]; g[i]=v; return {...prev, on:true, preset:'Custom', gains:g} }) }} className="flex-1 accent-[#D5AA55]"/><span className="w-10 text-right text-xs font-bold">{(eq.gains[i]>0?'+':'')}{eq.gains[i]||0}</span></div>
                   ))}
-                  <p className="text-[11px] text-white/40 mt-3">Streaming + downloaded songs pe kaam karta hai • YouTube tracks pe nahi • kisi stream pe silent ho to OFF kar do</p>
+                  <p className="text-[11px] text-white/40 mt-3">Works on streaming + downloads • Not on YouTube tracks • Turn OFF if a stream goes silent</p>
                 </>)}
               </div>
             </div>
@@ -2384,14 +2413,15 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
         <div className="glass rounded-[24px] p-5 space-y-1">
           <h3 className="font-bold pb-2">{t('settings')}</h3>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('pro')}</div><div className="text-xs text-white/50">{X.isPro?'Active ✓ — unlimited + HD + EQ':'Free — 5 downloads • HD + EQ locked'}</div></div>{X.isPro? <span className="text-xs text-emerald-400 font-bold">PRO ✓</span> : <button onClick={X.onSubscribe} className="text-xs font-bold px-3 py-1.5 rounded-full bg-[#D5AA55] text-black">{t('goPro')}</button>}</div>
-          <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('quality')}</div><div className="text-xs text-white/50">{X.quality==='hd'?'HD 320kbps':X.quality==='eco'?'Eco 96kbps':'Standard 160kbps'} • next song se</div></div><button onClick={X.qCycle} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{X.quality==='hd'?'HD 320':X.quality==='eco'?'Eco 96':'Std 160'}</button></div>
+          <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('quality')}</div><div className="text-xs text-white/50">{X.quality==='hd'?'HD 320kbps':X.quality==='eco'?'Eco 96kbps':'Standard 160kbps'} • from next song</div></div><button onClick={X.qCycle} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{X.quality==='hd'?'HD 320':X.quality==='eco'?'Eco 96':'Std 160'}</button></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('eq')}</div><div className="text-xs text-white/50">{X.eqOn?('ON • '+(X.eqPreset||'')):'5-band • streaming songs'}</div></div><button onClick={X.onOpenEQ} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{X.isPro?'Open':'🔒 Pro'}</button></div>
-          <div className="py-3 border-b border-white/5"><div className="text-sm font-medium">{t('muslang')}</div><div className="text-xs text-white/50 mb-2">Home mix isi hisaab se</div><div className="flex gap-2">{['hindi','punjabi','english'].map(L=> <button key={L} onClick={()=> X.toggleLang(L)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${(X.langs||[]).includes(L)?'bg-white text-black border-white':'bg-white/10 border-white/10 text-white/60'}`}>{L[0].toUpperCase()+L.slice(1)}</button>)}</div></div>
-          <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('applang')}</div><div className="text-xs text-white/50">App ki bhasha</div></div><div className="flex gap-2">{[['en','English'],['hi','हिंदी']].map(([v,l])=> <button key={v} onClick={()=> X.setLang(v)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${X.lang===v?'bg-white text-black border-white':'bg-white/10 border-white/10 text-white/60'}`}>{l}</button>)}</div></div>
-          <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('sleep')}</div><div className="text-xs text-white/50">{X.sleepMin?`${X.sleepMin} min me music band`:'Music chalta rahega'}</div></div><button onClick={X.cycleSleep} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{X.sleepMin?X.sleepMin+'m':t('off')}</button></div>
+          <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('autoplay')}</div><div className="text-xs text-white/50">Related songs after queue ends</div></div><button onClick={()=> X.setAutoplay(!X.autoplay)} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${X.autoplay?'bg-emerald-500 text-black border-emerald-500':'bg-white/10 border-white/10'}`}>{X.autoplay?t('on'):t('off')}</button></div>
+          <div className="py-3 border-b border-white/5"><div className="text-sm font-medium">{t('muslang')}</div><div className="text-xs text-white/50 mb-2">Shapes your Home mix</div><div className="flex gap-2">{['hindi','punjabi','english'].map(L=> <button key={L} onClick={()=> X.toggleLang(L)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${(X.langs||[]).includes(L)?'bg-white text-black border-white':'bg-white/10 border-white/10 text-white/60'}`}>{L[0].toUpperCase()+L.slice(1)}</button>)}</div></div>
+          <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('applang')}</div><div className="text-xs text-white/50">Interface language</div></div><div className="flex gap-2">{[['en','English'],['hi','हिंदी']].map(([v,l])=> <button key={v} onClick={()=> X.setLang(v)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${X.lang===v?'bg-white text-black border-white':'bg-white/10 border-white/10 text-white/60'}`}>{l}</button>)}</div></div>
+          <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('sleep')}</div><div className="text-xs text-white/50">{X.sleepMin?`Stops after ${X.sleepMin} min`:'Music keeps playing'}</div></div><button onClick={X.cycleSleep} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{X.sleepMin?X.sleepMin+'m':t('off')}</button></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('onlinemusic')}</div><div className="text-xs text-white/50">JioSaavn + YouTube — full length</div></div><span className="text-xs text-emerald-400">●</span></div>
-          <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('offlinemode')}</div><div className="text-xs text-white/50">{downloaded.length>0? `${downloaded.length} songs saved offline`:'Abhi 0 downloads'}</div></div><span className="text-xs text-emerald-400">●</span></div>
-          <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('cloudsync')}</div><div className="text-xs text-white/50">{authUser? `ON — ${authUser.email}`:'Off — sign in karo'}</div></div>{authUser? <button onClick={onSignOut} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{t('signout')}</button> : <button onClick={onSignIn} className="text-xs font-bold px-3 py-1.5 rounded-full bg-[#D5AA55] text-black">{t('signin')}</button>}</div>
+          <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('offlinemode')}</div><div className="text-xs text-white/50">{downloaded.length>0? `${downloaded.length} songs saved offline`:'No downloads yet'}</div></div><span className="text-xs text-emerald-400">●</span></div>
+          <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('cloudsync')}</div><div className="text-xs text-white/50">{authUser? `ON — ${authUser.email}`:'Off — sign in to sync'}</div></div>{authUser? <button onClick={onSignOut} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{t('signout')}</button> : <button onClick={onSignIn} className="text-xs font-bold px-3 py-1.5 rounded-full bg-[#D5AA55] text-black">{t('signin')}</button>}</div>
           <div className="flex gap-2 pt-2"><button onClick={X.onClearHistory} className="flex-1 py-2 rounded-full bg-white/10 border border-white/10 text-xs font-bold">{t('clearhist')}</button><button onClick={X.onClearSearches} className="flex-1 py-2 rounded-full bg-white/10 border border-white/10 text-xs font-bold">{t('clearsearch')}</button></div>
           {authUser && <button onClick={onDeleteAccount} className="w-full mt-3 py-3 rounded-full bg-[#C35445]/15 text-[#C35445] border border-[#C35445]/30 text-sm font-bold">Delete cloud account (likes + playlists from server)</button>}
           <button onClick={()=>{ localStorage.clear(); indexedDB.deleteDatabase('sur_sangam_db'); showToast("Data cleared — refresh"); setTimeout(()=> location.reload(),800)}} className="w-full mt-3 py-3 rounded-full bg-[#C35445] text-white text-sm font-bold">{t('clearall')}</button>

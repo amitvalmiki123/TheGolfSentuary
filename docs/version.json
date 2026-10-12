@@ -1,13 +1,13 @@
 {
   "app": "MaxMusic",
   "version": "1.0.0",
-  "build": 107,
+  "build": 109,
   "apk": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/download/latest/MaxMusic.apk",
   "page": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/latest",
   "notes": [
-    "itrace-27: auto-update system (stable signing, releases, in-app updater, download site)",
-    "itrace-26: unicode literals fix, subscribe layout, server Pro redeem+persist per user, dedup cloud card, delete-account confirm",
-    "itrace-25: self-healing equalizer (live apply, silence watchdog, CORS fallback) + remove notification nag banner"
+    "Merge pull request #3 from amitvalmiki123/arena/904fd888-thegolfsentuary",
+    "itrace-28: isolate YouTube DOM to prevent playback insertBefore crash",
+    "Merge remote-tracking branch 'origin/main' into arena/904fd888-thegolfsentuary Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>"
   ],
   "date": "2026-10-12"
 }

@@ -2,7 +2,7 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ "arena/f257d954-thegolfsentuary", "arena/dbc69e5f-thegolfsentuary", "main" ]
+    branches: [ "arena/f257d954-thegolfsentuary", "arena/dbc69e5f-thegolfsentuary", "arena/904fd888-thegolfsentuary", "main" ]
     paths-ignore: [ "**.md" ]
   workflow_dispatch:
 
@@ -22,6 +22,8 @@ jobs:
           node-version: 20
       - name: Install deps
         run: npm install --legacy-peer-deps
+      - name: Test playback DOM regression
+        run: npm test
       - name: Build web app (APK points to Sur Sangam cloud API)
         run: VITE_API_URL=https://sur-sangam-api.onrender.com VITE_APP_BUILD_NO=${{ github.run_number }} npx vite build
 

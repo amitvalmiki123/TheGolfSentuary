@@ -116,7 +116,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-24'
+const APP_BUILD = 'itrace-25'
 const APP_VERSION = '2.5'
 const FREE_DL_MAX = 5
 const PRO_CODES = ['MAXMUSIC79']
@@ -219,7 +219,6 @@ export default function App(){
   const [showQueue, setShowQueue] = useState(false)
   const [showLyrics, setShowLyrics] = useState(false)
   const [lyrics, setLyrics] = useState(null)
-  const [npPermBar, setNpPermBar] = useState(false)
   const [bgDiag, setBgDiag] = useState(null)
   const [crashTrace, setCrashTrace] = useState('')
   const [crashOpen, setCrashOpen] = useState(false)
@@ -297,7 +296,7 @@ export default function App(){
   const [langs, setLangs] = useState(()=>{ try{ const v=JSON.parse(localStorage.getItem('sur_langs')||'null'); return Array.isArray(v)&&v.length?v:['hindi','punjabi','english'] }catch{ return ['hindi','punjabi','english'] } })
   const [sleepMin, setSleepMin] = useState(()=>{ try{ return Number(localStorage.getItem('sur_sleep')||0)||0 }catch{ return 0 } })
   const [autoplay, setAutoplay] = useState(()=>{ try{ const v=localStorage.getItem('sur_autoplay'); return v===null?true:v==='1' }catch{ return true } })
-  const [eq, setEq] = useState(()=>{ try{ const v=JSON.parse(localStorage.getItem('sur_eq')||'null'); if(v&&Array.isArray(v.gains)&&v.gains.length===5) return {on:!!v.on,preset:v.preset||'Flat',gains:v.gains} }catch{}; return {on:false,preset:'Flat',gains:[0,0,0,0,0]} })
+  const [eq, setEq] = useState(()=>{ try{ const v=JSON.parse(localStorage.getItem('sur_eq')||'null'); if(v&&Array.isArray(v.gains)&&v.gains.length===5) return {on:false,preset:v.preset||'Flat',gains:v.gains} /* itrace-25: boot flat */ }catch{}; return {on:false,preset:'Flat',gains:[0,0,0,0,0]} })
   const [showEQ, setShowEQ] = useState(false)
   const [stats, setStats] = useState(()=>{ try{ const v=JSON.parse(localStorage.getItem('sur_stats')||'null'); if(v&&typeof v==='object') return {secs:v.secs||0,plays:v.plays||0,langs:v.langs||{}} }catch{}; return {secs:0,plays:0,langs:{}} })
   const [followed, setFollowed] = useState(()=>{ try{ return new Set(JSON.parse(localStorage.getItem('sur_followed')||'[]')) }catch{ return new Set() } })
@@ -664,8 +663,7 @@ export default function App(){
       try{
         const ok = await npNotifGranted()
         if(!alive) return
-        if(ok){ setNpPermBar(false) }
-        else { setNpPermBar(true); npAskNotif() }
+        if(!ok){ try{ npAskNotif() }catch{} } // itrace-25: ask silently, no banner
       }catch{}
     }
     check()
@@ -891,30 +889,102 @@ export default function App(){
     })()
   },[currentIndex, queue.length])
   // Equalizer — Web Audio 5-band on the <audio> element (streaming + downloads; YT iframe can't be processed)
+  // itrace-25: self-healing — gesture-time resume, live slider writes, silence watchdog + auto audio-reset, CORS fallback. Never stays mute.
   const eqRef = useRef(null)
-  const ensureEq = ()=>{
+  const [audioKey, setAudioKey] = useState(0) // bump => fresh <audio> (escapes capture + CORS-tainted loads)
+  const [audioNoCors, setAudioNoCors] = useState(false) // sticky: session streams block processing => EQ bypassed
+  const audioResumeRef = useRef(null) // {t, playing} across element swaps
+  const corsRetryRef = useRef(null) // track id already retried without CORS
+  const ensureEqGraph = ()=>{
     try{
+      if(audioNoCors) return false
       if(eqRef.current || !audioRef.current) return !!eqRef.current
       const AC = window.AudioContext || window.webkitAudioContext
       if(!AC) return false
       const ctx = new AC()
       const src = ctx.createMediaElementSource(audioRef.current)
       const fs = [60,230,910,3600,14000].map((f,i)=>{ const b = ctx.createBiquadFilter(); b.type = i===0?'lowshelf':(i===4?'highshelf':'peaking'); b.frequency.value=f; b.Q.value=1; b.gain.value=0; return b })
-      src.connect(fs[0]); for(let i=0;i<4;i++) fs[i].connect(fs[i+1]); fs[4].connect(ctx.destination)
-      eqRef.current = { ctx, fs }
+      const analyser = ctx.createAnalyser(); analyser.fftSize = 2048
+      src.connect(fs[0]); for(let i=0;i<4;i++) fs[i].connect(fs[i+1]); fs[4].connect(ctx.destination); fs[4].connect(analyser)
+      eqRef.current = { ctx, fs, analyser }
       return true
     }catch(e){ return !!eqRef.current }
   }
+  const kickEq = ()=>{ try{ const E = eqRef.current; if(E && E.ctx.state!=='running') E.ctx.resume().catch(()=>{}) }catch{} }
   const applyEq = ()=>{
     const E = eqRef.current; if(!E) return
-    try{ E.fs.forEach((f,i)=>{ f.gain.value = eq.on ? (eq.gains[i]||0) : 0 }) }catch{}
-    try{ if(eq.on && E.ctx.state==='suspended') E.ctx.resume() }catch{}
+    try{ E.fs.forEach((f,i)=>{ f.gain.value = (eq.on && !audioNoCors) ? (eq.gains[i]||0) : 0 }) }catch{}
+    if(eq.on && !audioNoCors) kickEq()
   }
-  useEffect(()=>{ if(eq.on){ if(ensureEq()) applyEq() } else applyEq() },[eq])
+  const hardResetAudio = ()=>{
+    // fresh <audio> = direct output again (guaranteed sound); EQ goes OFF, playback position kept
+    try{ const a = audioRef.current; if(a) audioResumeRef.current = { t: a.currentTime||0, playing: !a.paused } }catch{ audioResumeRef.current = { t:0, playing:false } }
+    try{ const C = eqRef.current && eqRef.current.ctx; if(C && C.close) C.close().catch(()=>{}) }catch{}
+    eqRef.current = null
+    setEq(e=> ({...e, on:false}))
+    setAudioNoCors(false)
+    setAudioKey(k=> k+1)
+  }
+  const eqUserToggle = ()=>{
+    if(audioNoCors){ showToast('EQ bypassed \u2014 streams block processing'); return }
+    if(!eq.on){ try{ if(ensureEqGraph()) kickEq() }catch{}; setEq(e=> ({...e, on:true})) }
+    else setEq(e=> ({...e, on:false}))
+  }
+  const eqUserPreset = (p)=>{
+    if(audioNoCors){ showToast('EQ bypassed \u2014 streams block processing'); return }
+    try{ if(ensureEqGraph()) kickEq() }catch{}
+    setEq({on:true, preset:p, gains:[...EQ_PRESETS[p]]})
+  }
+  const eqUserGain = (i, v)=>{
+    if(audioNoCors) return
+    try{ if(ensureEqGraph()) kickEq() }catch{}
+    try{ const E = eqRef.current; if(E && E.fs[i]) E.fs[i].gain.setTargetAtTime(v, E.ctx.currentTime, 0.015) }catch{} // live apply!
+    setEq(prev=>{ const g=[...prev.gains]; g[i]=v; return {...prev, on:true, preset:'Custom', gains:g} })
+  }
+  useEffect(()=>{ if(eq.on && !audioNoCors){ if(ensureEqGraph()) applyEq() } else applyEq() },[eq, audioNoCors])
+  useEffect(()=>{ // after <audio> swap: restore position/play
+    const r = audioResumeRef.current; audioResumeRef.current = null
+    if(!r) return
+    const id = setTimeout(()=>{ try{
+      const a = audioRef.current; if(!a) return
+      if(r.t>0 && isFinite(r.t)){ try{ a.currentTime = r.t }catch{} }
+      if(r.playing){ a.play().then(()=> setIsPlaying(true)).catch(()=>{}) }
+    }catch{} }, 350)
+    return ()=> clearTimeout(id)
+  },[audioKey])
+  useEffect(()=>{ // silence watchdog: playing + progressing but graph outputs zeros => auto-reset
+    if(!isPlaying || !eq.on || audioNoCors) return
+    if(current?.videoId && !directFor) return
+    if(!eqRef.current) return
+    const a0 = audioRef.current; const t0 = a0? a0.currentTime : 0
+    const id = setTimeout(()=>{
+      try{
+        const E2 = eqRef.current; const a1 = audioRef.current
+        if(!E2 || !a1 || a1.paused) return
+        if(a1.currentTime - t0 < 0.3) return
+        const buf = new Float32Array(E2.analyser.fftSize)
+        E2.analyser.getFloatTimeDomainData(buf)
+        let peak = 0
+        for(let i=0;i<buf.length;i+=4){ const v = Math.abs(buf[i]); if(v>peak) peak = v }
+        if(peak < 0.001){ showToast('EQ silent on this stream \u2014 audio reset'); hardResetAudio() }
+      }catch{}
+    }, 2500)
+    return ()=> clearTimeout(id)
+  },[isPlaying, current && current.id, eq.on, audioKey])
+  useEffect(()=>{ // suspended-context bodyguard (background tabs, missed gestures)
+    const id = setInterval(()=>{
+      try{
+        const E = eqRef.current; const a = audioRef.current
+        if(E && a && !a.paused && E.ctx.state!=='running') E.ctx.resume().catch(()=>{})
+      }catch{}
+    }, 3000)
+    return ()=> clearInterval(id)
+  },[])
 
   useEffect(()=>{ const a=audioRef.current; if(a) a.volume = isMuted?0:volume },[volume,isMuted])
   // play/pause reacts to isPlaying + current change — handles both YouTube and audio
   useEffect(()=>{
+    kickEq()
     if(current?.videoId && !directFor){
       // Background me iframe guaranteed stall/fail — turant rescue, loadVideoById skip.
       if(document.hidden && isNativeApp() && !rescueRef.current[String(current.id||'')]){
@@ -1086,6 +1156,7 @@ export default function App(){
   }
 
   const togglePlay = ()=>{
+    kickEq()
     if(current?.videoId && ytPlayerRef.current && ytReadyRef.current && !directFor){
       if(isPlaying){
         try{ ytPlayerRef.current.pauseVideo() }catch{}
@@ -1151,6 +1222,22 @@ export default function App(){
   // <audio> failed on a direct (server-proxy) URL: fall back to iframe AND fetch the
   // server's error body (tried[] diagnostics / HTML / challenge snippet) into the card.
   const handleAudioErr = ()=>{
+    // itrace-25: CORS-blocked stream vs Web Audio — retry once on a fresh element without crossOrigin (EQ bypassed)
+    try{
+      const a = audioRef.current
+      const tid = String((current && current.id)||'')
+      if(a && !audioNoCors && a.getAttribute('crossorigin')!==null && corsRetryRef.current!==tid){
+        corsRetryRef.current = tid
+        try{ audioResumeRef.current = { t: 0, playing: isPlayingRef.current } }catch{ audioResumeRef.current = { t:0, playing:false } }
+        try{ const C = eqRef.current && eqRef.current.ctx; if(C && C.close) C.close().catch(()=>{}) }catch{}
+        eqRef.current = null
+        setEq(e=> ({...e, on:false}))
+        setAudioNoCors(true)
+        setAudioKey(k=> k+1)
+        showToast('EQ bypassed \u2014 direct play for this stream')
+        return
+      }
+    }catch{}
     if(current?.videoId && directFor){
       const failedUrl = directFor
       const myToken = ++ytFallbackTokenRef.current
@@ -1209,6 +1296,7 @@ export default function App(){
   const handleDeleteAccount = async ()=>{ const ok = await apiDeleteAccount(); setAuthUser(null); try{ localStorage.removeItem('sur_auth_user') }catch{}; try{ localStorage.setItem('sur_auth_choice','guest') }catch{}; showToast(ok? 'Account cloud se delete ho gaya' : 'Server reachable nahi — session sign out kiya') }
 
   const playTrack = async (track, list)=>{
+    kickEq()
     const targetList = list || queue
     let newQueue, newIdx
     const idxInQueue = targetList.findIndex(x=> String(x.id)===String(track.id))
@@ -1535,7 +1623,7 @@ export default function App(){
         <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-[#060306]"/>
       </div>
 
-      <audio ref={audioRef} src={current?.videoId ? (directFor || undefined) : current?.audio} preload="metadata" playsInline onError={handleAudioErr} />
+      <audio key={audioKey} ref={audioRef} crossOrigin={audioNoCors? undefined : "anonymous"} src={current?.videoId ? (directFor || undefined) : current?.audio} preload="metadata" playsInline onError={handleAudioErr} />
       <div id="yt-player" style={{position:'absolute', left:'-9999px', width:'1px', height:'1px', overflow:'hidden', opacity:0, pointerEvents:'none'}} />
       {audioError && <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 max-w-[92vw] text-center bg-[#C35445] text-white px-4 py-2 rounded-2xl text-xs font-bold shadow-lg break-words">{audioError}</div>}
 
@@ -2242,16 +2330,7 @@ export default function App(){
             <div className="fixed inset-0 z-40"><div onClick={()=> setShowQueue(false)} className="absolute inset-0 bg-black/60 backdrop-blur-sm"/><div className="absolute bottom-[88px] right-4 left-4 lg:left-auto lg:right-6 w-auto lg:w-[380px] glass-strong rounded-[20px] p-4 max-h-[60vh] flex flex-col shadow-2xl"><div className="flex items-center justify-between mb-3"><h3 className="font-bold">Queue</h3><button onClick={()=> setShowQueue(false)} className="w-8 h-8 grid place-items-center rounded-full hover:bg-white/10"><CloseIcon/></button></div><div className="text-xs font-semibold tracking-widest text-white/40 mb-2">NOW PLAYING</div><div className="flex items-center gap-3 p-2 rounded-xl bg-white text-black mb-3"><img loading="lazy" decoding="async" src={current.cover} alt="" className="w-11 h-11 rounded-lg object-cover"/><div className="min-w-0"><div className="text-sm font-semibold truncate">{current.title}</div><div className="text-xs text-black/60 truncate">{current.artist}</div></div><Equalizer dark/></div><div className="text-xs font-semibold tracking-widest text-white/40 mb-2">NEXT UP</div><div className="space-y-1 overflow-y-auto flex-1 pr-1">{queue.slice(currentIndex+1, currentIndex+7).map(t=> (<button key={t.id} onClick={()=>{ const idx=queue.findIndex(x=> String(x.id)===String(t.id)); setCurrentIndex(idx); setIsPlaying(true)}} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 text-left"><img loading="lazy" decoding="async" src={t.cover} alt="" className="w-10 h-10 rounded-lg object-cover"/><div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div></div><PlayMini/></button>))}</div><button onClick={()=>{ setShuffle(true); handleNext()}} className="mt-3 w-full py-2.5 rounded-full bg-white text-black text-sm font-bold">Shuffle play</button></div></div>
           )}
 
-          {npPermBar && (
-            <div className="fixed left-3 right-3 z-[60] bottom-[92px] lg:left-auto lg:right-4 lg:w-[400px]">
-              <div className="flex items-center gap-3 rounded-2xl border border-[#D5AA55]/30 bg-[#0b0709]/95 p-3.5 shadow-2xl backdrop-blur-xl">
-                <span className="text-lg leading-none">🔕</span>
-                <div className="min-w-0 flex-1 text-xs leading-relaxed text-white/80">Turn on <b className="text-white">Notifications</b> — background playback aur lock-screen controls isi se chalte hain.</div>
-                <button onClick={()=> npOpenNotifSettings()} className="shrink-0 rounded-full bg-white px-3 py-1.5 text-xs font-bold text-black hover:bg-white/90">Open settings</button>
-                <button onClick={()=> setNpPermBar(false)} className="shrink-0 px-1 text-white/40 hover:text-white"><CloseIcon/></button>
-              </div>
-            </div>
-          )}
+          {/* itrace-25: npPermBar nag banner removed — permission auto-granted, no popup on open */}
 
           {crashTrace && crashOpen && (
             <div className="fixed inset-0 z-[90] grid place-items-center p-4">
@@ -2322,12 +2401,12 @@ export default function App(){
                 {!isPro ? (
                   <div className="text-center py-6"><div className="text-4xl mb-2">🎚️</div><p className="text-sm text-white/70">Equalizer is unlocked with <b>MaxMusic Pro</b></p><button onClick={()=>{ setShowEQ(false); setShowSubscribe(true) }} className="mt-4 px-6 py-2.5 rounded-full bg-[#D5AA55] text-black text-sm font-bold">Go Pro ₹79</button></div>
                 ) : (<>
-                  <div className="flex items-center justify-between py-3"><span className="text-sm font-semibold">Equalizer {eq.on?'ON':'OFF'}</span><button onClick={()=> setEq(e=> ({...e, on:!e.on}))} className={`w-12 h-7 rounded-full transition ${eq.on?'bg-emerald-500':'bg-white/15'}`}><span className={`block w-5 h-5 mx-1 rounded-full bg-white transition ${eq.on?'translate-x-5':''}`}/></button></div>
-                  <div className="flex flex-wrap gap-2 mb-4">{Object.keys(EQ_PRESETS).map(p=> <button key={p} onClick={()=> setEq({on:true, preset:p, gains:[...EQ_PRESETS[p]]})} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${eq.preset===p?'bg-white text-black border-white':'bg-white/10 border-white/10 text-white/70'}`}>{p}</button>)}</div>
+                  <div className="flex items-center justify-between py-3"><span className="text-sm font-semibold">Equalizer {eq.on?'ON':'OFF'}</span><button onClick={eqUserToggle} className={`w-12 h-7 rounded-full transition ${eq.on?'bg-emerald-500':'bg-white/15'}`}><span className={`block w-5 h-5 mx-1 rounded-full bg-white transition ${eq.on?'translate-x-5':''}`}/></button></div>
+                  <div className="flex flex-wrap gap-2 mb-4">{Object.keys(EQ_PRESETS).map(p=> <button key={p} onClick={()=> eqUserPreset(p)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${eq.preset===p?'bg-white text-black border-white':'bg-white/10 border-white/10 text-white/70'}`}>{p}</button>)}</div>
                   {EQ_FREQS.map((f,i)=> (
-                    <div key={f} className="flex items-center gap-3 py-1.5"><span className="w-14 text-xs text-white/60">{f}</span><input type="range" min="-12" max="12" step="1" value={eq.gains[i]||0} onChange={e=>{ const v=Number(e.target.value); setEq(prev=>{ const g=[...prev.gains]; g[i]=v; return {...prev, on:true, preset:'Custom', gains:g} }) }} className="flex-1 accent-[#D5AA55]"/><span className="w-10 text-right text-xs font-bold">{(eq.gains[i]>0?'+':'')}{eq.gains[i]||0}</span></div>
+                    <div key={f} className="flex items-center gap-3 py-1.5"><span className="w-14 text-xs text-white/60">{f}</span><input type="range" min="-12" max="12" step="1" value={eq.gains[i]||0} onChange={e=> eqUserGain(i, Number(e.target.value))} className="flex-1 accent-[#D5AA55]"/><span className="w-10 text-right text-xs font-bold">{(eq.gains[i]>0?'+':'')}{eq.gains[i]||0}</span></div>
                   ))}
-                  <p className="text-[11px] text-white/40 mt-3">Works on streaming + downloads • Not on YouTube tracks • Turn OFF if a stream goes silent</p>
+                  <p className="text-[11px] text-white/40 mt-3">Works on streaming + downloads • Sliders apply LIVE • Not on YouTube tracks • Auto-recovers if a stream goes silent</p><button onClick={()=>{ hardResetAudio(); showToast('Audio reset') }} className="mt-2 w-full py-2 rounded-full bg-white/10 border border-white/10 text-xs font-bold">Reset audio (no sound?)</button>
                 </>)}
               </div>
             </div>

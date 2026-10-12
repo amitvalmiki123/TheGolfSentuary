@@ -116,7 +116,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-23'
+const APP_BUILD = 'itrace-24'
 const APP_VERSION = '2.5'
 const FREE_DL_MAX = 5
 const PRO_CODES = ['MAXMUSIC79']
@@ -251,6 +251,8 @@ export default function App(){
   const [homeLoadingMore, setHomeLoadingMore] = useState(false)
   const homeSentinelRef = useRef(null)
   const [selectedArtist, setSelectedArtist] = useState(null)
+  const [selectedPlaylist, setSelectedPlaylist] = useState(null) // playlist id -> detail page (itrace-24)
+  const [showAllArtists, setShowAllArtists] = useState(false)
   const [artistTracks, setArtistTracks] = useState([])
   const [artistNextPage, setArtistNextPage] = useState(null)
   const [artistLoadingMore, setArtistLoadingMore] = useState(false)
@@ -1068,13 +1070,17 @@ export default function App(){
   const greeting = useMemo(()=>{ const h=new Date().getHours(); if(h<12) return "morning"; if(h<17) return "afternoon"; return "evening" },[])
 
   const showToast = (msg)=>{ setToast(msg); setTimeout(()=> setToast(null), 2200) }
-  // Real artist photos: first matching track cover wins, dicebear initials stay as fallback.
+  // Real artist photos, EXACT match only: an artist-name segment === name (itrace-24 — kills label-pic mismatch; initials stay as fallback).
   const artistImgFor = (name)=>{
     try{
       const n = String(name||'').toLowerCase().trim()
       if(!n) return null
-      const pool = [...(homeTracks||[]), ...(recentlyPlayed||[]), ...(queue||[])]
-      const hit = pool.find(t=> t && t.cover && String(t.cover).startsWith('http') && (String(t.artist||'').toLowerCase().includes(n) || String(t.title||'').toLowerCase().includes(n)))
+      const pool = [...(artistTracks||[]), ...(homeTracks||[]), ...(recentlyPlayed||[]), ...(queue||[])]
+      const hit = pool.find(t=>{
+        if(!t || !t.cover || !String(t.cover).startsWith('http')) return false
+        const segs = String(t.artist||'').toLowerCase().split(/[,;&/]/).map(s=>s.trim()).filter(Boolean)
+        return segs.includes(n)
+      })
       return hit ? hit.cover : null
     }catch{ return null }
   }
@@ -1390,6 +1396,54 @@ export default function App(){
     setPlaylists(prev=> [pl, ...prev])
     setNewPlName(""); setShowCreatePl(false); showToast(`Playlist "${pl.title}" created`)
   }
+  // ---- itrace-24: playlists that actually play their saved songs ----
+  const playlistTracks = (pl)=>{
+    if(!pl) return []
+    if(pl.tracks && pl.tracks.length) return pl.tracks
+    const ids = pl.songs||[]
+    if(!ids.length) return []
+    return ids.map(id=> trackById(id)).filter(Boolean)
+  }
+  const playThemedPlaylist = async (pl)=>{
+    const qmapPl = {
+      "Today's Top Hits \u2022 India": "Arijit Singh Trending 2024",
+      "Bollywood Butter": "Bollywood love songs",
+      "Punjabi 101": "Punjabi hit songs Sidhu Moose Wala",
+      "Chill Kar Yaar": "Anuv Jain Prateek Kuhad lofi",
+      "Indie India": "Indie India Anuv Jain",
+      "Global Top 50": "Trending global hits",
+      "90s Love Hits": "90s Hindi hits Kumar Sanu",
+      "New Releases": "New Hindi Punjabi releases 2024"
+    }
+    const q = qmapPl[pl.title] || pl.title
+    showToast(`Loading ${pl.title}\u2026`)
+    try{
+      const real = await trendingByCategory(pl.title.includes("Punjabi")?"Punjabi": pl.title.includes("Indie")?"Indie": pl.title.includes("90s")?"90s": pl.title.includes("Chill")?"Indie":"All", 20)
+      let tracks = real
+      if(!tracks.length){ tracks = await searchSaavn(q, 20) }
+      if(tracks.length){ setQueue(tracks); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing \u2022 ${pl.title} \u2022 ${tracks.length} real`) }
+      else showToast("Network nahi mila \u2014 thodi der baad try karo")
+    }catch{ showToast("Network nahi mila \u2014 retry karo") }
+  }
+  const playPlaylistNow = async (pl)=>{
+    const tracks = playlistTracks(pl)
+    if(tracks.length){ setQueue(tracks); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing \u2022 ${pl.title} \u2022 ${tracks.length} songs`); return }
+    await playThemedPlaylist(pl)
+  }
+  const openPlaylist = (pl)=>{
+    if(!pl) return
+    if(playlistTracks(pl).length){ setSelectedPlaylist(pl.id); return }
+    playThemedPlaylist(pl)
+  }
+  const handleRemoveFromPlaylist = (plId, trackId)=>{
+    setPlaylists(prev=> prev.map(p=>{
+      if(p.id!==plId) return p
+      const nt = (p.tracks||[]).filter(x=> String(x.id||x.tid)!==String(trackId))
+      const ns = (p.songs||[]).filter(s=> String(s)!==String(trackId))
+      return {...p, tracks: nt, songs: ns, count: `${nt.length} songs`}
+    }))
+    showToast("Removed from playlist")
+  }
   const handleArtistClick = async (artistName)=>{
     setSelectedArtist(artistName)
     setArtistTracks([])
@@ -1526,7 +1580,7 @@ export default function App(){
             <div className="flex items-center justify-between mb-3 px-1"><h3 className="text-sm font-semibold">Your Mixes</h3><button onClick={()=> setShowCreatePl(true)} className="w-7 h-7 grid place-items-center rounded-full hover:bg-white/10 text-white/60"><PlusIcon/></button></div>
             <div className="space-y-1 overflow-y-auto pr-1 -mr-1 flex-1">
               {playlists.map(pl=> (
-                <button key={pl.id} onClick={()=>{ setNav('library'); setLibTab('Playlists')}} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 text-left group">
+                <button key={pl.id} onClick={()=> openPlaylist(pl)} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 text-left group">
                   <img loading="lazy" decoding="async" src={pl.cover} alt="" className="w-12 h-12 rounded-lg object-cover shrink-0"/>
                   <div className="min-w-0"><div className="text-sm font-medium truncate">{pl.title}</div><div className="text-xs text-white/50 truncate">Playlist • {pl.count || `${(pl.songs||[]).length} songs`}</div></div>
                 </button>
@@ -1618,7 +1672,7 @@ export default function App(){
 
           <main className="flex-1 min-w-0 max-w-full overflow-x-clip px-4 lg:px-6 py-6 pb-28 lg:pb-28 space-y-7">
             {nav==='profile' ? (
-              <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : ("yt-iframe (direct resolve pending/failed)" + (directErr ? " · " + directErr : ""))) : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} x={{ t, lang, setLang, quality, qCycle, langs, toggleLang, sleepMin, cycleSleep, eqOn:eq.on, eqPreset:eq.preset, onOpenEQ:()=>setShowEQ(true), isPro, stats, followedCount:followed.size, onSubscribe:()=>setShowSubscribe(true), onClearHistory, onClearSearches, onShareProfile, autoplay, setAutoplay }} />
+              <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : ("yt-iframe (direct resolve pending/failed)" + (directErr ? " · " + directErr : ""))) : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} x={{ t, lang, setLang, quality, qCycle, langs, toggleLang, sleepMin, cycleSleep, eqOn:eq.on, eqPreset:eq.preset, onOpenEQ:()=>setShowEQ(true), isPro, stats, followedCount:followed.size, onSubscribe:()=>setShowSubscribe(true), onClearHistory, onClearSearches, onShareProfile, autoplay, setAutoplay, onOpenPlaylist:(id)=> setSelectedPlaylist(id), onPlayPlaylist:(pl)=> playPlaylistNow(pl), onCreatePlaylist:()=> setShowCreatePl(true), onPlayTrack:playTrack, recently:recentlyPlayed, followedList:[...followed], onPlayAllRecent:()=>{ if(recentlyPlayed.length){ setQueue(recentlyPlayed); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing recent \u2022 ${recentlyPlayed.length}`) } } }} />
             ) : nav==='search' ? (
               <>
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -1748,42 +1802,17 @@ export default function App(){
                         <span className="w-12 h-12 rounded-full bg-white text-black grid place-items-center text-2xl">+</span><span className="text-sm font-semibold">Create Playlist</span><span className="text-xs text-white/50">Add your favourite tracks</span>
                       </button>
                       {playlists.map(pl=> (
-                        <div key={pl.id} className="glass rounded-[18px] p-3 hover:bg-white/10 transition group relative">
+                        <div key={pl.id} onClick={()=> openPlaylist(pl)} className="glass rounded-[18px] p-3 hover:bg-white/10 transition group relative cursor-pointer">
                           <div className="relative aspect-square rounded-xl overflow-hidden mb-3">
                             <img loading="lazy" decoding="async" src={pl.cover} alt="" className="w-full h-full object-cover group-hover:scale-105 transition duration-500"/>
                             <div className={`absolute inset-0 bg-gradient-to-br ${pl.color} opacity-60 mix-blend-overlay`}/>
-                            <button onClick={()=> showToast(`Playing playlist • ${pl.title}`)} className="absolute bottom-2 right-2 w-9 h-9 rounded-full bg-[#D5AA55] text-black grid place-items-center shadow-lg translate-y-2 opacity-0 group-hover:opacity-100 group-hover:translate-y-0 transition"><PlayMini/></button>
+                            <button onClick={(e)=>{ e.stopPropagation(); playPlaylistNow(pl) }} className="absolute bottom-2 right-2 w-9 h-9 rounded-full bg-[#D5AA55] text-black grid place-items-center shadow-lg translate-y-2 opacity-0 group-hover:opacity-100 group-hover:translate-y-0 transition"><PlayMini/></button>
                             <div className="absolute top-2 left-2 text-[11px] font-bold bg-black/40 backdrop-blur px-2 py-1 rounded-full border border-white/10">{pl.count}</div>
                           </div>
                           <div className="text-sm font-semibold leading-tight line-clamp-1">{pl.title}</div><div className="text-xs text-white/50 line-clamp-2 leading-relaxed">{pl.subtitle}</div>
                           <div className="mt-3 flex gap-1">
-                            <button onClick={async()=>{ 
-                              if(pl.tracks?.length){
-                                setQueue(pl.tracks); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing • ${pl.title} • ${pl.tracks.length}`)
-                                return
-                              }
-                              if(pl.songs?.length){ 
-                                const ids=pl.songs; 
-                                let tracksToPlay = ids.map(id=> localSongs.find(t=> String(t.id)===String(id))).filter(Boolean); 
-                                // curated/legacy — fetch real from Saavn
-                                if(tracksToPlay.length < 3){
-                                  const q = pl.title
-                                  try{
-                                    const real = await searchSaavn(q, 12)
-                                    if(real.length) tracksToPlay = real
-                                  }catch{}
-                                }
-                                if(tracksToPlay.length){ setQueue(tracksToPlay); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing • ${pl.title}`) } else showToast("Kuch nahi mila — internet check karke phir try karo") 
-                              } else {
-                                // empty custom playlist — try to fetch real for its name
-                                try{
-                                  const real = await searchSaavn(pl.title, 12)
-                                  if(real.length){ setQueue(real); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing • ${pl.title} • ${real.length} real`) }
-                                  else showToast("Empty playlist — add songs from Search")
-                                }catch{ showToast("Empty playlist — add songs from Search") }
-                              }
-                            }} className="flex-1 py-1.5 rounded-full bg-white text-black text-xs font-bold">Play</button>
-                            <button onClick={()=>{ setPlaylists(prev=> prev.filter(x=> x.id!==pl.id)); showToast("Playlist deleted")}} className="w-8 h-8 grid place-items-center rounded-full bg-white/10 hover:bg-white/15 border border-white/5"><CloseIcon/></button>
+                            <button onClick={(e)=>{ e.stopPropagation(); playPlaylistNow(pl) }} className="flex-1 py-1.5 rounded-full bg-white text-black text-xs font-bold">Play</button>
+                            <button onClick={(e)=>{ e.stopPropagation(); setPlaylists(prev=> prev.filter(x=> x.id!==pl.id)); showToast("Playlist deleted")}} className="w-8 h-8 grid place-items-center rounded-full bg-white/10 hover:bg-white/15 border border-white/5"><CloseIcon/></button>
                           </div>
                         </div>
                       ))}
@@ -1937,42 +1966,12 @@ export default function App(){
                   <div className="flex items-center justify-between mb-3"><h2 className="text-xl font-bold font-display">{activeCat==="All"? t('curated') : `${activeCat} Playlists • ${getCategoryPlaylists(activeCat).length || homeTracks.length || '—'} mixes`}</h2><button onClick={()=>{ setNav('library'); setLibTab('Playlists')}} className="text-sm font-semibold text-white/60 hover:text-white">{t('showall')}</button></div>
                   <div className="flex gap-4 overflow-x-auto pb-2 -mx-4 px-4 lg:mx-0 lg:px-0 scrollbar-none snap-x">
                     {( (activeCat==="All"? playlists : getCategoryPlaylists(activeCat)).length? (activeCat==="All"? playlists : getCategoryPlaylists(activeCat)) : homeTracks.slice(0,8).map((tr,i)=> ({ id:`home-curated-${i}`, title: tr.title, subtitle: tr.artist + ' • ' + (tr.source||'Full'), cover: tr.cover, color: 'from-[#6A418E] to-[#543551]', count: tr.durationLabel, songs: [] })) ).map(pl=> (
-                      <div key={pl.id} className="shrink-0 w-[172px] sm:w-[188px] glass rounded-[20px] p-3 snap-start hover:bg-white/[0.09] transition group">
+                      <div key={pl.id} onClick={()=> openPlaylist(pl)} className="shrink-0 w-[172px] sm:w-[188px] glass rounded-[20px] p-3 snap-start hover:bg-white/[0.09] transition group cursor-pointer">
                         <div className="relative aspect-square rounded-[16px] overflow-hidden mb-3">
                           <img loading="lazy" decoding="async" src={pl.cover} alt="" className="w-full h-full object-cover group-hover:scale-105 transition duration-700"/>
                           <div className={`absolute inset-0 bg-gradient-to-br ${pl.color} opacity-70 mix-blend-overlay`}/>
                           <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent"/>
-                          <button onClick={async()=>{
-                            // JioSaavn-like real play — fetch genuine tracks for this playlist theme
-                            const qmapPl = {
-                              "Today's Top Hits • India": "Arijit Singh Trending 2024",
-                              "Bollywood Butter": "Bollywood love songs",
-                              "Punjabi 101": "Punjabi hit songs Sidhu Moose Wala",
-                              "Chill Kar Yaar": "Anuv Jain Prateek Kuhad lofi",
-                              "Indie India": "Indie India Anuv Jain",
-                              "Global Top 50": "Trending global hits",
-                              "90s Love Hits": "90s Hindi hits Kumar Sanu",
-                              "New Releases": "New Hindi Punjabi releases 2024"
-                            }
-                            const q = qmapPl[pl.title] || pl.title
-                            showToast(`Loading ${pl.title}…`)
-                            try{
-                              const real = await trendingByCategory(pl.title.includes("Punjabi")?"Punjabi": pl.title.includes("Indie")?"Indie": pl.title.includes("90s")?"90s": pl.title.includes("Chill")?"Indie":"All", 20)
-                              // trendingByCategory already Saavn-first, so real
-                              let tracks = real
-                              if(!tracks.length){
-                                const s = await searchSaavn(q, 20)
-                                tracks = s
-                              }
-                              if(tracks.length){
-                                setQueue(tracks); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing • ${pl.title} • ${tracks.length} real`)
-                              } else if(pl.tracks?.length){
-                                setQueue(pl.tracks); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing saved • ${pl.title}`)
-                              } else showToast("Network nahi mila — thodi der baad try karo")
-                            }catch{
-                              if(pl.tracks?.length){ setQueue(pl.tracks); setCurrentIndex(0); setIsPlaying(true) } else showToast("Network nahi mila — retry karo")
-                            }
-                          }} className="absolute bottom-3 right-3 w-10 h-10 rounded-full bg-white text-black grid place-items-center shadow-xl opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0 transition"><PlayMini/></button>
+                          <button onClick={(e)=>{ e.stopPropagation(); playPlaylistNow(pl) }} className="absolute bottom-3 right-3 w-10 h-10 rounded-full bg-white text-black grid place-items-center shadow-xl opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0 transition"><PlayMini/></button>
                           <div className="absolute top-3 left-3 text-[11px] font-bold tracking-widest bg-black/40 backdrop-blur px-2 py-1 rounded-full border border-white/10">{pl.count || `${(pl.songs||[]).length} songs`}</div>
                         </div>
                         <div className="font-semibold text-sm leading-tight line-clamp-1">{pl.title}</div><div className="text-xs text-white/50 line-clamp-2 leading-relaxed mt-1">{pl.subtitle}</div>
@@ -2030,7 +2029,7 @@ export default function App(){
                           <button onClick={()=>{ setQueue(artistTracks); setCurrentIndex(0); setIsPlaying(true) }} className="mt-2 w-full py-2 rounded-full bg-white text-black text-xs font-bold">Play All {selectedArtist}</button>
                         </div>
                       )}
-                      <button onClick={()=> showToast("All artists • " + getFilteredArtists(activeCat).map(a=>a.name).join(", "))} className="mt-5 w-full py-2.5 rounded-full bg-white text-black text-sm font-bold">View all artists</button>
+                      <button onClick={()=> setShowAllArtists(true)} className="mt-5 w-full py-2.5 rounded-full bg-white text-black text-sm font-bold">View all artists</button>
                     </section>
                     <section className="relative rounded-[24px] overflow-hidden p-5 bg-gradient-to-br from-[#543551] via-[#6A418E] to-[#A154D6]">
                       <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent"/><div className="absolute -right-10 -bottom-10 w-40 h-40 rounded-full bg-white/10 blur-2xl"/>
@@ -2089,6 +2088,84 @@ export default function App(){
             </div>
           </div>}
 
+          {/* itrace-24: Playlist detail page */}
+          {selectedPlaylist && (()=>{
+            const pl = playlists.find(x=> x.id===selectedPlaylist)
+            if(!pl) return null
+            const tracks = playlistTracks(pl)
+            return (
+              <div className="fixed inset-0 z-50 bg-[#060306] overflow-y-auto">
+                <div className="max-w-3xl mx-auto px-4 py-5 pb-32">
+                  <button onClick={()=> setSelectedPlaylist(null)} className="flex items-center gap-2 text-sm text-white/70 hover:text-white mb-4"><ChevronLeft/> Back</button>
+                  <div className="flex gap-4 items-center">
+                    <img loading="lazy" decoding="async" src={pl.cover} alt="" className="w-28 h-28 sm:w-36 sm:h-36 rounded-2xl object-cover shadow-xl shrink-0"/>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[11px] font-bold tracking-widest text-white/50">PLAYLIST</div>
+                      <h2 className="text-2xl font-bold font-display leading-tight truncate">{pl.title}</h2>
+                      <div className="text-sm text-white/60 mt-1 truncate">{pl.subtitle}</div>
+                      <div className="text-xs text-white/50 mt-1">{tracks.length} songs</div>
+                      <div className="flex gap-2 mt-3">
+                        <button onClick={()=> playPlaylistNow(pl)} className="px-6 py-2 rounded-full bg-white text-black text-sm font-bold flex items-center gap-2"><PlayMini/> Play</button>
+                        <button onClick={()=>{ if(!tracks.length) return; const sh=[...tracks].sort(()=>Math.random()-0.5); setQueue(sh); setCurrentIndex(0); setIsPlaying(true); showToast(`Shuffling \u2022 ${pl.title}`) }} className="px-5 py-2 rounded-full bg-white/10 border border-white/10 text-sm font-bold">Shuffle</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-5 space-y-1">
+                    {tracks.length===0 && <div className="text-center py-10 text-white/50 text-sm">No songs yet \u2014 open any song \u2192 Add to playlist</div>}
+                    {tracks.map((t,i)=>{
+                      const isCur = String(current?.id)===String(t.id)
+                      return (
+                        <div key={String(t.id)+i} className={`flex items-center gap-3 p-2 rounded-xl ${isCur?'bg-white text-black':'hover:bg-white/5'}`}>
+                          <span className={`w-6 text-center text-xs font-bold shrink-0 ${isCur?'text-black/40':'text-white/30'}`}>{String(i+1).padStart(2,'0')}</span>
+                          <button onClick={()=> playTrack(t, tracks)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                            <img loading="lazy" decoding="async" src={t.cover} alt="" className="w-11 h-11 rounded-lg object-cover shrink-0"/>
+                            <span className="min-w-0 flex-1 block"><span className={`block text-sm font-medium truncate ${isCur?'text-black':'text-white'}`}>{t.title}</span><span className={`block text-xs truncate ${isCur?'text-black/60':'text-white/50'}`}>{t.artist}</span></span>
+                          </button>
+                          <span className={`text-xs hidden sm:block shrink-0 ${isCur?'text-black/60':'text-white/40'}`}>{t.durationLabel}</span>
+                          <button onClick={()=> toggleLike(t.id, t)} className={`w-8 h-8 grid place-items-center shrink-0 ${liked.has(t.id)?'text-[#C35445]':isCur?'text-black/30':'text-white/30'}`}><Heart filled={liked.has(t.id)} size={16}/></button>
+                          <button onClick={()=> handleRemoveFromPlaylist(pl.id, t.id)} title="Remove from playlist" className={`w-8 h-8 grid place-items-center rounded-full shrink-0 ${isCur?'text-black/40 hover:text-black':'text-white/40 hover:text-white'}`}>\u2715</button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
+          {/* itrace-24: All artists page */}
+          {showAllArtists && (
+            <div className="fixed inset-0 z-50 bg-[#060306] overflow-y-auto">
+              <div className="max-w-4xl mx-auto px-4 py-5 pb-32">
+                <button onClick={()=> setShowAllArtists(false)} className="flex items-center gap-2 text-sm text-white/70 hover:text-white mb-4"><ChevronLeft/> Back</button>
+                <h2 className="text-2xl font-bold font-display">All artists <span className="text-sm font-normal text-white/50">\u2022 {getFilteredArtists(activeCat).length}</span></h2>
+                {selectedArtist && artistTracks.length>0 && (
+                  <div className="mt-4 p-4 rounded-2xl bg-white/5 border border-white/10">
+                    <div className="flex items-center justify-between mb-2 gap-2"><span className="text-sm font-bold truncate">{selectedArtist} \u2014 {artistTracks.length} tracks</span><div className="flex gap-2 shrink-0"><button onClick={toggleFollow} className={`text-xs font-bold px-3 py-1 rounded-full border ${followed.has(selectedArtist)?'bg-white text-black border-white':'bg-white/10 border-white/10'}`}>{followed.has(selectedArtist)?'\u2713 '+t('following'):'+ '+t('follow')}</button><button onClick={()=> setSelectedArtist(null)} className="text-xs text-white/60 hover:text-white">Clear</button></div></div>
+                    <div className="space-y-1 max-h-[320px] overflow-y-auto">
+                      {artistTracks.map(tr=>(
+                        <button key={tr.id} onClick={()=> playTrack(tr, artistTracks)} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/10 text-left">
+                          <img loading="lazy" decoding="async" src={tr.cover} alt="" className="w-10 h-10 rounded-lg object-cover shrink-0"/>
+                          <div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{tr.title}</div><div className="text-xs text-white/50 truncate">{tr.artist}</div></div>
+                          <span className="text-xs text-white/40 shrink-0">{tr.durationLabel}</span>
+                        </button>
+                      ))}
+                    </div>
+                    {artistNextPage && <button onClick={handleLoadMoreArtist} disabled={artistLoadingMore} className="w-full mt-2 py-2 rounded-full bg-white/10 border border-white/10 text-xs font-bold hover:bg-white hover:text-black disabled:opacity-50">{artistLoadingMore? "Loading more...":"Load more songs"}</button>}
+                    <button onClick={()=>{ setQueue(artistTracks); setCurrentIndex(0); setIsPlaying(true) }} className="mt-2 w-full py-2 rounded-full bg-white text-black text-xs font-bold">Play All {selectedArtist}</button>
+                  </div>
+                )}
+                <div className="mt-4 grid grid-cols-3 sm:grid-cols-4 gap-3">
+                  {getFilteredArtists(activeCat).map(a=>(
+                    <button key={a.name} onClick={()=> handleArtistClick(a.name)} className="glass rounded-2xl p-3 text-center hover:bg-white/10 transition">
+                      <img loading="lazy" decoding="async" src={artistImgFor(a.name) || a.img} alt="" onError={e=>{ try{ e.currentTarget.onerror=null; e.currentTarget.src=a.img }catch{} }} className="mx-auto w-16 h-16 sm:w-20 sm:h-20 rounded-full object-cover border-2 border-white/10"/>
+                      <div className="text-xs font-semibold mt-2 leading-tight break-words">{a.name}</div>
+                      <div className="text-[11px] text-white/40">{a.plays} \u2022 {a.cat}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
           {/* Full player */}
           {current && <div className={`fixed inset-0 z-50 w-full max-w-[100vw] overflow-y-auto overflow-x-hidden bg-[#060306] transition-transform duration-500 ${showFull? 'translate-y-0':'translate-y-full'}`}
             onTouchStart={e=>{ touchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() } }}
@@ -2401,7 +2478,7 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
             <h3 className="font-bold mb-3">{t('recentpl')}</h3>
             <div className="space-y-2">
               {playlists.slice(0,3).map(pl=> (
-                <div key={pl.id} className="flex gap-3 items-center p-2 rounded-xl hover:bg-white/5"><img loading="lazy" decoding="async" src={pl.cover} alt="" className="w-12 h-12 rounded-lg object-cover"/><div><div className="text-sm font-semibold">{pl.title}</div><div className="text-xs text-white/50">{pl.count}</div></div></div>
+                <div key={pl.id} onClick={()=> X.onOpenPlaylist && X.onOpenPlaylist(pl.id)} className="flex gap-3 items-center p-2 rounded-xl hover:bg-white/5 cursor-pointer"><img loading="lazy" decoding="async" src={pl.cover} alt="" className="w-12 h-12 rounded-lg object-cover"/><div><div className="text-sm font-semibold">{pl.title}</div><div className="text-xs text-white/50">{pl.count}</div></div></div>
               ))}
               {playlists.length===0 && <div className="text-sm text-white/50">{t('nopl')}</div>}
             </div>
@@ -2427,7 +2504,46 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
           <button onClick={()=>{ localStorage.clear(); indexedDB.deleteDatabase('sur_sangam_db'); showToast("Data cleared — refresh"); setTimeout(()=> location.reload(),800)}} className="w-full mt-3 py-3 rounded-full bg-[#C35445] text-white text-sm font-bold">{t('clearall')}</button>
         </div>
       )}
-      {tab!=="Overview" && tab!=="Settings" && <div className="glass rounded-[24px] p-10 text-center text-white/50">More stats coming soon</div>}
+      {tab==="Playlists" && (
+        <div className="glass rounded-[24px] p-5">
+          <div className="flex items-center justify-between mb-3"><h3 className="font-bold">Playlists \u2022 {playlists.length}</h3><button onClick={()=> X.onCreatePlaylist && X.onCreatePlaylist()} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white text-black">+ New</button></div>
+          {playlists.length===0 ? <div className="text-sm text-white/50 text-center py-6">No playlists yet \u2014 create your first!</div> : (
+            <div className="space-y-2">
+              {playlists.map(pl=> (
+                <div key={pl.id} className="flex gap-3 items-center p-2 rounded-xl hover:bg-white/5">
+                  <button onClick={()=> X.onOpenPlaylist && X.onOpenPlaylist(pl.id)} className="flex gap-3 items-center flex-1 min-w-0 text-left"><img loading="lazy" decoding="async" src={pl.cover} alt="" className="w-12 h-12 rounded-lg object-cover shrink-0"/><div className="min-w-0"><div className="text-sm font-semibold truncate">{pl.title}</div><div className="text-xs text-white/50">{pl.count || `${(pl.tracks||pl.songs||[]).length} songs`}</div></div></button>
+                  <button onClick={()=> X.onPlayPlaylist && X.onPlayPlaylist(pl)} className="w-9 h-9 rounded-full bg-white text-black grid place-items-center shrink-0"><PlayMini/></button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {tab==="Listening" && (
+        <div className="space-y-4">
+          <div className="glass rounded-[24px] p-5">
+            <div className="flex items-center justify-between mb-3"><h3 className="font-bold">Recently played \u2022 {(X.recently||[]).length}</h3>{(X.recently||[]).length>0 && <button onClick={()=> X.onPlayAllRecent && X.onPlayAllRecent()} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white text-black">Play all</button>}</div>
+            {(X.recently||[]).length===0 ? <div className="text-sm text-white/50 text-center py-6">Play any song \u2014 it will appear here</div> : (
+              <div className="space-y-1 max-h-[360px] overflow-y-auto">
+                {(X.recently||[]).slice(0,20).map((t,i)=> (
+                  <button key={String(t.id)+i} onClick={()=> X.onPlayTrack && X.onPlayTrack(t, X.recently)} className="w-full flex gap-3 items-center p-2 rounded-xl hover:bg-white/5 text-left">
+                    <span className="w-6 text-center text-xs text-white/30 shrink-0">{String(i+1).padStart(2,'0')}</span>
+                    <img loading="lazy" decoding="async" src={t.cover} alt="" className="w-10 h-10 rounded-lg object-cover shrink-0"/>
+                    <div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div></div>
+                    <span className="text-xs text-white/40 shrink-0">{t.durationLabel}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="glass rounded-[24px] p-5">
+            <h3 className="font-bold mb-3">Artists you follow \u2022 {(X.followedList||[]).length}</h3>
+            {(X.followedList||[]).length===0 ? <div className="text-sm text-white/50">No followed artists yet \u2014 tap + Follow on any artist</div> : (
+              <div className="flex flex-wrap gap-2">{(X.followedList||[]).map(n=> <span key={n} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">\u2713 {n}</span>)}</div>
+            )}
+          </div>
+        </div>
+      )}
       <div onClick={pokeDiag} className="pt-1 text-center text-[11px] text-white/35 select-none">© 2026 MaxMusic • {t('version')} {APP_VERSION}</div>
     </div>
   )

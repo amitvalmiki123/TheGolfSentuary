@@ -1045,3 +1045,5 @@ export async function apiPushPlaylists(playlists){ return apiFetch('/api/playlis
 export async function apiPullPlaylists(){ const d = await apiFetch('/api/playlists/sync'); return d && Array.isArray(d.playlists) ? d.playlists : null }
 
 export async function apiDeleteAccount(){ const d = await apiFetch('/api/auth/me', { method:'DELETE' }); setAuthToken(null); return !!(d && d.ok) }
+export async function apiRedeemPro(code){ const d = await apiFetch('/api/auth/redeem', { method:'POST', body: JSON.stringify({ code }) }); return d||null }
+export async function apiSetPlan(plan){ const d = await apiFetch('/api/auth/plan', { method:'POST', body: JSON.stringify({ plan }) }); return d && d.user ? d.user : null }

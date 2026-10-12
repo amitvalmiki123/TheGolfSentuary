@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
-import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio, resolveDirectAudio, searchSaavn, searchSuggestions, getLastSearchNextpage, fetchLyrics, mergeDedup, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists, warmBackend } from './lib/api.js'
+import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio, resolveDirectAudio, searchSaavn, searchSuggestions, getLastSearchNextpage, fetchLyrics, mergeDedup, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists, apiRedeemPro, apiSetPlan, warmBackend } from './lib/api.js'
 import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
 import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npAskBattery, npOpenNotifSettings, npPing, npLastCrash, npSetDisabled, npDisabled, npBridgeMode, hasNativeBridge, wvGuess } from './lib/nowplaying.js'
 
@@ -116,7 +116,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-25'
+const APP_BUILD = 'itrace-26'
 const APP_VERSION = '2.5'
 const FREE_DL_MAX = 5
 const PRO_CODES = ['MAXMUSIC79']
@@ -157,8 +157,8 @@ function NpDiagCard({ toast, engine }){
   let np = null
   try{ const m = /^NP\|(\d)\|([^|]*)\|(.*)$/.exec(document.title||''); if(m) np = { play: m[1]==='1', title:(m[2]||'').trim(), artist:(m[3]||'').trim() } }catch(e){}
   const ok = !!(bgDiag && bgDiag.plugin && bgDiag.service && bgDiag.notif)
-  const link = np ? ('app\u2192svc: '+(np.play?'\u25b6 playing':'\u23f8 paused')+' \u00b7 '+(np.title||'')) : 'app\u2192svc: idle (play a song)'
-  const svcTxt = svc ? ('svc\u2192app: '+svc) : ('svc\u2192app: '+(isNativeApp()||hasNativeBridge()||wvGuess() ? 'no heartbeat yet \u2014 ticker silent' : 'browser \u2014 no native engine'))
+  const link = np ? ('app→svc: '+(np.play?'▶ playing':'⏸ paused')+' · '+(np.title||'')) : 'app→svc: idle (play a song)'
+  const svcTxt = svc ? ('svc→app: '+svc) : ('svc→app: '+(isNativeApp()||hasNativeBridge()||wvGuess() ? 'no heartbeat yet — ticker silent' : 'browser — no native engine'))
   return (
     <div className="mt-4 rounded-2xl border p-3 text-xs max-w-md"
          style={{ background:'rgba(255,255,255,.04)', borderColor: ok? 'rgba(16,185,129,.5)' : 'rgba(245,158,11,.4)' }}>
@@ -173,11 +173,11 @@ function NpDiagCard({ toast, engine }){
           <button onClick={ping} className="shrink-0 rounded-full border border-white/15 px-3 py-1.5 font-semibold text-white/70 hover:text-white">Re-check</button>
         )}
         <button onClick={()=>{ npSetDisabled(!npDisabled()); T(npDisabled()? 'Native player OFF (safe mode)' : 'Native player ON'); setTimeout(ping, 800) }}
-                className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[10px] font-semibold text-white/60 hover:text-white">{npDisabled()? 'Safe mode: ON \u2014 tap OFF' : 'Safe mode: off'}</button>
+                className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[10px] font-semibold text-white/60 hover:text-white">{npDisabled()? 'Safe mode: ON — tap OFF' : 'Safe mode: off'}</button>
         <button onClick={npAskBattery} className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[10px] font-semibold text-white/60 hover:text-white">Unfreeze</button>
       </div>
       <div className="mt-1.5 break-all opacity-60" style={{ fontFamily:'ui-monospace,monospace', fontSize:10 }}>
-        app:{APP_BUILD} {'\u00b7'} bridge:{npBridgeMode()} {engine ? ('\u00b7 audio: '+engine) : ''} {bgDiag && bgDiag.diag ? ('\u00b7 ping: '+bgDiag.diag) : ''}{sdl && sdl.length ? (<><br/>search: {sdl.join(' \u00b7 ')}</>) : ''}
+        app:{APP_BUILD} {'·'} bridge:{npBridgeMode()} {engine ? ('· audio: '+engine) : ''} {bgDiag && bgDiag.diag ? ('· ping: '+bgDiag.diag) : ''}{sdl && sdl.length ? (<><br/>search: {sdl.join(' · ')}</>) : ''}
       </div>
     </div>
   )
@@ -359,6 +359,16 @@ export default function App(){
     const me = await apiMe().catch(()=> null)
     if(me){ cacheAuth(me); setAuthUser(me); setUser(prev=> ({ ...prev, email: me.email||prev.email, plan: me.plan||prev.plan, name: prev._edited?prev.name:(me.name||prev.name), avatar: prev._edited?prev.avatar:(me.avatar||prev.avatar) })) }
   })() },[])
+  useEffect(()=>{ // itrace-26: local Pro record heals server plan + survives login/boot (email match)
+    if(!authUser || !authUser.email) return
+    try{
+      const rec = JSON.parse(localStorage.getItem('sur_pro')||'null')
+      if(rec && rec.plan==='Pro' && String(rec.email||'').toLowerCase()===String(authUser.email).toLowerCase()){
+        setUser(prev=> (prev.plan==='Pro'||prev.plan==='Premium')? prev : ({...prev, plan:'Pro'}))
+        pushLocalProToServer(authUser.email).catch(()=>{})
+      }
+    }catch{}
+  },[authUser])
   // pull liked + playlists when session active
   useEffect(()=>{ if(!authUser) return; (async()=>{
     try{
@@ -716,7 +726,7 @@ export default function App(){
   useEffect(()=>{
     try{
       document.title = current
-        ? ('NP|'+(isPlaying?1:0)+'|'+String(current.title||'').replace(/\|/g,'\u00b7').slice(0,60)+'|'+String(current.artist||'').replace(/\|/g,'\u00b7').slice(0,40))
+        ? ('NP|'+(isPlaying?1:0)+'|'+String(current.title||'').replace(/\|/g,'·').slice(0,60)+'|'+String(current.artist||'').replace(/\|/g,'·').slice(0,40))
         : 'MaxMusic'
     }catch(e){}
   },[current && current.id, isPlaying])
@@ -926,12 +936,12 @@ export default function App(){
     setAudioKey(k=> k+1)
   }
   const eqUserToggle = ()=>{
-    if(audioNoCors){ showToast('EQ bypassed \u2014 streams block processing'); return }
+    if(audioNoCors){ showToast('EQ bypassed — streams block processing'); return }
     if(!eq.on){ try{ if(ensureEqGraph()) kickEq() }catch{}; setEq(e=> ({...e, on:true})) }
     else setEq(e=> ({...e, on:false}))
   }
   const eqUserPreset = (p)=>{
-    if(audioNoCors){ showToast('EQ bypassed \u2014 streams block processing'); return }
+    if(audioNoCors){ showToast('EQ bypassed — streams block processing'); return }
     try{ if(ensureEqGraph()) kickEq() }catch{}
     setEq({on:true, preset:p, gains:[...EQ_PRESETS[p]]})
   }
@@ -966,7 +976,7 @@ export default function App(){
         E2.analyser.getFloatTimeDomainData(buf)
         let peak = 0
         for(let i=0;i<buf.length;i+=4){ const v = Math.abs(buf[i]); if(v>peak) peak = v }
-        if(peak < 0.001){ showToast('EQ silent on this stream \u2014 audio reset'); hardResetAudio() }
+        if(peak < 0.001){ showToast('EQ silent on this stream — audio reset'); hardResetAudio() }
       }catch{}
     }, 2500)
     return ()=> clearTimeout(id)
@@ -1234,7 +1244,7 @@ export default function App(){
         setEq(e=> ({...e, on:false}))
         setAudioNoCors(true)
         setAudioKey(k=> k+1)
-        showToast('EQ bypassed \u2014 direct play for this stream')
+        showToast('EQ bypassed — direct play for this stream')
         return
       }
     }catch{}
@@ -1473,9 +1483,37 @@ export default function App(){
       await navigator.clipboard.writeText(txt); showToast('Profile copied — share kahin bhi ✓')
     }catch{ try{ await navigator.clipboard.writeText(txt); showToast('Profile copied ✓') }catch{ showToast(txt) } }
   }
-  const activatePro = ()=>{
+  // itrace-26: Pro lives on the SERVER per user-id — survives reopen/reinstall/all devices
+  const pushLocalProToServer = async (email)=>{
+    try{
+      const rec = JSON.parse(localStorage.getItem('sur_pro')||'null')
+      if(!rec || rec.plan!=='Pro') return null
+      if(email && rec.email && String(email).toLowerCase()!==String(rec.email).toLowerCase()) return null
+      if(!getAuthToken()) return null
+      const u = await apiSetPlan('Pro')
+      if(u){ setAuthUser(u); cacheAuth(u); return u }
+    }catch{}
+    return null
+  }
+  const activatePro = async ()=>{
     const c = String(proCode||'').trim().toUpperCase()
-    if(PRO_CODES.includes(c)){ setUser(u=> ({...u, plan:'Pro'})); setProErr(''); setShowSubscribe(false); showToast('MaxMusic Pro activated ✓ — unlimited + HD + EQ') }
+    if(!c){ setProErr('Code dalo pehle'); return }
+    setProErr('')
+    // 1) server redeem (logged in) — asli validation server pe, har device pe Pro
+    if(authUser || getAuthToken()){
+      try{
+        const r = await apiRedeemPro(c)
+        if(r && r.user){ const u=r.user; setAuthUser(u); cacheAuth(u); setUser(prev=>({...prev, plan:u.plan||'Pro'})); try{ localStorage.setItem('sur_pro', JSON.stringify({ email:String(u.email||(authUser&&authUser.email)||'').toLowerCase(), plan:u.plan||'Pro', ts:Date.now() })) }catch{}; setShowSubscribe(false); showToast('MaxMusic Pro activated ✓ — all your devices'); return }
+      }catch{}
+    }
+    // 2) local fallback (guest / server abhi purana) — + turant server pe push
+    if(PRO_CODES.includes(c)){
+      const em = String((authUser&&authUser.email)||user.email||'').toLowerCase()
+      setUser(u=> ({...u, plan:'Pro'}))
+      try{ localStorage.setItem('sur_pro', JSON.stringify({ email:em, plan:'Pro', code:c, ts:Date.now() })) }catch{}
+      setProErr(''); setShowSubscribe(false); showToast('MaxMusic Pro activated ✓ — unlimited + HD + EQ')
+      pushLocalProToServer(em).catch(()=>{})
+    }
     else setProErr('Galat code — dobara check karo')
   }
   const handleCreatePlaylist = ()=>{
@@ -1494,7 +1532,7 @@ export default function App(){
   }
   const playThemedPlaylist = async (pl)=>{
     const qmapPl = {
-      "Today's Top Hits \u2022 India": "Arijit Singh Trending 2024",
+      "Today's Top Hits • India": "Arijit Singh Trending 2024",
       "Bollywood Butter": "Bollywood love songs",
       "Punjabi 101": "Punjabi hit songs Sidhu Moose Wala",
       "Chill Kar Yaar": "Anuv Jain Prateek Kuhad lofi",
@@ -1504,18 +1542,18 @@ export default function App(){
       "New Releases": "New Hindi Punjabi releases 2024"
     }
     const q = qmapPl[pl.title] || pl.title
-    showToast(`Loading ${pl.title}\u2026`)
+    showToast(`Loading ${pl.title}…`)
     try{
       const real = await trendingByCategory(pl.title.includes("Punjabi")?"Punjabi": pl.title.includes("Indie")?"Indie": pl.title.includes("90s")?"90s": pl.title.includes("Chill")?"Indie":"All", 20)
       let tracks = real
       if(!tracks.length){ tracks = await searchSaavn(q, 20) }
-      if(tracks.length){ setQueue(tracks); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing \u2022 ${pl.title} \u2022 ${tracks.length} real`) }
-      else showToast("Network nahi mila \u2014 thodi der baad try karo")
-    }catch{ showToast("Network nahi mila \u2014 retry karo") }
+      if(tracks.length){ setQueue(tracks); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing • ${pl.title} • ${tracks.length} real`) }
+      else showToast("Network nahi mila — thodi der baad try karo")
+    }catch{ showToast("Network nahi mila — retry karo") }
   }
   const playPlaylistNow = async (pl)=>{
     const tracks = playlistTracks(pl)
-    if(tracks.length){ setQueue(tracks); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing \u2022 ${pl.title} \u2022 ${tracks.length} songs`); return }
+    if(tracks.length){ setQueue(tracks); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing • ${pl.title} • ${tracks.length} songs`); return }
     await playThemedPlaylist(pl)
   }
   const openPlaylist = (pl)=>{
@@ -1760,7 +1798,7 @@ export default function App(){
 
           <main className="flex-1 min-w-0 max-w-full overflow-x-clip px-4 lg:px-6 py-6 pb-28 lg:pb-28 space-y-7">
             {nav==='profile' ? (
-              <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : ("yt-iframe (direct resolve pending/failed)" + (directErr ? " · " + directErr : ""))) : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} x={{ t, lang, setLang, quality, qCycle, langs, toggleLang, sleepMin, cycleSleep, eqOn:eq.on, eqPreset:eq.preset, onOpenEQ:()=>setShowEQ(true), isPro, stats, followedCount:followed.size, onSubscribe:()=>setShowSubscribe(true), onClearHistory, onClearSearches, onShareProfile, autoplay, setAutoplay, onOpenPlaylist:(id)=> setSelectedPlaylist(id), onPlayPlaylist:(pl)=> playPlaylistNow(pl), onCreatePlaylist:()=> setShowCreatePl(true), onPlayTrack:playTrack, recently:recentlyPlayed, followedList:[...followed], onPlayAllRecent:()=>{ if(recentlyPlayed.length){ setQueue(recentlyPlayed); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing recent \u2022 ${recentlyPlayed.length}`) } } }} />
+              <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : ("yt-iframe (direct resolve pending/failed)" + (directErr ? " · " + directErr : ""))) : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} x={{ t, lang, setLang, quality, qCycle, langs, toggleLang, sleepMin, cycleSleep, eqOn:eq.on, eqPreset:eq.preset, onOpenEQ:()=>setShowEQ(true), isPro, stats, followedCount:followed.size, onSubscribe:()=>setShowSubscribe(true), onClearHistory, onClearSearches, onShareProfile, autoplay, setAutoplay, onOpenPlaylist:(id)=> setSelectedPlaylist(id), onPlayPlaylist:(pl)=> playPlaylistNow(pl), onCreatePlaylist:()=> setShowCreatePl(true), onPlayTrack:playTrack, recently:recentlyPlayed, followedList:[...followed], onPlayAllRecent:()=>{ if(recentlyPlayed.length){ setQueue(recentlyPlayed); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing recent • ${recentlyPlayed.length}`) } } }} />
             ) : nav==='search' ? (
               <>
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -2194,12 +2232,12 @@ export default function App(){
                       <div className="text-xs text-white/50 mt-1">{tracks.length} songs</div>
                       <div className="flex gap-2 mt-3">
                         <button onClick={()=> playPlaylistNow(pl)} className="px-6 py-2 rounded-full bg-white text-black text-sm font-bold flex items-center gap-2"><PlayMini/> Play</button>
-                        <button onClick={()=>{ if(!tracks.length) return; const sh=[...tracks].sort(()=>Math.random()-0.5); setQueue(sh); setCurrentIndex(0); setIsPlaying(true); showToast(`Shuffling \u2022 ${pl.title}`) }} className="px-5 py-2 rounded-full bg-white/10 border border-white/10 text-sm font-bold">Shuffle</button>
+                        <button onClick={()=>{ if(!tracks.length) return; const sh=[...tracks].sort(()=>Math.random()-0.5); setQueue(sh); setCurrentIndex(0); setIsPlaying(true); showToast(`Shuffling • ${pl.title}`) }} className="px-5 py-2 rounded-full bg-white/10 border border-white/10 text-sm font-bold">Shuffle</button>
                       </div>
                     </div>
                   </div>
                   <div className="mt-5 space-y-1">
-                    {tracks.length===0 && <div className="text-center py-10 text-white/50 text-sm">No songs yet \u2014 open any song \u2192 Add to playlist</div>}
+                    {tracks.length===0 && <div className="text-center py-10 text-white/50 text-sm">No songs yet — open any song → Add to playlist</div>}
                     {tracks.map((t,i)=>{
                       const isCur = String(current?.id)===String(t.id)
                       return (
@@ -2211,7 +2249,7 @@ export default function App(){
                           </button>
                           <span className={`text-xs hidden sm:block shrink-0 ${isCur?'text-black/60':'text-white/40'}`}>{t.durationLabel}</span>
                           <button onClick={()=> toggleLike(t.id, t)} className={`w-8 h-8 grid place-items-center shrink-0 ${liked.has(t.id)?'text-[#C35445]':isCur?'text-black/30':'text-white/30'}`}><Heart filled={liked.has(t.id)} size={16}/></button>
-                          <button onClick={()=> handleRemoveFromPlaylist(pl.id, t.id)} title="Remove from playlist" className={`w-8 h-8 grid place-items-center rounded-full shrink-0 ${isCur?'text-black/40 hover:text-black':'text-white/40 hover:text-white'}`}>\u2715</button>
+                          <button onClick={()=> handleRemoveFromPlaylist(pl.id, t.id)} title="Remove from playlist" className={`w-8 h-8 grid place-items-center rounded-full shrink-0 ${isCur?'text-black/40 hover:text-black':'text-white/40 hover:text-white'}`}>✕</button>
                         </div>
                       )
                     })}
@@ -2225,10 +2263,10 @@ export default function App(){
             <div className="fixed inset-0 z-50 bg-[#060306] overflow-y-auto">
               <div className="max-w-4xl mx-auto px-4 py-5 pb-32">
                 <button onClick={()=> setShowAllArtists(false)} className="flex items-center gap-2 text-sm text-white/70 hover:text-white mb-4"><ChevronLeft/> Back</button>
-                <h2 className="text-2xl font-bold font-display">All artists <span className="text-sm font-normal text-white/50">\u2022 {getFilteredArtists(activeCat).length}</span></h2>
+                <h2 className="text-2xl font-bold font-display">All artists <span className="text-sm font-normal text-white/50">• {getFilteredArtists(activeCat).length}</span></h2>
                 {selectedArtist && artistTracks.length>0 && (
                   <div className="mt-4 p-4 rounded-2xl bg-white/5 border border-white/10">
-                    <div className="flex items-center justify-between mb-2 gap-2"><span className="text-sm font-bold truncate">{selectedArtist} \u2014 {artistTracks.length} tracks</span><div className="flex gap-2 shrink-0"><button onClick={toggleFollow} className={`text-xs font-bold px-3 py-1 rounded-full border ${followed.has(selectedArtist)?'bg-white text-black border-white':'bg-white/10 border-white/10'}`}>{followed.has(selectedArtist)?'\u2713 '+t('following'):'+ '+t('follow')}</button><button onClick={()=> setSelectedArtist(null)} className="text-xs text-white/60 hover:text-white">Clear</button></div></div>
+                    <div className="flex items-center justify-between mb-2 gap-2"><span className="text-sm font-bold truncate">{selectedArtist} — {artistTracks.length} tracks</span><div className="flex gap-2 shrink-0"><button onClick={toggleFollow} className={`text-xs font-bold px-3 py-1 rounded-full border ${followed.has(selectedArtist)?'bg-white text-black border-white':'bg-white/10 border-white/10'}`}>{followed.has(selectedArtist)?'✓ '+t('following'):'+ '+t('follow')}</button><button onClick={()=> setSelectedArtist(null)} className="text-xs text-white/60 hover:text-white">Clear</button></div></div>
                     <div className="space-y-1 max-h-[320px] overflow-y-auto">
                       {artistTracks.map(tr=>(
                         <button key={tr.id} onClick={()=> playTrack(tr, artistTracks)} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/10 text-left">
@@ -2247,7 +2285,7 @@ export default function App(){
                     <button key={a.name} onClick={()=> handleArtistClick(a.name)} className="glass rounded-2xl p-3 text-center hover:bg-white/10 transition">
                       <img loading="lazy" decoding="async" src={artistImgFor(a.name) || a.img} alt="" onError={e=>{ try{ e.currentTarget.onerror=null; e.currentTarget.src=a.img }catch{} }} className="mx-auto w-16 h-16 sm:w-20 sm:h-20 rounded-full object-cover border-2 border-white/10"/>
                       <div className="text-xs font-semibold mt-2 leading-tight break-words">{a.name}</div>
-                      <div className="text-[11px] text-white/40">{a.plays} \u2022 {a.cat}</div>
+                      <div className="text-[11px] text-white/40">{a.plays} • {a.cat}</div>
                     </button>
                   ))}
                 </div>
@@ -2438,7 +2476,7 @@ export default function App(){
                   <div className="mt-3 p-4 rounded-2xl bg-white/5 border border-white/10">
                     <div className="text-sm font-bold">Activation code dalo</div>
                     <p className="text-xs text-white/50 mt-1">₹79 wala Pro code yahan dalo — Pro turant khul jayega.</p>
-                    <div className="mt-2 flex gap-2"><input value={proCode} onChange={e=> setProCode(e.target.value)} placeholder="MAXMUSIC79" className="flex-1 h-11 px-4 rounded-2xl bg-white/10 border border-white/10 text-sm outline-none uppercase"/><button onClick={activatePro} className="px-5 h-11 rounded-2xl bg-emerald-500 text-black text-sm font-bold">Activate</button></div>
+                    <div className="mt-2 flex flex-col gap-2"><input value={proCode} onChange={e=> setProCode(e.target.value)} placeholder="ENTER CODE" className="w-full h-11 px-4 rounded-2xl bg-white/10 border border-white/10 text-sm outline-none uppercase"/><button onClick={activatePro} className="w-full h-11 rounded-2xl bg-emerald-500 text-black text-sm font-bold">Activate Pro</button></div>
                     {proErr && <div className="text-xs text-red-300 mt-2">{proErr}</div>}
                   </div>
                 )}
@@ -2475,8 +2513,9 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
   // Hidden diagnostics: 5 rapid taps on the avatar (or the version footer below)
   // toggles the debug card + backend banner. Default OFF so shared installs look clean.
   const [showDiag, setShowDiag] = useState(false)
+  const [showDelAcc, setShowDelAcc] = useState(false)
   const diagTap = useRef({ n:0, t:0 })
-  const pokeDiag = ()=>{ const d = diagTap.current, now = Date.now(); d.n = (now - d.t < 2000) ? d.n+1 : 1; d.t = now; if(d.n >= 5){ d.n = 0; setShowDiag(v=>!v); showToast(showDiag ? 'Diagnostics hidden' : 'Diagnostics ON \u2014 band karne ke liye dobara 5 tap') } }
+  const pokeDiag = ()=>{ const d = diagTap.current, now = Date.now(); d.n = (now - d.t < 2000) ? d.n+1 : 1; d.t = now; if(d.n >= 5){ d.n = 0; setShowDiag(v=>!v); showToast(showDiag ? 'Diagnostics hidden' : 'Diagnostics ON — band karne ke liye dobara 5 tap') } }
   const minsStr = (()=>{ try{ const m = Math.floor(((X.stats&&X.stats.secs)||0)/60); return m.toLocaleString('en-IN') }catch{ return '0' } })()
   const topLang = (()=>{ try{ const L=(X.stats&&X.stats.langs)||{}; const ks=Object.keys(L); if(!ks.length) return '—'; ks.sort((a,b)=>L[b]-L[a]); const m={hindi:'Hindi',punjabi:'Punjabi',english:'English',tamil:'Tamil',telugu:'Telugu',bengali:'Bengali',marathi:'Marathi',gujarati:'Gujarati',malayalam:'Malayalam',kannada:'Kannada',urdu:'Urdu'}; return m[ks[0]]||ks[0] }catch{ return '—' } })()
   const isEditing = !!editUser
@@ -2506,15 +2545,7 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
                 </div>
                 {!X.isPro && <div className="mt-4 max-w-md"><button onClick={X.onSubscribe} className="w-full py-2.5 rounded-full bg-gradient-to-r from-[#D5AA55] to-[#C35445] text-black text-sm font-bold">★ {t('goPro')} — unlimited downloads + HD + Equalizer</button></div>}
                 {showDiag && <NpDiagCard toast={showToast} engine={npEngine}/>}
-                {authUser ? (
-                  <div className="mt-4 flex items-center gap-3 p-3 rounded-2xl bg-white/5 border border-white/10 max-w-md">
-                    <span className="w-8 h-8 shrink-0 rounded-full bg-[#D5AA55] text-black grid place-items-center text-sm font-bold">☁</span>
-                    <div className="min-w-0 flex-1"><div className="text-sm font-semibold truncate">{authUser.email}</div><div className="text-xs text-white/50">Cloud sync ON — liked + playlists cloud me save ho rahe hain</div></div>
-                    <button onClick={onSignOut} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10 hover:bg-white/15 shrink-0">Sign out</button>
-                  </div>
-                ) : (
-                  <div className="mt-4 max-w-md"><button onClick={onSignIn} className="w-full py-2.5 rounded-full bg-[#D5AA55] text-black text-sm font-bold flex items-center justify-center gap-2">☁ Sign in / Create account — <span className="font-medium opacity-80">liked songs + playlists har device par</span></button></div>
-                )}
+                {/* itrace-26: top cloud-sync card removed — Settings > Cloud sync is the single place */}
               </>
             ) : (
               <div className="space-y-3">
@@ -2579,14 +2610,15 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('offlinemode')}</div><div className="text-xs text-white/50">{downloaded.length>0? `${downloaded.length} songs saved offline`:'No downloads yet'}</div></div><span className="text-xs text-emerald-400">●</span></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('cloudsync')}</div><div className="text-xs text-white/50">{authUser? `ON — ${authUser.email}`:'Off — sign in to sync'}</div></div>{authUser? <button onClick={onSignOut} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{t('signout')}</button> : <button onClick={onSignIn} className="text-xs font-bold px-3 py-1.5 rounded-full bg-[#D5AA55] text-black">{t('signin')}</button>}</div>
           <div className="flex gap-2 pt-2"><button onClick={X.onClearHistory} className="flex-1 py-2 rounded-full bg-white/10 border border-white/10 text-xs font-bold">{t('clearhist')}</button><button onClick={X.onClearSearches} className="flex-1 py-2 rounded-full bg-white/10 border border-white/10 text-xs font-bold">{t('clearsearch')}</button></div>
-          {authUser && <button onClick={onDeleteAccount} className="w-full mt-3 py-3 rounded-full bg-[#C35445]/15 text-[#C35445] border border-[#C35445]/30 text-sm font-bold">Delete cloud account (likes + playlists from server)</button>}
+          {authUser && <button onClick={()=> setShowDelAcc(true)} className="w-full mt-3 py-3 rounded-full bg-[#C35445]/15 text-[#C35445] border border-[#C35445]/30 text-sm font-bold">Delete Account</button>}
+          {authUser && showDelAcc && (<div className="fixed inset-0 z-[80] grid place-items-center p-4"><div onClick={()=> setShowDelAcc(false)} className="absolute inset-0 bg-black/70 backdrop-blur-sm"/><div className="relative w-full max-w-sm glass-strong rounded-[24px] p-6 text-center"><div className="text-4xl mb-2">⚠️</div><h3 className="font-bold text-lg">Delete your account?</h3><p className="text-sm text-white/60 mt-1">Likes + playlists cloud se delete ho jayenge. Ye undo nahi hoga.</p><div className="flex gap-2 mt-5"><button onClick={()=> setShowDelAcc(false)} className="flex-1 py-2.5 rounded-full bg-white/10 border border-white/10 font-bold">No, keep it</button><button onClick={()=>{ setShowDelAcc(false); onDeleteAccount() }} className="flex-1 py-2.5 rounded-full bg-[#C35445] text-white font-bold">Yes, delete</button></div></div></div>)}
           <button onClick={()=>{ localStorage.clear(); indexedDB.deleteDatabase('sur_sangam_db'); showToast("Data cleared — refresh"); setTimeout(()=> location.reload(),800)}} className="w-full mt-3 py-3 rounded-full bg-[#C35445] text-white text-sm font-bold">{t('clearall')}</button>
         </div>
       )}
       {tab==="Playlists" && (
         <div className="glass rounded-[24px] p-5">
-          <div className="flex items-center justify-between mb-3"><h3 className="font-bold">Playlists \u2022 {playlists.length}</h3><button onClick={()=> X.onCreatePlaylist && X.onCreatePlaylist()} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white text-black">+ New</button></div>
-          {playlists.length===0 ? <div className="text-sm text-white/50 text-center py-6">No playlists yet \u2014 create your first!</div> : (
+          <div className="flex items-center justify-between mb-3"><h3 className="font-bold">Playlists • {playlists.length}</h3><button onClick={()=> X.onCreatePlaylist && X.onCreatePlaylist()} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white text-black">+ New</button></div>
+          {playlists.length===0 ? <div className="text-sm text-white/50 text-center py-6">No playlists yet — create your first!</div> : (
             <div className="space-y-2">
               {playlists.map(pl=> (
                 <div key={pl.id} className="flex gap-3 items-center p-2 rounded-xl hover:bg-white/5">
@@ -2601,8 +2633,8 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
       {tab==="Listening" && (
         <div className="space-y-4">
           <div className="glass rounded-[24px] p-5">
-            <div className="flex items-center justify-between mb-3"><h3 className="font-bold">Recently played \u2022 {(X.recently||[]).length}</h3>{(X.recently||[]).length>0 && <button onClick={()=> X.onPlayAllRecent && X.onPlayAllRecent()} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white text-black">Play all</button>}</div>
-            {(X.recently||[]).length===0 ? <div className="text-sm text-white/50 text-center py-6">Play any song \u2014 it will appear here</div> : (
+            <div className="flex items-center justify-between mb-3"><h3 className="font-bold">Recently played • {(X.recently||[]).length}</h3>{(X.recently||[]).length>0 && <button onClick={()=> X.onPlayAllRecent && X.onPlayAllRecent()} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white text-black">Play all</button>}</div>
+            {(X.recently||[]).length===0 ? <div className="text-sm text-white/50 text-center py-6">Play any song — it will appear here</div> : (
               <div className="space-y-1 max-h-[360px] overflow-y-auto">
                 {(X.recently||[]).slice(0,20).map((t,i)=> (
                   <button key={String(t.id)+i} onClick={()=> X.onPlayTrack && X.onPlayTrack(t, X.recently)} className="w-full flex gap-3 items-center p-2 rounded-xl hover:bg-white/5 text-left">
@@ -2616,9 +2648,9 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
             )}
           </div>
           <div className="glass rounded-[24px] p-5">
-            <h3 className="font-bold mb-3">Artists you follow \u2022 {(X.followedList||[]).length}</h3>
-            {(X.followedList||[]).length===0 ? <div className="text-sm text-white/50">No followed artists yet \u2014 tap + Follow on any artist</div> : (
-              <div className="flex flex-wrap gap-2">{(X.followedList||[]).map(n=> <span key={n} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">\u2713 {n}</span>)}</div>
+            <h3 className="font-bold mb-3">Artists you follow • {(X.followedList||[]).length}</h3>
+            {(X.followedList||[]).length===0 ? <div className="text-sm text-white/50">No followed artists yet — tap + Follow on any artist</div> : (
+              <div className="flex flex-wrap gap-2">{(X.followedList||[]).map(n=> <span key={n} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">✓ {n}</span>)}</div>
             )}
           </div>
         </div>

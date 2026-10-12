@@ -668,6 +668,25 @@ app.get('/api/auth/me', auth, async (req,res)=>{
   }catch(e){ res.status(400).json({ error: 'invalid token' }) }
 })
 
+// ---- Pro subscription (codes live on SERVER, never in the app) ----
+const PRO_CODES_SRV = String(process.env.PRO_CODES||'MAXMUSIC79').split(',').map(s=>s.trim().toUpperCase()).filter(Boolean)
+app.post('/api/auth/redeem', auth, async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error: 'DB not ready' })
+  const c = String((req.body&&req.body.code)||'').trim().toUpperCase()
+  if(!c || !PRO_CODES_SRV.includes(c)) return res.status(400).json({ error: 'Galat code' })
+  const u = await User.findByIdAndUpdate(req.user.id, { plan:'Pro' }, { new:true }).lean()
+  if(!u) return res.status(404).json({ error: 'no user' })
+  res.json({ user: { id: String(u._id), name: u.name, email: u.email, avatar: u.avatar, plan: u.plan||'Pro', bio: u.bio||'' } })
+})
+app.post('/api/auth/plan', auth, async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error: 'DB not ready' })
+  const p = String((req.body&&req.body.plan)||'')
+  if(!['Pro','Free'].includes(p)) return res.status(400).json({ error: 'plan must be Pro/Free' })
+  const u = await User.findByIdAndUpdate(req.user.id, { plan:p }, { new:true }).lean()
+  if(!u) return res.status(404).json({ error: 'no user' })
+  res.json({ user: { id: String(u._id), name: u.name, email: u.email, avatar: u.avatar, plan: u.plan||'Free', bio: u.bio||'' } })
+})
+
 app.delete('/api/auth/me', auth, async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error: 'DB not ready' })
   await User.findByIdAndDelete(req.user.id)

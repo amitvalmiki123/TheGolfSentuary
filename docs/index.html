@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MaxMusic — Download</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #060306; color: #fff; min-height: 100vh; }
+  .bg { position: fixed; inset: 0; background: radial-gradient(circle at 50% -10%, #6A418E55, transparent 60%), radial-gradient(circle at 90% 110%, #C3544544, transparent 55%); pointer-events: none; }
+  .wrap { position: relative; max-width: 520px; margin: 0 auto; padding: 40px 20px 60px; }
+  .logo { font-size: 56px; text-align: center; }
+  h1 { text-align: center; font-size: 32px; margin-top: 8px; }
+  .tag { text-align: center; color: rgba(255,255,255,.6); margin-top: 6px; font-size: 14px; }
+  .ver { display: inline-block; margin-top: 12px; padding: 5px 14px; border-radius: 999px; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12); font-size: 12px; font-weight: 700; color: #D5AA55; }
+  .center { text-align: center; }
+  .dl { display: block; margin: 26px 0 10px; padding: 16px; border-radius: 999px; background: #fff; color: #000; font-weight: 800; font-size: 17px; text-align: center; text-decoration: none; }
+  .dl small { display: block; font-weight: 500; font-size: 12px; opacity: .6; margin-top: 2px; }
+  .card { margin-top: 18px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.09); border-radius: 20px; padding: 18px; }
+  .card h2 { font-size: 16px; margin-bottom: 10px; }
+  .card ol { margin-left: 18px; font-size: 14px; line-height: 1.9; color: rgba(255,255,255,.8); }
+  .card ul { list-style: none; font-size: 13px; line-height: 2; color: rgba(255,255,255,.75); }
+  .foot { text-align: center; margin-top: 26px; font-size: 12px; color: rgba(255,255,255,.35); }
+  .foot a { color: rgba(255,255,255,.5); }
+</style>
+</head>
+<body>
+<div class="bg"></div>
+<div class="wrap">
+  <div class="logo">🎵</div>
+  <h1>MaxMusic</h1>
+  <p class="tag">Hindi • Punjabi • Bollywood — full songs, free</p>
+  <div class="center"><span class="ver" id="ver">v… • build …</span></div>
+  <a class="dl" id="dl" href="#">Download APK ↓<small id="dlsub">latest version</small></a>
+  <div class="card">
+    <h2>📲 Install / Update kaise karein</h2>
+    <ol>
+      <li><b>Download APK</b> dabao — file download hogi</li>
+      <li>Download poora ho to file kholo → <b>Install</b></li>
+      <li>Pehli baar "Unknown sources" allow karna pade to kar do (safe hai ✓)</li>
+      <li>Update aane pe app khud popup dikhayegi — bas app kholo 🎉</li>
+    </ol>
+  </div>
+  <div class="card">
+    <h2>✨ Is version me naya</h2>
+    <ul id="notes"><li>Loading…</li></ul>
+  </div>
+  <p class="foot">© 2026 MaxMusic • <a id="rel" href="#">All releases</a></p>
+</div>
+<script>
+fetch('version.json?t=' + new Date().toISOString().slice(0,10), { cache: 'no-store' })
+  .then(r => r.json())
+  .then(d => {
+    document.getElementById('ver').textContent = 'v' + (d.version||'?') + ' • build ' + (d.build||'?');
+    var a = document.getElementById('dl');
+    a.href = d.apk || '#';
+    document.getElementById('dlsub').textContent = 'build ' + (d.build||'?') + (d.date ? ' • ' + d.date : '');
+    document.getElementById('rel').href = d.page || '#';
+    var n = document.getElementById('notes');
+    if (d.notes && d.notes.length) n.innerHTML = d.notes.slice(0,5).map(function(x){ return '<li>• ' + String(x).replace(/</g,'&lt;') + '</li>'; }).join('');
+    else n.innerHTML = '<li>• Bug fixes + improvements</li>';
+  })
+  .catch(() => { document.getElementById('notes').innerHTML = '<li>• Version info load nahi hui — phir try karo</li>'; });
+</script>
+</body>
+</html>

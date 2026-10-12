@@ -1,0 +1,11 @@
+{
+  "app": "MaxMusic",
+  "version": "1.0.0",
+  "build": 106,
+  "apk": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/download/latest/MaxMusic.apk",
+  "page": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/latest",
+  "notes": [
+    "Auto-update system agle build me"
+  ],
+  "date": "2026-10-12"
+}

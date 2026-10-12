@@ -6,18 +6,24 @@ on:
     paths-ignore: [ "**.md" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 5
       - uses: actions/setup-node@v4
         with:
           node-version: 20
       - name: Install deps
         run: npm install --legacy-peer-deps
       - name: Build web app (APK points to Sur Sangam cloud API)
-        run: VITE_API_URL=https://sur-sangam-api.onrender.com npx vite build
+        run: VITE_API_URL=https://sur-sangam-api.onrender.com VITE_APP_BUILD_NO=${{ github.run_number }} npx vite build
 
       - uses: actions/setup-java@v4
         with:
@@ -31,7 +37,7 @@ jobs:
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --list_installed 2>/dev/null | grep -E "platforms;android-3[0-9]|build-tools" | head -6 || true
 
       - name: Install Capacitor
-        run: npm i --legacy-peer-deps @capacitor/cli@6 @capacitor/core@6 @capacitor/android@6 @capacitor/app@6 @capacitor/splash-screen@6 @capacitor/status-bar@6
+        run: npm i --legacy-peer-deps @capacitor/cli@6 @capacitor/core@6 @capacitor/android@6 @capacitor/app@6 @capacitor/splash-screen@6 @capacitor/status-bar@6 @capacitor/browser@6
 
       - name: Init + add Android
         run: |
@@ -51,12 +57,28 @@ jobs:
           cp brand/android-native/res/drawable/ic_stat_music.xml android/app/src/main/res/drawable/
           python3 brand/android-native/patch_android.py
 
-      - name: Build Debug APK
+      - name: Restore keystore + patch signing (stable signature for updates)
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_B64" ]; then
+            echo "::error::Signing secrets missing — repo Settings → Secrets → Actions me 4 secrets add karo (keystore backup zip me SET_SECRETS_FIRST.md dekho), phir Re-run this job. Bina keystore ke har build ki signature alag hogi = update install nahi hoga."
+            exit 1
+          fi
+          echo "$ANDROID_KEYSTORE_B64" | base64 -d > android/app/maxmusic.p12
+          ls -la android/app/maxmusic.p12
+          APP_VERSION_CODE=${{ github.run_number }} APP_VERSION_NAME=$(node -p "require('./package.json').version") python3 brand/android-native/patch_signing.py
+
+      - name: Build Release APK
         working-directory: android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
           set +e
-          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/gradle.log
+          ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee /tmp/gradle.log
           status=${PIPESTATUS[0]}
           set -e
           if [ "$status" != "0" ]; then
@@ -75,7 +97,7 @@ jobs:
           retention-days: 3
 
       - name: Rename APK
-        run: cp android/app/build/outputs/apk/debug/app-debug.apk MaxMusic.apk
+        run: cp android/app/build/outputs/apk/release/app-release.apk MaxMusic.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
@@ -83,3 +105,53 @@ jobs:
           name: max-music-apk
           path: MaxMusic.apk
           retention-days: 30
+
+      - name: Publish GitHub Release (public APK + rolling latest)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          TAG="v${VER}-b${{ github.run_number }}"
+          NOTES=$(git log -3 --pretty=format:'- %s' | head -c 1500)
+          gh release create "$TAG" MaxMusic.apk --title "MaxMusic $TAG" --notes "$NOTES"
+          git tag -f latest
+          git push -f origin latest
+          gh release delete latest -y || true
+          gh release create latest MaxMusic.apk --title "MaxMusic (latest)" --notes "$NOTES" --target "${{ github.sha }}"
+
+      - name: Bump docs/version.json (in-app updater feed)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          RUN=${{ github.run_number }}
+          NOTES_JSON=$(git log -3 --pretty=format:'%s' | python3 -c "import sys,json; print(json.dumps([l.strip() for l in sys.stdin if l.strip()][:3]))")
+          write_feed() {
+            python3 - "$VER" "$RUN" "$NOTES_JSON" <<'PYEOF'
+          import sys, json, datetime
+          ver, run, notes = sys.argv[1], int(sys.argv[2]), json.loads(sys.argv[3])
+          repo = "${{ github.repository }}"
+          data = {
+            "app": "MaxMusic",
+            "version": ver,
+            "build": run,
+            "apk": f"https://github.com/{repo}/releases/download/latest/MaxMusic.apk",
+            "page": f"https://github.com/{repo}/releases/latest",
+            "notes": notes,
+            "date": datetime.date.today().isoformat()
+          }
+          open('docs/version.json','w').write(json.dumps(data, indent=2) + "\n")
+          print(open('docs/version.json').read())
+          PYEOF
+          }
+          git config user.name "maxmusic-bot"
+          git config user.email "maxmusic-bot@users.noreply.github.com"
+          mkdir -p docs
+          for i in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            write_feed
+            git add docs/version.json
+            git commit -m "chore: bump version.json to build $RUN [skip ci]" || { echo "version.json unchanged"; break; }
+            git push origin HEAD:main && break || { echo "push retry $i"; sleep 5; }
+          done

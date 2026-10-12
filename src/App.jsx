@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
 import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, artistSongs, artistSongsPaginated, resolvePipedAudio, resolveDirectAudio, searchSaavn, searchSuggestions, getLastSearchNextpage, fetchLyrics, mergeDedup, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists, apiRedeemPro, apiSetPlan, warmBackend } from './lib/api.js'
+import { checkAppUpdate, openExternal, APP_BUILD_NO } from './lib/updater.js'
 import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
 import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npAskBattery, npOpenNotifSettings, npPing, npLastCrash, npSetDisabled, npDisabled, npBridgeMode, hasNativeBridge, wvGuess } from './lib/nowplaying.js'
 
@@ -116,7 +117,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-26'
+const APP_BUILD = 'itrace-27'
 const APP_VERSION = '2.5'
 const FREE_DL_MAX = 5
 const PRO_CODES = ['MAXMUSIC79']
@@ -298,6 +299,9 @@ export default function App(){
   const [autoplay, setAutoplay] = useState(()=>{ try{ const v=localStorage.getItem('sur_autoplay'); return v===null?true:v==='1' }catch{ return true } })
   const [eq, setEq] = useState(()=>{ try{ const v=JSON.parse(localStorage.getItem('sur_eq')||'null'); if(v&&Array.isArray(v.gains)&&v.gains.length===5) return {on:false,preset:v.preset||'Flat',gains:v.gains} /* itrace-25: boot flat */ }catch{}; return {on:false,preset:'Flat',gains:[0,0,0,0,0]} })
   const [showEQ, setShowEQ] = useState(false)
+  const [updateInfo, setUpdateInfo] = useState(null)
+  const [showUpdate, setShowUpdate] = useState(false)
+  const [updChecking, setUpdChecking] = useState(false)
   const [stats, setStats] = useState(()=>{ try{ const v=JSON.parse(localStorage.getItem('sur_stats')||'null'); if(v&&typeof v==='object') return {secs:v.secs||0,plays:v.plays||0,langs:v.langs||{}} }catch{}; return {secs:0,plays:0,langs:{}} })
   const [followed, setFollowed] = useState(()=>{ try{ return new Set(JSON.parse(localStorage.getItem('sur_followed')||'[]')) }catch{ return new Set() } })
   const [proStep, setProStep] = useState('plans')
@@ -369,6 +373,30 @@ export default function App(){
       }
     }catch{}
   },[authUser])
+  const runUpdateCheck = async (manual)=>{
+    if(updChecking) return
+    setUpdChecking(true)
+    try{
+      const r = await checkAppUpdate()
+      try{ localStorage.setItem('sur_update_check', new Date().toISOString().slice(0,10)) }catch{}
+      if(r && r.hasUpdate){ setUpdateInfo(r); setShowUpdate(true); if(manual) showToast('Naya update mil gaya 🎉') }
+      else if(manual) showToast(r? 'App updated hai ✓' : 'Update check fail — net dekho')
+    }catch{ if(manual) showToast('Update check fail — net dekho') }
+    setUpdChecking(false)
+  }
+  useEffect(()=>{ // itrace-27: auto update check, roz ek baar
+    let alive = true
+    const id = setTimeout(()=>{
+      if(!alive) return
+      try{
+        if(typeof navigator!=='undefined' && !navigator.onLine) return
+        const today = new Date().toISOString().slice(0,10)
+        if(localStorage.getItem('sur_update_check')===today) return
+      }catch{}
+      runUpdateCheck(false)
+    }, 4000)
+    return ()=>{ alive=false; clearTimeout(id) }
+  },[])
   // pull liked + playlists when session active
   useEffect(()=>{ if(!authUser) return; (async()=>{
     try{
@@ -1798,7 +1826,7 @@ export default function App(){
 
           <main className="flex-1 min-w-0 max-w-full overflow-x-clip px-4 lg:px-6 py-6 pb-28 lg:pb-28 space-y-7">
             {nav==='profile' ? (
-              <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : ("yt-iframe (direct resolve pending/failed)" + (directErr ? " · " + directErr : ""))) : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} x={{ t, lang, setLang, quality, qCycle, langs, toggleLang, sleepMin, cycleSleep, eqOn:eq.on, eqPreset:eq.preset, onOpenEQ:()=>setShowEQ(true), isPro, stats, followedCount:followed.size, onSubscribe:()=>setShowSubscribe(true), onClearHistory, onClearSearches, onShareProfile, autoplay, setAutoplay, onOpenPlaylist:(id)=> setSelectedPlaylist(id), onPlayPlaylist:(pl)=> playPlaylistNow(pl), onCreatePlaylist:()=> setShowCreatePl(true), onPlayTrack:playTrack, recently:recentlyPlayed, followedList:[...followed], onPlayAllRecent:()=>{ if(recentlyPlayed.length){ setQueue(recentlyPlayed); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing recent • ${recentlyPlayed.length}`) } } }} />
+              <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : ("yt-iframe (direct resolve pending/failed)" + (directErr ? " · " + directErr : ""))) : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} x={{ t, lang, setLang, quality, qCycle, langs, toggleLang, sleepMin, cycleSleep, eqOn:eq.on, eqPreset:eq.preset, onOpenEQ:()=>setShowEQ(true), isPro, stats, followedCount:followed.size, onSubscribe:()=>setShowSubscribe(true), onClearHistory, onClearSearches, onShareProfile, autoplay, setAutoplay, onOpenPlaylist:(id)=> setSelectedPlaylist(id), onPlayPlaylist:(pl)=> playPlaylistNow(pl), onCreatePlaylist:()=> setShowCreatePl(true), onPlayTrack:playTrack, recently:recentlyPlayed, followedList:[...followed], updCur:{version:APP_VERSION, build:APP_BUILD_NO}, updInfo:updateInfo, updChecking, onCheckUpdate:()=> runUpdateCheck(true), onPlayAllRecent:()=>{ if(recentlyPlayed.length){ setQueue(recentlyPlayed); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing recent • ${recentlyPlayed.length}`) } } }} />
             ) : nav==='search' ? (
               <>
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -2292,6 +2320,21 @@ export default function App(){
               </div>
             </div>
           )}
+          {/* itrace-27: app update popup */}
+          {showUpdate && updateInfo && (
+            <div className="fixed inset-0 z-[80] grid place-items-center p-4">
+              <div onClick={()=> setShowUpdate(false)} className="absolute inset-0 bg-black/70 backdrop-blur-sm"/>
+              <div className="relative w-full max-w-sm glass-strong rounded-[24px] p-6 text-center">
+                <div className="text-4xl mb-2">🎉</div>
+                <h3 className="font-bold text-lg">Naya update aaya hai!</h3>
+                <p className="text-sm text-white/60 mt-1">v{updateInfo.version} • build {updateInfo.build} (tumhara: build {APP_BUILD_NO||'—'})</p>
+                {(updateInfo.notes||[]).length>0 && <ul className="text-left text-xs text-white/70 mt-3 space-y-1 bg-white/5 rounded-2xl p-3">{updateInfo.notes.slice(0,4).map((n,i)=> <li key={i}>• {n}</li>)}</ul>}
+                <button onClick={()=> openExternal(updateInfo.apk)} className="mt-4 w-full py-3 rounded-full bg-emerald-500 text-black text-sm font-bold">Download update ↓</button>
+                <button onClick={()=> setShowUpdate(false)} className="mt-2 w-full py-2.5 rounded-full bg-white/10 border border-white/10 text-sm font-bold">Baad me</button>
+                <p className="text-[11px] text-white/40 mt-3">Download ke baad file kholo → Install dabao. Data safe rahega.</p>
+              </div>
+            </div>
+          )}
           {/* Full player */}
           {current && <div className={`fixed inset-0 z-50 w-full max-w-[100vw] overflow-y-auto overflow-x-hidden bg-[#060306] transition-transform duration-500 ${showFull? 'translate-y-0':'translate-y-full'}`}
             onTouchStart={e=>{ touchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() } }}
@@ -2606,6 +2649,7 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
           <div className="py-3 border-b border-white/5"><div className="text-sm font-medium">{t('muslang')}</div><div className="text-xs text-white/50 mb-2">Shapes your Home mix</div><div className="flex gap-2">{['hindi','punjabi','english'].map(L=> <button key={L} onClick={()=> X.toggleLang(L)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${(X.langs||[]).includes(L)?'bg-white text-black border-white':'bg-white/10 border-white/10 text-white/60'}`}>{L[0].toUpperCase()+L.slice(1)}</button>)}</div></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('applang')}</div><div className="text-xs text-white/50">Interface language</div></div><div className="flex gap-2">{[['en','English'],['hi','हिंदी']].map(([v,l])=> <button key={v} onClick={()=> X.setLang(v)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${X.lang===v?'bg-white text-black border-white':'bg-white/10 border-white/10 text-white/60'}`}>{l}</button>)}</div></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('sleep')}</div><div className="text-xs text-white/50">{X.sleepMin?`Stops after ${X.sleepMin} min`:'Music keeps playing'}</div></div><button onClick={X.cycleSleep} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{X.sleepMin?X.sleepMin+'m':t('off')}</button></div>
+          <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">App updates</div><div className="text-xs text-white/50">v{(X.updCur&&X.updCur.version)||'?'} • build {(X.updCur&&X.updCur.build)||'—'}{X.updInfo&&X.updInfo.hasUpdate?' • NAYA UPDATE! 🎉':''}</div></div><button onClick={()=> X.onCheckUpdate && X.onCheckUpdate()} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{X.updChecking?'…':'Check'}</button></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('onlinemusic')}</div><div className="text-xs text-white/50">JioSaavn + YouTube — full length</div></div><span className="text-xs text-emerald-400">●</span></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('offlinemode')}</div><div className="text-xs text-white/50">{downloaded.length>0? `${downloaded.length} songs saved offline`:'No downloads yet'}</div></div><span className="text-xs text-emerald-400">●</span></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('cloudsync')}</div><div className="text-xs text-white/50">{authUser? `ON — ${authUser.email}`:'Off — sign in to sync'}</div></div>{authUser? <button onClick={onSignOut} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{t('signout')}</button> : <button onClick={onSignIn} className="text-xs font-bold px-3 py-1.5 rounded-full bg-[#D5AA55] text-black">{t('signin')}</button>}</div>

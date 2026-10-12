@@ -117,7 +117,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-27'
+const APP_BUILD = 'itrace-28'
 const APP_VERSION = '2.5'
 const FREE_DL_MAX = 5
 const PRO_CODES = ['MAXMUSIC79']
@@ -279,6 +279,7 @@ export default function App(){
   const audioRef = useRef(null)
   const fileInputRef = useRef(null)
   const ytPlayerRef = useRef(null)
+  const ytHostRef = useRef(null)
   const ytReadyRef = useRef(false)
   const [ytReady, setYtReady] = useState(false)
   const ytProgressRef = useRef(null)
@@ -810,36 +811,64 @@ export default function App(){
     return ()=> clearInterval(id)
   },[isPlaying, current && current.id, current && current.videoId, directFor, isNativeApp()])
 
-  // YouTube IFrame API — for YouTube • Full tracks (YouTube Music-like)
+  // YouTube IFrame API — the SDK owns only children of the stable React host.
+  // YT.Player replaces its target with an iframe. Passing a React-owned target
+  // detaches React's insertion anchor, so a CORS/EQ <audio> reset crashes the app.
   useEffect(()=>{
-    if(window.YT && window.YT.Player && ytPlayerRef.current) return
-    const existing = document.querySelector('script[src="https://www.youtube.com/iframe_api"]')
-    if(!existing){
-      const tag = document.createElement('script')
-      tag.src = "https://www.youtube.com/iframe_api"
-      document.body.appendChild(tag)
-    }
-    window.onYouTubeIframeAPIReady = ()=>{
-      if(ytPlayerRef.current) return
-      ytPlayerRef.current = new window.YT.Player('yt-player', {
+    let alive = true
+    let player = null
+    const host = ytHostRef.current
+    const previousReady = window.onYouTubeIframeAPIReady
+    const createPlayer = ()=>{
+      if(!alive || !host || player || !window.YT?.Player) return
+      const target = document.createElement('div')
+      target.id = 'yt-player'
+      host.replaceChildren(target) // no React-rendered children live inside host
+      player = new window.YT.Player(target, {
         height: '1',
         width: '1',
         playerVars: { playsinline: 1, controls: 0, modestbranding: 1, rel: 0, origin: window.location.origin, enablejsapi: 1 },
         events: {
-          onReady: ()=>{ ytReadyRef.current=true; setYtReady(true); console.log('YT ready') },
+          onReady: ()=>{ if(!alive) return; ytReadyRef.current=true; setYtReady(true); console.log('YT ready') },
           onStateChange: (e)=>{
+            if(!alive) return
             const YTState = window.YT.PlayerState
             if(e.data === YTState.ENDED){ handleNext() }
             if(e.data === YTState.PLAYING){ setIsPlaying(true); setAudioError(null) }
             // PAUSED handled via toggle
           },
-          onError: (e)=>{ console.error('YT error', e.data); if(!rescueTrack(current)){ setAudioError("YouTube playback error"); setIsPlaying(false); showToast("YouTube error — try koi aur track") } }
+          onError: (e)=>{ if(!alive) return; console.error('YT error', e.data); if(!rescueTrack(current)){ setAudioError("YouTube playback error"); setIsPlaying(false); showToast("YouTube error — try koi aur track") } }
         }
       })
+      ytPlayerRef.current = player
     }
-    // if already loaded
-    if(window.YT && window.YT.Player){
-      window.onYouTubeIframeAPIReady()
+    const onAPIReady = ()=>{
+      if(!alive) return
+      try{ if(typeof previousReady==='function') previousReady.call(window) }catch{}
+      createPlayer()
+    }
+    if(window.YT?.Player){
+      createPlayer()
+    }else{
+      window.onYouTubeIframeAPIReady = onAPIReady
+      const existing = document.querySelector('script[src="https://www.youtube.com/iframe_api"]')
+      if(!existing){
+        const tag = document.createElement('script')
+        tag.src = 'https://www.youtube.com/iframe_api'
+        tag.async = true
+        document.body.appendChild(tag)
+      }
+    }
+    return ()=>{
+      alive = false // cancel SDK readiness/events queued after unmount/StrictMode
+      if(window.onYouTubeIframeAPIReady===onAPIReady){
+        if(previousReady===undefined) delete window.onYouTubeIframeAPIReady
+        else window.onYouTubeIframeAPIReady = previousReady
+      }
+      try{ player?.destroy?.() }catch{}
+      host?.replaceChildren()
+      if(ytPlayerRef.current===player) ytPlayerRef.current = null
+      ytReadyRef.current = false
     }
   },[])
 
@@ -1690,7 +1719,7 @@ export default function App(){
       </div>
 
       <audio key={audioKey} ref={audioRef} crossOrigin={audioNoCors? undefined : "anonymous"} src={current?.videoId ? (directFor || undefined) : current?.audio} preload="metadata" playsInline onError={handleAudioErr} />
-      <div id="yt-player" style={{position:'absolute', left:'-9999px', width:'1px', height:'1px', overflow:'hidden', opacity:0, pointerEvents:'none'}} />
+      <div id="yt-player-host" ref={ytHostRef} style={{position:'absolute', left:'-9999px', width:'1px', height:'1px', overflow:'hidden', opacity:0, pointerEvents:'none'}} />
       {audioError && <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 max-w-[92vw] text-center bg-[#C35445] text-white px-4 py-2 rounded-2xl text-xs font-bold shadow-lg break-words">{audioError}</div>}
 
       <input ref={fileInputRef} type="file" accept="audio/*" multiple onChange={handleLocalFiles} className="hidden"/>

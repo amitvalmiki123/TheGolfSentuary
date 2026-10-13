@@ -80,6 +80,14 @@ test('recording: Saavn replacement tolerates provider artist spelling and video-
   assert.equal(findSaavnMatch(pehliYt, [pehliSv]), pehliSv)
 })
 
+test('recording: Pal male version matches Saavn, female version stays distinct', () => {
+  const palYt = { id:'piped-pal', videoId:'pal-video', title:'Pal', artist:'Javed - Mohsin', durationSec:246, audio:null, source:'YouTube • Full' }
+  const palSv = { id:'saavn-pal-x', providerId:'saavn-pal', title:'Pal (From "Jalebi")', artist:'Kunaal Vermaa, Prashant Ingole, Javed-Mohsin, Arijit Singh, Shreya Ghoshal - Jalebi', album:'Jalebi', durationSec:246, audio:'https://aac.saavncdn.com/pal_320.mp4', source:'Saavn • Full' }
+  const palFemaleSv = { id:'saavn-pal-female-x', providerId:'saavn-pal-female', title:'Pal (Female)', artist:'Javed-Mohsin, Shreya Ghoshal - Jalebi', album:'Jalebi', durationSec:248, audio:'https://aac.saavncdn.com/pal-female_320.mp4', source:'Saavn • Full' }
+  assert.equal(findSaavnMatch(palYt, [palFemaleSv, palSv]), palSv)
+  assert.equal(findSaavnMatch(palYt, [palFemaleSv]), null)
+})
+
 test('recording: Saavn replacement still rejects different singers and remix versions', () => {
   const samjhawanYt = { id:'piped-samjhawan', videoId:'samjhawan-video', title:'Samjhawan', artist:'Jawad Ahmed', durationSec:260, audio:null, source:'YouTube • Full' }
   const filmSamjhawanSv = { id:'saavn-samjhawan-x', providerId:'saavn-samjhawan', title:'Samjhawan', artist:'Arijit Singh, Shreya Ghoshal', album:'Humpty Sharma Ki Dulhania', durationSec:269, audio:'https://aac.saavncdn.com/samjhawan_320.mp4', source:'Saavn • Full' }

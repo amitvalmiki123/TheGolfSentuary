@@ -23,8 +23,8 @@ const VERSION_RULES = [
   ['sped-up', /\bsped[-\s]?up\b/i],
   ['mashup', /\bmashup\b/i],
   ['8d', /\b8d\b/i],
-  ['female-version', /\bfemale\s+(?:version|vocal)\b/i],
-  ['male-version', /\bmale\s+(?:version|vocal)\b/i],
+  ['female-version', /\bfemale\b/i],
+  ['male-version', /\bmale\b/i],
   ['sad-version', /\bsad\s+version\b/i],
 ]
 

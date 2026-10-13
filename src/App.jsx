@@ -719,6 +719,7 @@ export default function App(){
   const progressRef = useRef(0); progressRef.current = progress
   const durationRef = useRef(0); durationRef.current = duration
   const directForRef = useRef(''); directForRef.current = directFor
+  const ytBgRescueRef = useRef({}) // per-track throttle for background Saavn rescue
   const msKeyRef = useRef('')
   const npKeyRef = useRef(''); npKeyRef.current = npKey
   // Which track each engine's live pos/dur currently belongs to. Until an
@@ -814,6 +815,19 @@ export default function App(){
       if(!isPlaying || (scrubRef && scrubRef.current) || !current) return
       if(current.videoId && !directFor && ytPlayerRef.current){
         const st = ytPlayerRef.current.getPlayerState && ytPlayerRef.current.getPlayerState()
+        // The native ticker only calls this while the foreground service
+        // believes music should be playing. A PAUSED iframe here is the
+        // background/lock-screen stall: instead of poking a player YouTube
+        // will pause again, rescue this track to its Saavn/direct version.
+        if(st === 2 && isNativeApp()){
+          const key = String(current.id || current.videoId || '')
+          const now = Date.now()
+          if(key && now - (ytBgRescueRef.current[key] || 0) > 45000){
+            ytBgRescueRef.current[key] = now
+            rescueTrack(current)
+            return
+          }
+        }
         if(st !== undefined && st !== 1 && st !== -1) ytPlayerRef.current.playVideo()
       } else if(audioRef.current && audioRef.current.paused){
         audioRef.current.play().catch(()=>{})

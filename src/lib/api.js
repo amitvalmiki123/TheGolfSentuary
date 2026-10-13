@@ -550,6 +550,25 @@ export async function searchSaavn(query, limit=18, page=1){
   catch(e){ return [] }
 }
 
+// Matching-only Saavn search: wait for BOTH provider families and merge
+// their candidates. The raced searchSaavn above is right for fast UI search,
+// but for replacing a YouTube row the first family to answer can easily be
+// the one whose top results miss the exact song ("Pal", "Pehli Dafa").
+export async function searchSaavnAll(query, limit=18, page=1){
+  const [off, mir] = await Promise.allSettled([
+    searchSaavnOfficialDevice(query, limit, page).catch(() => []),
+    searchSaavnMirrors(query, limit, page).catch(() => []),
+  ])
+  const seen = new Set(), out = []
+  for (const t of [...(off.status === 'fulfilled' ? off.value || [] : []), ...(mir.status === 'fulfilled' ? mir.value || [] : [])]) {
+    if (!t || !t.audio) continue
+    const key = String(t.providerId || t.audio || t.id || `${t.title}|${t.artist}|${t.durationSec || ''}`).toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key); out.push(t)
+  }
+  return out
+}
+
 export async function searchSaavnMirrors(query, limit=18, page=1){
   // RACED: all mirrors at once, first with results wins — a dead mirror no longer
   // burns 4s before the next one is tried (old loop: 3 × 3.8s worst case).
@@ -918,15 +937,20 @@ export async function findSaavnRecording(track){
   if (!track || !track.videoId) return null
   const title = _saavnSearchTitle(track)
   if (title.length <= 3) return null
-  const firstArtist = String(track.artist || '').split(/[,;&/]/)[0].trim()
+  const artistRaw = String(track.artist || '').trim()
+  const firstArtist = artistRaw.split(/[,;&/]/)[0].trim()
+  const artistFlat = firstArtist.replace(/\s+-\s+/g, ' ').replace(/-/g, ' ').replace(/\s+/g, ' ').trim()
+  const artistJoined = firstArtist.replace(/\s+-\s+/g, '-').replace(/\s+/g, ' ').trim()
   const albumHint = _saavnAlbumHint(track)
   const queries = [...new Set([
     `${title} ${firstArtist}`.trim(),
+    artistFlat && artistFlat !== firstArtist ? `${title} ${artistFlat}`.trim() : '',
+    artistJoined && artistJoined !== firstArtist ? `${title} ${artistJoined}`.trim() : '',
     title,
     albumHint ? `${title} ${albumHint}`.trim() : '',
   ].filter(q => q && q.length > 3))]
   for (const q of queries) {
-    const candidates = await searchSaavn(q, 10).catch(() => [])
+    const candidates = await searchSaavnAll(q, 12).catch(() => [])
     const match = findSaavnMatch(track, candidates || [])
     if (match) return match
   }

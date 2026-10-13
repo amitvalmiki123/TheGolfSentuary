@@ -1980,7 +1980,7 @@ export default function App(){
               <div className="flex-1 flex justify-center min-w-0 lg:mx-1">
                 <div className="relative w-full">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/50"><SearchIcon size={18}/></span>
-                  <input value={search} onChange={e=>{ setSearch(e.target.value); setSuggOpen(true); if(e.target.value) setNav('search')}} onFocus={()=>{ setNav('search'); setSuggOpen(true) }} onBlur={()=> setTimeout(()=> setSuggOpen(false), 140)} onKeyDown={e=>{ if(e.key==='Enter'){ commitHistory(search); setSuggOpen(false) } if(e.key==='Escape') setSuggOpen(false) }} placeholder={t('searchPh')} className="w-full h-11 pl-10 pr-10 rounded-full bg-white/10 hover:bg-white/[0.14] focus:bg-white text-sm placeholder:text-white/50 focus:placeholder:text-black/40 focus:text-black outline-none border border-white/10 focus:border-white transition"/>
+                  <input type="search" enterKeyHint="search" inputMode="search" autoComplete="off" autoCorrect="off" autoCapitalize="none" spellCheck={false} value={search} onChange={e=>{ setSearch(e.target.value); setSuggOpen(true); if(e.target.value) setNav('search')}} onFocus={()=>{ setNav('search'); setSuggOpen(true) }} onBlur={()=> setTimeout(()=> setSuggOpen(false), 140)} onKeyDown={e=>{ if(e.key==='Enter'){ e.preventDefault(); commitHistory(search); setSuggOpen(false); e.currentTarget.blur() } if(e.key==='Escape') setSuggOpen(false) }} placeholder={t('searchPh')} className="w-full h-11 pl-10 pr-10 rounded-full bg-white/10 hover:bg-white/[0.14] focus:bg-white text-sm placeholder:text-white/50 focus:placeholder:text-black/40 focus:text-black outline-none border border-white/10 focus:border-white transition"/>
                   {search && <button onClick={()=> setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 grid place-items-center rounded-full bg-black/20 hover:bg-black/30 text-white/70"><CloseIcon/></button>}
                   {searching && <span className="absolute right-10 top-1/2 -translate-y-1/2 w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"/>}
                   {suggOpen && (search.trim() ? sugg.length>0 : history.length>0) && (
@@ -2697,16 +2697,16 @@ export default function App(){
             </div></div>
           )}
           {showWelcome && (
-            <div className="fixed inset-0 z-[60] overflow-y-auto bg-[#060306]">
+            <div className="fixed inset-0 z-[60] overflow-y-auto" style={{ background:'radial-gradient(circle at 50% -10%, rgba(213,170,85,.24), transparent 34%), radial-gradient(circle at 92% 18%, rgba(161,84,214,.20), transparent 30%), radial-gradient(circle at 8% 88%, rgba(106,65,142,.18), transparent 34%), #060306' }}>
               <div className="min-h-full grid place-items-center p-4">
-                <div className="w-full max-w-sm text-center py-8 min-w-0">
-                  <div className="w-16 h-16 mx-auto rounded-[20px] bg-gradient-to-br from-[#D5AA55] to-[#6A418E] grid place-items-center text-3xl shadow-2xl">🎵</div>
-                  <h1 className="text-3xl font-bold font-display mt-4">MaxMusic</h1>
-                  <p className="text-sm text-white/50 mt-1">Full songs • background play • lock-screen controls</p>
+                <div className="w-full max-w-sm text-center rounded-[32px] border border-white/10 bg-white/[0.04] px-5 sm:px-7 py-8 min-w-0 shadow-[0_30px_90px_rgba(0,0,0,.55)] backdrop-blur-xl">
+                  <img src={`${BASE}icon-512.png`} alt="MaxMusic" className="w-24 h-24 mx-auto rounded-[26px] object-cover shadow-[0_20px_55px_rgba(213,170,85,.28)] ring-1 ring-white/20"/>
+                  <h1 className="text-[34px] leading-tight font-black font-display mt-5">MaxMusic</h1>
+                  <p className="text-sm text-white/55 mt-1 leading-relaxed">Feel every beat — full songs, smooth background play & lock-screen controls.</p>
                   {welcomeMode==='home' ? (<>
-                    <button onClick={()=>{ setAuthForm(f=>({...f,mode:'login'})); setWelcomeErr(''); setWelcomeMode('login') }} className="mt-8 w-full py-3 rounded-full bg-[#D5AA55] text-black font-bold">Log in</button>
-                    <button onClick={()=>{ setAuthForm(f=>({...f,mode:'signup'})); setWelcomeErr(''); setWelcomeMode('signup') }} className="mt-3 w-full py-3 rounded-full bg-white/10 border border-white/10 font-bold">Create account</button>
-                    <button onClick={chooseGuest} className="mt-3 w-full py-3 rounded-full text-sm text-white/60 hover:text-white">Continue as Guest →</button>
+                    <button onClick={()=>{ setAuthForm(f=>({...f,mode:'login'})); setWelcomeErr(''); setWelcomeMode('login') }} className="mt-8 w-full py-3 rounded-full bg-gradient-to-r from-[#D5AA55] to-[#F3D27A] text-black font-black shadow-[0_14px_35px_rgba(213,170,85,.28)]">Log in</button>
+                    <button onClick={()=>{ setAuthForm(f=>({...f,mode:'signup'})); setWelcomeErr(''); setWelcomeMode('signup') }} className="mt-3 w-full py-3 rounded-full bg-white/10 border border-white/15 font-bold hover:bg-white/15 transition">Create account</button>
+                    <button onClick={chooseGuest} className="mt-3 w-full py-3 rounded-full text-sm font-semibold text-white/60 hover:text-white">Continue as Guest →</button>
                     <p className="text-[11px] text-white/30 mt-5 leading-relaxed">Guest = full music, data stays on this device.<br/>Account = liked + playlists sync on every device ☁</p>
                   </>) : (<>
                     <button onClick={()=>{ setWelcomeMode('home'); setWelcomeErr('') }} className="mt-6 text-xs text-white/60 hover:text-white">← Back</button>
@@ -2718,6 +2718,10 @@ export default function App(){
                     <button onClick={handleWelcomeSubmit} disabled={authBusy} className="mt-4 w-full py-3 rounded-full bg-[#D5AA55] text-black font-bold disabled:opacity-50">{authBusy ? 'Connecting…' : (authForm.mode==='login' ? 'Log in' : 'Create account')}</button>
                     <button onClick={()=>{ setAuthForm({...authForm, mode: authForm.mode==='login'?'signup':'login' }); setWelcomeErr('') }} className="mt-3 w-full text-xs text-white/60 hover:text-white">{authForm.mode==='login' ? 'New here? Create account' : 'Have an account? Log in'}</button>
                   </>)}
+                  <div className="mt-8 border-t border-white/5 pt-4">
+                    <p className="text-[10px] font-bold tracking-[0.22em] uppercase text-white/35">Developed by</p>
+                    <p className="text-sm font-black tracking-wide text-[#D5AA55] mt-1">Max Amit</p>
+                  </div>
                 </div>
               </div>
             </div>

@@ -64,6 +64,7 @@ public class NowPlayingService extends Service {
             playing = pl;
             if (changed) { reposts++; lastCause = "tick1"; if (trackChanged) { onTrackChangedNative(); updateSession(); startForegroundNow(); } else updateStateOnly(); }
             setWake(playing);
+            reconcilePendingTransport(pl);
           }
         }
       } catch (Exception ignored) {}
@@ -88,6 +89,7 @@ public class NowPlayingService extends Service {
                 title = t; if (!a.isEmpty()) artist = a; album = al; playing = pl;
                 if (changed) { reposts++; lastCause = "tick2"; if (trackChanged) { onTrackChangedNative(); updateSession(); startForegroundNow(); } else updateStateOnly(); }
                 setWake(playing);
+                reconcilePendingTransport(pl);
               }
               double jpos = o.optDouble("pos", -1); double jdur = o.optDouble("dur", -1);
               if (jpos >= 0 && jdur >= 0) ingestPos(jpos, jdur);
@@ -205,6 +207,12 @@ public class NowPlayingService extends Service {
   private volatile String artist = "Music";
   private volatile String album = "";
   private volatile boolean playing = false;
+  // A play/pause requested through a media-session callback or a notification
+  // button is retried briefly until the WebView's own state mirror confirms it.
+  // This closes the earbuds case: the first eval/bridge delivery can race a
+  // background-throttled WebView, after which the old code never re-sent Play.
+  private volatile String pendingTransportAction = "";
+  private volatile long pendingTransportUntil = 0;
   private volatile double posSec = 0;
   private volatile double durSec = 0;
   private volatile double durPosted = -1;
@@ -230,10 +238,10 @@ public class NowPlayingService extends Service {
       mediaSession = new MediaSession(this, "sur-sangam");
       mediaSession.setActive(true);
       mediaSession.setCallback(new MediaSession.Callback() {
-        @Override public void onPlay()              { send("play"); }
-        @Override public void onPause()             { send("pause"); }
-        @Override public void onSkipToNext()        { send("next"); }
-        @Override public void onSkipToPrevious()    { send("prev"); }
+        @Override public void onPlay()              { dispatchTransportAction("play"); }
+        @Override public void onPause()             { dispatchTransportAction("pause"); }
+        @Override public void onSkipToNext()        { dispatchTransportAction("next"); }
+        @Override public void onSkipToPrevious()    { dispatchTransportAction("prev"); }
         @Override public void onSeekTo(long pos) { seekTo(pos); }
       });
       audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
@@ -244,7 +252,21 @@ public class NowPlayingService extends Service {
     }
   }
 
+  private void wakeWebView() {
+    try {
+      android.webkit.WebView w = MainActivity.npWebView;
+      if (w == null) return;
+      try { w.resumeTimers(); } catch (Throwable ignored) {}
+      try { w.onResume(); } catch (Throwable ignored) {}
+    } catch (Throwable ignored) {}
+  }
+
   private void send(String a) {
+    // A user transport action must be delivered even when Chromium has
+    // throttled/frozen the background page while paused. Wake it BEFORE both
+    // delivery channels; the old send() only eval'd into the possibly-frozen
+    // page and never knew whether the action ran.
+    wakeWebView();
     ActionListener l = listener;
     if (l != null) { try { l.onAction(a); } catch (Exception ignored) {} }
     // Zero-bridge path: talk straight to the page. Notification buttons keep working even
@@ -254,6 +276,48 @@ public class NowPlayingService extends Service {
       if (w != null && ("play".equals(a) || "pause".equals(a) || "next".equals(a) || "prev".equals(a) || "stop".equals(a)))
         w.evaluateJavascript("try{window.__npAct&&window.__npAct('" + a + "')}catch(e){}", null);
     } catch (Throwable ignored) {}
+  }
+
+  // Media-session callbacks (earbuds/Bluetooth, lock-screen and QS transport
+  // controls) and notification action buttons share this path. Play/pause
+  // update the native session + posted notification IMMEDIATELY, exactly as
+  // notification-button intents already did: previously the callback only
+  // forwarded the action to JS and left PlaybackState/native `playing`
+  // untouched until a later JS round-trip, so an external pause could leave
+  // the panel advertising (and toggling from) the wrong state.
+  private void dispatchTransportAction(String a) {
+    if ("play".equals(a) || "pause".equals(a)) {
+      playing = "play".equals(a);
+      pendingTransportAction = a;
+      pendingTransportUntil = SystemClock.elapsedRealtime() + 4000;
+      try { if (mediaSession != null) mediaSession.setActive(true); } catch (Throwable ignored) {}
+      send(a);
+      reposts++; lastCause = "transport";
+      updateStateOnly();
+      setWake(playing);
+    } else {
+      send(a);
+    }
+  }
+
+  // Called with each state the WebView reports about itself. If an external
+  // transport request has not been reflected by JS within the bounded window,
+  // re-deliver it (the first delivery may have raced a frozen page); stop as
+  // soon as JS confirms the requested state, or when the window expires.
+  private void reconcilePendingTransport(boolean jsPlaying) {
+    String pending = pendingTransportAction;
+    if (pending == null || pending.isEmpty()) return;
+    boolean wantPlaying = "play".equals(pending);
+    if (jsPlaying == wantPlaying || SystemClock.elapsedRealtime() > pendingTransportUntil) {
+      pendingTransportAction = "";
+      pendingTransportUntil = 0;
+      return;
+    }
+    playing = wantPlaying;
+    lastCause = "transport-retry";
+    send(pending);
+    updateStateOnly();
+    setWake(playing);
   }
 
   // Notification/lockscreen seekbar drag → seek the WebView player (audio or YT iframe).
@@ -285,10 +349,10 @@ public class NowPlayingService extends Service {
     }
     // Notification buttons land here as plain startService intents — without these,
     // prev/play/next taps fell through to the generic update path and did NOTHING.
-    if (ACTION_PLAY.equals(a))  { playing = true;  send("play");  reposts++; lastCause = "act"; updateStateOnly(); return START_NOT_STICKY; }
-    if (ACTION_PAUSE.equals(a)) { playing = false; send("pause"); reposts++; lastCause = "act"; updateStateOnly(); return START_NOT_STICKY; }
-    if (ACTION_PREV.equals(a))  { send("prev"); return START_NOT_STICKY; }
-    if (ACTION_NEXT.equals(a))  { send("next"); return START_NOT_STICKY; }
+    if (ACTION_PLAY.equals(a))  { dispatchTransportAction("play"); return START_NOT_STICKY; }
+    if (ACTION_PAUSE.equals(a)) { dispatchTransportAction("pause"); return START_NOT_STICKY; }
+    if (ACTION_PREV.equals(a))  { dispatchTransportAction("prev"); return START_NOT_STICKY; }
+    if (ACTION_NEXT.equals(a))  { dispatchTransportAction("next"); return START_NOT_STICKY; }
     if (intent != null) {
       // DEDUP: JS re-pushes identical meta every 2.6s (watchdog) — re-posting each time
       // restarts the notification title marquee ("same song sliding again and again").

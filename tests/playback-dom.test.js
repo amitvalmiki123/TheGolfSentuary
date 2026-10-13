@@ -46,6 +46,11 @@ async function loadApp(){
     await writeFile(file,code)
     source=source.replace(`'./lib/${lib}.js'`,JSON.stringify(pathToFileURL(file).href))
   }
+  const tmSrc=await readFile(new URL('../src/lib/trackmeta.js',import.meta.url),'utf8')
+  await mkdir(path.join(cache,'lib'),{recursive:true})
+  const tmFile=path.join(cache,'lib','trackmeta.js')
+  await writeFile(tmFile,tmSrc)
+  source=source.replace("'./lib/trackmeta.js'",JSON.stringify(pathToFileURL(tmFile).href))
   const {code}=await transformWithEsbuild(source,'App.jsx',{
     loader:'jsx',jsx:'automatic',jsxImportSource:'react',
     define:{'import.meta.env':'{"BASE_URL":"/","VITE_APP_BUILD_NO":"108"}'}
@@ -95,6 +100,12 @@ for(const native of [false,true]){
       assert.ok(play,'The real search results must be rendered')
       await act(async()=>play.dispatchEvent(new window.MouseEvent('click',{bubbles:true})))
       await act(async()=>env.clock.tick(60))
+      // itrace-29: the now-playing snapshot must identify THIS track with a
+      // bitmap-safe artwork URL and a real duration — not pos/dur 0/0.
+      const np0=window.__np||{}
+      assert.equal(np0.title,'Rajasthani search result')
+      assert.ok(Number(np0.dur)>0,'snapshot duration must not be 0')
+      if(native) assert.equal(np0.artUrl,'https://i.ytimg.com/vi/test-rajasthani-video/hqdefault.jpg')
       const firstAudio=document.querySelector('audio')
       const frame=players.at(-1).frame
       assert.equal(firstAudio.getAttribute('crossorigin'),'anonymous')
@@ -130,6 +141,39 @@ for(const native of [false,true]){
     }finally{ close(env) }
   })
 }
+
+test('replacement <audio> after CORS recovery keeps working listeners (itrace-29)',async()=>{
+  const {env}=await mount({native:false})
+  const {window,document}=env
+  try{
+    const input=document.querySelector('input[placeholder*="Search songs"]')
+    await act(async()=>{
+      const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set
+      setter.call(input,'rajasthani songs')
+      input.dispatchEvent(new window.Event('input',{bubbles:true}))
+    })
+    await act(async()=>env.clock.tick(240))
+    const play=[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Rajasthani search result'))
+    await act(async()=>play.dispatchEvent(new window.MouseEvent('click',{bubbles:true})))
+    await act(async()=>env.clock.tick(60))
+    const firstAudio=document.querySelector('audio')
+    // First failure: React recovery swaps the element (no-cors) without
+    // crashing, and the transient error state is cleared because the
+    // REPLACEMENT element already has metadata — that only happens when the
+    // listeners were re-attached to the new node (attach-time loadedmetadata).
+    await act(async()=>firstAudio.dispatchEvent(new window.Event('error')))
+    const replacement=document.querySelector('audio')
+    assert.ok(replacement && replacement!==firstAudio,'recovery must swap the audio element')
+    await act(async()=>env.clock.tick(500))
+    assert.ok(!document.body.textContent.includes('Playback failed'),'replacement listeners must run (loadedmetadata clears the error)')
+    // Prove the replacement element's own error listener is alive: a second
+    // failure must be reported by IT (no further element swap happens here).
+    await act(async()=>replacement.dispatchEvent(new window.Event('error')))
+    await act(async()=>env.clock.tick(120))
+    assert.ok(document.body.textContent.includes('Playback failed'),'replacement element error listener must report failures')
+    assert.deepEqual(env.errors,[])
+  }finally{ close(env) }
+})
 
 test('StrictMode with a preloaded SDK destroys the old player and ignores its late events',async()=>{
   const {env,root,players}=await mount()

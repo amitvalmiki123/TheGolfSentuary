@@ -3,6 +3,7 @@ import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, t
 import { checkAppUpdate, openExternal, APP_BUILD_NO } from './lib/updater.js'
 import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
 import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npAskBattery, npOpenNotifSettings, npPing, npLastCrash, npSetDisabled, npDisabled, npBridgeMode, hasNativeBridge, wvGuess } from './lib/nowplaying.js'
+import { trackKeyOf, createTrackTracker, buildSnapshot, activeEngine, nativeArtUrl, coverCandidates } from './lib/trackmeta.js'
 
 const BASE = import.meta.env.BASE_URL || '/'
 // In the native app (Capacitor WebView) pretend the page is always visible — stops the
@@ -117,7 +118,7 @@ function getCategoryPlaylists(cat){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-28'
+const APP_BUILD = 'itrace-29'
 const APP_VERSION = '2.5'
 const FREE_DL_MAX = 5
 const PRO_CODES = ['MAXMUSIC79']
@@ -142,9 +143,10 @@ function NpDiagCard({ toast, engine }){
   const [svc, setSvc] = useState('')
   const [bgDiag, setBgDiag] = useState(null)
   const [sdl, setSdl] = useState([])
+  const [artF, setArtF] = useState('')
   const T = toast || (()=>{})
   const readSdl = ()=>{ try{ setSdl((window.__searchDiag||[]).slice(-2)) }catch(e){} }
-  const ping = ()=>{ try{ npPing().then(r=>setBgDiag(r)).catch(()=>setBgDiag({plugin:false,service:false,notif:true})) }catch(e){ setBgDiag({plugin:false,service:false,notif:true}) }; readSdl() }
+  const ping = ()=>{ try{ npPing().then(r=>setBgDiag(r)).catch(()=>setBgDiag({plugin:false,service:false,notif:true})) }catch(e){ setBgDiag({plugin:false,service:false,notif:true}) }; readSdl(); try{ setArtF(String(window.__artFail||'')) }catch(e){} }
   useEffect(()=>{
     let tries = 0
     const id = setInterval(()=>{
@@ -178,7 +180,7 @@ function NpDiagCard({ toast, engine }){
         <button onClick={npAskBattery} className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[10px] font-semibold text-white/60 hover:text-white">Unfreeze</button>
       </div>
       <div className="mt-1.5 break-all opacity-60" style={{ fontFamily:'ui-monospace,monospace', fontSize:10 }}>
-        app:{APP_BUILD} {'·'} bridge:{npBridgeMode()} {engine ? ('· audio: '+engine) : ''} {bgDiag && bgDiag.diag ? ('· ping: '+bgDiag.diag) : ''}{sdl && sdl.length ? (<><br/>search: {sdl.join(' · ')}</>) : ''}
+        app:{APP_BUILD} {'·'} bridge:{npBridgeMode()} {engine ? ('· audio: '+engine) : ''} {bgDiag && bgDiag.diag ? ('· ping: '+bgDiag.diag) : ''}{artF ? (' · artfail:'+artF) : ''}{sdl && sdl.length ? (<><br/>search: {sdl.join(' · ')}</>) : ''}
       </div>
     </div>
   )
@@ -284,6 +286,7 @@ export default function App(){
   const [ytReady, setYtReady] = useState(false)
   const ytProgressRef = useRef(null)
   const current = queue[currentIndex] || null
+  const npKey = trackKeyOf(current) // stable identity of the audible track (itrace-29)
 
   // persist
   useEffect(()=>{ localStorage.setItem('sur_liked', JSON.stringify([...liked])) },[liked])
@@ -601,12 +604,21 @@ export default function App(){
     if(!current) return
     if('mediaSession' in navigator){
       try{
-        navigator.mediaSession.metadata = new MediaMetadata({
-          title: current.title,
-          artist: current.artist,
-          album: current.album,
-          artwork: [{src: current.cover, sizes:'512x512', type:'image/jpeg'}]
-        })
+        // Re-bind metadata ONLY when track/art actually changes — re-creating
+        // MediaMetadata on every play/pause made system UI re-fetch artwork
+        // and restart the title marquee (itrace-29). Artwork is the bitmap-safe
+        // normalized URL, or omitted entirely when the track has none.
+        const art = nativeArtUrl(current)
+        const sig = npKey + '|' + art
+        if(msKeyRef.current !== sig){
+          msKeyRef.current = sig
+          navigator.mediaSession.metadata = new MediaMetadata({
+            title: current.title || '',
+            artist: current.artist || '',
+            album: current.album || '',
+            artwork: art ? [{src: art, sizes:'512x512', type:'image/jpeg'}] : []
+          })
+        }
         navigator.mediaSession.setActionHandler('play', ()=> setIsPlaying(true))
         navigator.mediaSession.setActionHandler('pause', ()=> setIsPlaying(false))
         navigator.mediaSession.setActionHandler('nexttrack', handleNext)
@@ -630,14 +642,16 @@ export default function App(){
     if(!isPlaying || !('mediaSession' in navigator)) return
     const tick = ()=>{
       try{
-        const dur = (duration && isFinite(duration) && duration>1)? duration : (audioRef.current?.duration||0)
-        if(dur>1) navigator.mediaSession.setPositionState({ duration: dur, position: Math.min(progress||0, dur), playbackRate: 1 })
+        // Read the ACTIVE engine live — the old closure republished a stale
+        // captured `progress` until isPlaying/duration happened to change.
+        const { pos, dur } = readLivePosition(activeEngine(currentRef.current, directForRef.current))
+        if(dur>1) navigator.mediaSession.setPositionState({ duration: dur, position: Math.min(pos||0, dur), playbackRate: 1 })
       }catch{}
     }
     tick()
-    const id = setInterval(tick, 4000)
+    const id = setInterval(tick, 2000)
     return ()=> clearInterval(id)
-  },[isPlaying, duration])
+  },[isPlaying, duration, npKey])
   // re-acquire wake lock when returning to app
   useEffect(()=>{
     const onVis = ()=> {
@@ -718,6 +732,48 @@ export default function App(){
   const isPlayingRef = useRef(false)
   currentRef.current = current
   isPlayingRef.current = isPlaying
+  // itrace-29: single identity/generation + live-position source shared by
+  // every now-playing writer (bridge push, window.__np, MediaSession).
+  const npTrackerRef = useRef(null); if(!npTrackerRef.current) npTrackerRef.current = createTrackTracker()
+  const progressRef = useRef(0); progressRef.current = progress
+  const durationRef = useRef(0); durationRef.current = duration
+  const directForRef = useRef(''); directForRef.current = directFor
+  const msKeyRef = useRef('')
+  // Position/duration from the engine that is ACTUALLY audible: the YT iframe
+  // only when it (not a direct <audio> stream) is playing this track; never
+  // from an inactive element still holding the previous song.
+  const readLivePosition = (engine)=>{
+    let pos = progressRef.current || 0, dur = durationRef.current || 0
+    try{
+      if(engine === 'yt'){
+        const p = ytPlayerRef.current
+        if(p){
+          if(p.getCurrentTime){ const ct = p.getCurrentTime(); if(isFinite(ct)) pos = ct }
+          if(p.getDuration){ const d = p.getDuration(); if(isFinite(d) && d > 0) dur = d }
+        }
+      } else {
+        const a = audioRef.current
+        if(a){
+          if(isFinite(a.currentTime)) pos = a.currentTime
+          if(isFinite(a.duration) && a.duration > 0) dur = a.duration
+        }
+      }
+    }catch{}
+    return { pos, dur }
+  }
+  const makeNpSnapshot = (extra)=>{
+    const tr = currentRef.current; if(!tr) return null
+    const info = npTrackerRef.current.update(tr)
+    const engine = activeEngine(tr, directForRef.current)
+    let pos, dur
+    // A real track change starts at 0 with the NEW track's own duration —
+    // live elements still hold the previous song at this instant.
+    if(info.changed && !(extra && (extra.pos != null || extra.dur != null))){ pos = 0; dur = 0 }
+    else { const live = readLivePosition(engine); pos = live.pos; dur = live.dur }
+    if(extra){ if(extra.pos != null) pos = extra.pos; if(extra.dur != null) dur = extra.dur }
+    return buildSnapshot({ track: tr, key: info.key, gen: info.gen, playing: isPlayingRef.current, engine, pos, dur })
+  }
+  const pushNpMeta = (extra)=>{ try{ const s = makeNpSnapshot(extra); if(s) npUpdate(s) }catch{} }
   npActionRef.current = (a)=>{
     // Service delivers every action TWICE (plugin listener + zero-bridge eval) with the
     // same stale isPlaying — toggle-style handling made pause a no-op and next skip 2.
@@ -738,16 +794,18 @@ export default function App(){
     // No isNativeApp() gate: npUpdate self-noops when no bridge exists (browser) — a
     // mis-detected native app must NEVER be able to kill the notification metadata flow.
     if(!current){ npStop(); return }
-    npUpdate({
-      title: String(current.title||'').slice(0,140),
-      artist: String(current.artist||'').slice(0,140),
-      album: String(current.album||'').slice(0,140),
-      state: isPlaying ? 'playing' : 'paused',
-      engine: current.videoId ? 'yt' : 'audio',
-      pos: 0, dur: 0,
-      artUrl: /^https:\/\//.test(String(current.cover||'')) ? current.cover : ''
-    })
-  },[current && current.id, isPlaying])
+    // Snapshot carries LIVE pos/dur (preserved through pause/resume and
+    // metadata-only refreshes) — the old hard pos:0/dur:0 here wiped the
+    // notification seekbar at every track start / play-state flip (itrace-29).
+    pushNpMeta()
+  },[npKey, isPlaying])
+  // Real track change: in-app seekbar starts clean with the new track's own
+  // declared duration until the active engine reports the true one.
+  useEffect(()=>{
+    lastProgRef.current = 0
+    setProgress(0)
+    setDuration((current && current.durationSec) || 0)
+  },[npKey])
   // Service ticker calls this every 1.2s while it believes we're playing — defeats YouTube's
   // iframe auto-pause (hidden small player) within ~1s, from native, bridge-independent.
   // Zero-bridge meta channel: the native ticker reads WebView.getTitle() — the app encodes
@@ -758,7 +816,7 @@ export default function App(){
         ? ('NP|'+(isPlaying?1:0)+'|'+String(current.title||'').replace(/\|/g,'·').slice(0,60)+'|'+String(current.artist||'').replace(/\|/g,'·').slice(0,40))
         : 'MaxMusic'
     }catch(e){}
-  },[current && current.id, isPlaying])
+  },[npKey, isPlaying])
   // Native → JS actions with zero bridge: service evals window.__npAct('play'|'pause'|...)
   useEffect(()=>{ try{ window.__npAct = (a)=>{ try{ npActionRef.current && npActionRef.current(a) }catch(e){} } }catch(e){} },[])
   window.__npKeepAlive = ()=>{
@@ -774,24 +832,8 @@ export default function App(){
   }
   // Native → JS seek with zero bridge: service evals window.__npSeek(sec) on seekbar drag.
   window.__npSeek = (s)=>{ try{ seekToTime(Number(s)||0) }catch(e){} }
-  const pushNpMeta = ()=>{
-    if(!current) return
-    // Authoritative pos/dur for the notification seekbar (funnelled via window.__np —
-    // the service must not depend only on scraping the <audio> element).
-    const ae = audioRef.current
-    const livePos = ae ? (ae.currentTime||0) : 0
-    const liveDur = (ae && isFinite(ae.duration)) ? (ae.duration||0) : 0
-    const isYt = !!(current.videoId && !directFor)
-    npUpdate({
-      title: String(current.title||'').slice(0,140),
-      artist: String(current.artist||'').slice(0,140),
-      album: String(current.album||'').slice(0,140),
-      state: isPlaying ? 'playing' : 'paused',
-      engine: current.videoId ? 'yt' : 'audio',
-      pos: isYt?0:livePos, dur: isYt?0:liveDur,
-      artUrl: /^https:\/\//.test(String(current.cover||'')) ? current.cover : ''
-    })
-  }
+  // pushNpMeta/makeNpSnapshot live with the np refs above — one snapshot
+  // source for the watchdog, seeks and metadata refreshes (itrace-29).
   // Native watchdog: (a) re-push now-playing meta so notification NEVER sticks to placeholder,
   // (b) agar WebView background me media suspend kare to wapas resume — lock pe bhi music chalta rahe
   useEffect(()=>{
@@ -892,10 +934,12 @@ export default function App(){
 
   // audio — robust playback with error fallback + direct user-gesture play
   const [audioError, setAudioError] = useState(null)
+  const [audioKey, setAudioKey] = useState(0) // bump => fresh <audio> (escapes capture + CORS-tainted loads); declared before the listener effect, whose deps reference it
+  const [audioNoCors, setAudioNoCors] = useState(false) // sticky: session streams block processing => EQ bypassed
   useEffect(()=>{
     const a=audioRef.current; if(!a) return
     const onTime=()=>{ const ct=a.currentTime; if(Math.abs(ct-lastProgRef.current)>0.75){ lastProgRef.current=ct; setProgress(ct) } }
-    const onLoaded=()=> { setDuration(a.duration||0); setAudioError(null) }
+    const onLoaded=()=> { setDuration(a.duration||0); setAudioError(null); try{ pushNpMeta() }catch{} }
     const onEnded=()=>{ if(repeat===2){ a.currentTime=0; a.play().catch(()=>{}) } else handleNext() }
     const onErr=()=>{
       const src = a.currentSrc || a.src || ""
@@ -906,9 +950,14 @@ export default function App(){
       // a blind false here + rescue's manual play = audible-but-paused state desync.
     }
     const onPlay=()=>{ try{ if(eqRef.current && eqRef.current.ctx.state==='suspended') eqRef.current.ctx.resume() }catch{} }
-    a.addEventListener('timeupdate', onTime); a.addEventListener('loadedmetadata', onLoaded); a.addEventListener('ended', onEnded); a.addEventListener('error', onErr); a.addEventListener('play', onPlay)
-    return ()=>{ a.removeEventListener('timeupdate',onTime); a.removeEventListener('loadedmetadata',onLoaded); a.removeEventListener('ended',onEnded); a.removeEventListener('error',onErr); a.removeEventListener('play',onPlay) }
-  },[repeat, currentIndex, shuffle, queue])
+    a.addEventListener('timeupdate', onTime); a.addEventListener('loadedmetadata', onLoaded); a.addEventListener('durationchange', onLoaded); a.addEventListener('ended', onEnded); a.addEventListener('error', onErr); a.addEventListener('play', onPlay)
+    // Element may already hold metadata when listeners (re)attach after a swap.
+    if(a.readyState >= 1){ try{ onLoaded() }catch{} }
+    return ()=>{ a.removeEventListener('timeupdate',onTime); a.removeEventListener('loadedmetadata',onLoaded); a.removeEventListener('durationchange',onLoaded); a.removeEventListener('ended',onEnded); a.removeEventListener('error',onErr); a.removeEventListener('play',onPlay) }
+    // audioKey MUST be a dep: a CORS/EQ element swap (key change) creates a NEW
+    // <audio> node — without re-attaching, progress/duration/end events kept
+    // firing on the detached old element and the new one went silent (itrace-29).
+  },[repeat, currentIndex, shuffle, queue, audioKey])
 
   // Listening stats ticker — real minutes only while music actually plays
   useEffect(()=>{
@@ -958,8 +1007,6 @@ export default function App(){
   // Equalizer — Web Audio 5-band on the <audio> element (streaming + downloads; YT iframe can't be processed)
   // itrace-25: self-healing — gesture-time resume, live slider writes, silence watchdog + auto audio-reset, CORS fallback. Never stays mute.
   const eqRef = useRef(null)
-  const [audioKey, setAudioKey] = useState(0) // bump => fresh <audio> (escapes capture + CORS-tainted loads)
-  const [audioNoCors, setAudioNoCors] = useState(false) // sticky: session streams block processing => EQ bypassed
   const audioResumeRef = useRef(null) // {t, playing} across element swaps
   const corsRetryRef = useRef(null) // track id already retried without CORS
   const ensureEqGraph = ()=>{
@@ -1247,7 +1294,7 @@ export default function App(){
     setCurrentIndex(i=> (i-1+queue.length)%queue.length)
   }
   const seek = e=>{ const v=Number(e.target.value); if(current?.videoId && !directFor && ytPlayerRef.current?.seekTo){ try{ ytPlayerRef.current.seekTo(v, true); setProgress(v) }catch{} return } if(audioRef.current){ audioRef.current.currentTime=v; setProgress(v)} }
-  const seekToTime = (v)=>{ if(!current) return; v=Math.max(0, Math.min(v, duration||v)); if(current.videoId && !directFor && ytPlayerRef.current?.seekTo){ try{ ytPlayerRef.current.seekTo(v, true); setProgress(v); return }catch{} } if(audioRef.current){ try{ audioRef.current.currentTime=v }catch{} setProgress(v); try{ pushNpMeta() }catch{} } }
+  const seekToTime = (v)=>{ if(!current) return; v=Math.max(0, Math.min(v, duration||v)); if(current.videoId && !directFor && ytPlayerRef.current?.seekTo){ try{ ytPlayerRef.current.seekTo(v, true); setProgress(v); try{ pushNpMeta({ pos: v }) }catch{} return }catch{} } if(audioRef.current){ try{ audioRef.current.currentTime=v }catch{} setProgress(v); try{ pushNpMeta({ pos: v }) }catch{} } }
   const scrubRef = useRef(false)
   const scrubTo = (clientX, el)=>{ const r = el.getBoundingClientRect(); const frac = Math.max(0, Math.min(1, (clientX - r.left)/r.width)); seekToTime(frac * (duration||0)) }
   // playback rescue — YT/piped link toote: naya working URL dhundo (Saavn CDN ya piped resolve), swap + resume
@@ -1764,7 +1811,7 @@ export default function App(){
             <div className="space-y-1 overflow-y-auto pr-1 -mr-1 flex-1">
               {playlists.map(pl=> (
                 <button key={pl.id} onClick={()=> openPlaylist(pl)} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 text-left group">
-                  <img loading="lazy" decoding="async" src={pl.cover} alt="" className="w-12 h-12 rounded-lg object-cover shrink-0"/>
+                  <CoverImg track={pl} className="w-12 h-12 rounded-lg object-cover shrink-0"/>
                   <div className="min-w-0"><div className="text-sm font-medium truncate">{pl.title}</div><div className="text-xs text-white/50 truncate">Playlist • {pl.count || `${(pl.songs||[]).length} songs`}</div></div>
                 </button>
               ))}
@@ -1890,7 +1937,7 @@ export default function App(){
                           return (
                             <div key={t.id} className={`flex items-center gap-3 p-2 pr-2 rounded-xl border text-left ${idx===currentIndex?'bg-white text-black border-white':'bg-white/5 hover:bg-white/10 border-white/5'}`}>
                               <button onClick={()=> playTrack(t)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
-                                <img loading="lazy" decoding="async" src={t.cover} alt="" className="w-12 h-12 rounded-lg object-cover shrink-0"/>
+                                <CoverImg track={t} className="w-12 h-12 rounded-lg object-cover shrink-0"/>
                                 <div className="min-w-0"><div className={`text-sm font-semibold truncate ${idx===currentIndex?'text-black':'text-white'}`}>{t.title}</div><div className={`text-xs truncate ${idx===currentIndex?'text-black/60':'text-white/60'}`}>{t.artist}</div></div>
                               </button>
                               <button onClick={()=> handleDownload(t)} disabled={downloadingId===t.id} className={`w-8 h-8 grid place-items-center rounded-full border ${downloaded.find(d=> String(d.id)===String(t.id))? 'bg-emerald-500 border-emerald-500 text-white':'border-white/15 text-white/60 hover:text-white'}`}>{downloadingId===t.id? <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"/> : <DownloadIcon/>}</button>
@@ -1917,7 +1964,7 @@ export default function App(){
                                 <div key={t.id} className={`group flex items-center gap-3 p-2 rounded-xl transition ${String(current?.id)===String(t.id)? 'bg-white text-black':'hover:bg-white/5 border border-transparent hover:border-white/5'}`}>
                                   <button onClick={()=> playTrack(t, [...onlineResults, ...queue])} className="flex items-center gap-3 flex-1 min-w-0 text-left">
                                     <span className="relative block w-12 h-12 rounded-lg overflow-hidden shrink-0">
-                                      <img loading="lazy" decoding="async" src={t.cover} alt="" className="w-full h-full object-cover"/>
+                                      <CoverImg track={t} className="w-full h-full object-cover"/>
                                       <span className={`absolute inset-0 grid place-items-center bg-black/40 opacity-0 group-hover:opacity-100 ${String(current?.id)===String(t.id)? '!opacity-100 bg-black/20':''}`}>{inQueue? <PauseMini dark/> : <PlayMini dark/>}</span>
                                     </span>
                                     <span className="min-w-0 flex-1 block">
@@ -1947,7 +1994,7 @@ export default function App(){
                               {localSongs.filter(s=> s.title.toLowerCase().includes(search.toLowerCase()) || s.artist.toLowerCase().includes(search.toLowerCase())).slice(0,5).map(t=>(
                                 <div key={t.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5">
                                   <button onClick={()=> playTrack(t, [...localSongs, ...queue])} className="flex items-center gap-3 flex-1 min-w-0 text-left">
-                                    <img loading="lazy" decoding="async" src={t.cover} alt="" className="w-12 h-12 rounded-lg object-cover shrink-0"/>
+                                    <CoverImg track={t} className="w-12 h-12 rounded-lg object-cover shrink-0"/>
                                     <span className="flex-1 min-w-0 block"><span className="block text-sm font-medium truncate">{t.title}</span><span className="block text-xs text-white/50 truncate">{t.artist} • Local</span></span>
                                   </button>
                                   <button onClick={()=> playTrack(t, [...localSongs, ...queue])} className="w-8 h-8 grid place-items-center rounded-full bg-white text-black shrink-0"><PlayMini size={12}/></button>
@@ -1987,7 +2034,7 @@ export default function App(){
                       {playlists.map(pl=> (
                         <div key={pl.id} onClick={()=> openPlaylist(pl)} className="glass rounded-[18px] p-3 hover:bg-white/10 transition group relative cursor-pointer">
                           <div className="relative aspect-square rounded-xl overflow-hidden mb-3">
-                            <img loading="lazy" decoding="async" src={pl.cover} alt="" className="w-full h-full object-cover group-hover:scale-105 transition duration-500"/>
+                            <CoverImg track={pl} className="w-full h-full object-cover group-hover:scale-105 transition duration-500"/>
                             <div className={`absolute inset-0 bg-gradient-to-br ${pl.color} opacity-60 mix-blend-overlay`}/>
                             <button onClick={(e)=>{ e.stopPropagation(); playPlaylistNow(pl) }} className="absolute bottom-2 right-2 w-9 h-9 rounded-full bg-[#D5AA55] text-black grid place-items-center shadow-lg translate-y-2 opacity-0 group-hover:opacity-100 group-hover:translate-y-0 transition"><PlayMini/></button>
                             <div className="absolute top-2 left-2 text-[11px] font-bold bg-black/40 backdrop-blur px-2 py-1 rounded-full border border-white/10">{pl.count}</div>
@@ -2018,7 +2065,7 @@ export default function App(){
                         return (
                           <div key={t.id} className={`flex items-center gap-3 px-4 py-2 hover:bg-white/5 group ${isCur?'bg-white/10':''}`}>
                             <span className="w-6 text-center text-xs text-white/30 group-hover:hidden">{String(i+1).padStart(2,'0')}</span><button onClick={()=> playTrack(t, likedTracks)} className="w-6 hidden group-hover:grid place-items-center"><PlayMini dark/></button>
-                            <button onClick={()=> playTrack(t, likedTracks)} className="flex items-center gap-3 flex-1 min-w-0 text-left"><img loading="lazy" decoding="async" src={t.cover} alt="" className="w-10 h-10 rounded-md object-cover"/><div className="min-w-0"><div className={`text-sm font-medium truncate ${isCur?'text-[#D5AA55]':''}`}>{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div></div></button>
+                            <button onClick={()=> playTrack(t, likedTracks)} className="flex items-center gap-3 flex-1 min-w-0 text-left"><CoverImg track={t} className="w-10 h-10 rounded-md object-cover"/><div className="min-w-0"><div className={`text-sm font-medium truncate ${isCur?'text-[#D5AA55]':''}`}>{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div></div></button>
                             <span className="hidden sm:block text-xs text-white/40">{t.plays}</span><span className="text-xs text-white/60">{t.durationLabel}</span>
                             <button onClick={()=> toggleLike(t.id, t)} className="w-8 h-8 grid place-items-center text-[#C35445]"><Heart filled/></button>
                             <button onClick={()=> handleDownload(t)} className="w-8 h-8 grid place-items-center rounded-full border border-white/10 text-white/60"><DownloadIcon size={12}/></button>
@@ -2046,7 +2093,7 @@ export default function App(){
                         {localSongs.map((t,i)=>(
                           <div key={t.id} className="flex items-center gap-3 px-4 py-3 border-b border-white/5 last:border-0 hover:bg-white/5">
                             <span className="w-6 text-center text-xs text-white/30">{String(i+1).padStart(2,'0')}</span>
-                            <img loading="lazy" decoding="async" src={t.cover} alt="" className="w-10 h-10 rounded-md object-cover"/>
+                            <CoverImg track={t} className="w-10 h-10 rounded-md object-cover"/>
                             <div className="flex-1 min-w-0"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist} • Local File</div></div>
                             <span className="text-xs text-emerald-400 bg-emerald-500/10 px-2 py-1 rounded-full border border-emerald-500/20">Local</span>
                             <button onClick={()=> playTrack(t, localSongs)} className="w-9 h-9 rounded-full bg-white text-black grid place-items-center"><PlayMini size={14}/></button>
@@ -2075,7 +2122,7 @@ export default function App(){
                         {downloaded.map(({track},i)=>(
                           <div key={track.id} className="flex items-center gap-3 px-4 py-3 border-b border-white/5 last:border-0 hover:bg-white/5">
                             <span className="w-6 text-center text-xs text-white/30">{String(i+1).padStart(2,'0')}</span>
-                            <img loading="lazy" decoding="async" src={track.cover} alt="" className="w-10 h-10 rounded-md object-cover"/>
+                            <CoverImg track={track} className="w-10 h-10 rounded-md object-cover"/>
                             <div className="flex-1 min-w-0"><div className="text-sm font-medium truncate">{track.title}</div><div className="text-xs text-white/50 truncate">{track.artist} • Offline</div></div>
                             <span className="hidden sm:block text-xs text-emerald-400">Offline ✓</span>
                             <button onClick={()=> playTrack(track, downloaded.map(d=>d.track))} className="w-9 h-9 rounded-full bg-white text-black grid place-items-center"><PlayMini size={14}/></button>
@@ -2094,7 +2141,7 @@ export default function App(){
                       {allSongsForLibrary.map((t,i)=>(
                         <div key={t.id} className="flex items-center gap-3 px-4 py-2 hover:bg-white/5">
                           <span className="w-6 text-center text-xs text-white/30">{i+1}</span>
-                          <button onClick={()=> playTrack(t, allSongsForLibrary)} className="flex items-center gap-3 flex-1 min-w-0 text-left"><img loading="lazy" decoding="async" src={t.cover} alt="" className="w-10 h-10 rounded-md object-cover"/><div className="min-w-0"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist} {t.isLocal && <span className="ml-1 text-emerald-400">• Local</span>}</div></div></button>
+                          <button onClick={()=> playTrack(t, allSongsForLibrary)} className="flex items-center gap-3 flex-1 min-w-0 text-left"><CoverImg track={t} className="w-10 h-10 rounded-md object-cover"/><div className="min-w-0"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist} {t.isLocal && <span className="ml-1 text-emerald-400">• Local</span>}</div></div></button>
                           <button onClick={()=> setShowAddToPl(t)} className="w-8 h-8 grid place-items-center rounded-full bg-white/10 text-white/60"><PlusIcon/></button>
                           <button onClick={()=> handleDownload(t)} className="w-8 h-8 grid place-items-center rounded-full border border-white/10 text-white/60"><DownloadIcon size={12}/></button>
                         </div>
@@ -2126,7 +2173,7 @@ export default function App(){
                       const isReal = t.source && !t.source.includes('tone')
                       return (
                         <button key={t.id} onClick={()=> playTrack(t, homeTracks)} className={`group flex items-center gap-3 pr-2 rounded-xl overflow-hidden text-left border transition ${idx===currentIndex? 'bg-white text-black border-white':'bg-white/[0.07] hover:bg-white/10 border-white/5'}`}>
-                          <div className="relative w-14 h-14 sm:w-[64px] sm:h-[64px] shrink-0 overflow-hidden"><img loading="lazy" decoding="async" src={t.cover} alt="" className="w-full h-full object-cover"/><span className={`absolute inset-0 grid place-items-center bg-black/30 opacity-0 group-hover:opacity-100 ${idx===currentIndex && isPlaying? '!opacity-100':''}`}>{idx===currentIndex && isPlaying? <PauseIcon/>:<PlayIcon/>}</span>{!isReal && <span className="absolute bottom-1 left-1 text-[8px] bg-black/60 text-white px-1 py-0.5 rounded">tone</span>}</div>
+                          <div className="relative w-14 h-14 sm:w-[64px] sm:h-[64px] shrink-0 overflow-hidden"><CoverImg track={t} className="w-full h-full object-cover"/><span className={`absolute inset-0 grid place-items-center bg-black/30 opacity-0 group-hover:opacity-100 ${idx===currentIndex && isPlaying? '!opacity-100':''}`}>{idx===currentIndex && isPlaying? <PauseIcon/>:<PlayIcon/>}</span>{!isReal && <span className="absolute bottom-1 left-1 text-[8px] bg-black/60 text-white px-1 py-0.5 rounded">tone</span>}</div>
                           <span className={`text-sm font-semibold leading-tight line-clamp-2 pr-2 ${idx===currentIndex? 'text-black':'text-white'}`}>{t.title}<span className="block text-xs font-normal opacity-60">{t.artist} {t.source? `• ${t.source.replace(" • Full","")}`:""}</span></span>
                           {liked.has(t.id) && <span className="ml-auto hidden sm:block text-[#C35445] mr-2"><Heart filled size={16}/></span>}
                         </button>
@@ -2151,7 +2198,7 @@ export default function App(){
                     {( (activeCat==="All"? playlists : getCategoryPlaylists(activeCat)).length? (activeCat==="All"? playlists : getCategoryPlaylists(activeCat)) : homeTracks.slice(0,8).map((tr,i)=> ({ id:`home-curated-${i}`, title: tr.title, subtitle: tr.artist + ' • ' + (tr.source||'Full'), cover: tr.cover, color: 'from-[#6A418E] to-[#543551]', count: tr.durationLabel, songs: [] })) ).map(pl=> (
                       <div key={pl.id} onClick={()=> openPlaylist(pl)} className="shrink-0 w-[172px] sm:w-[188px] glass rounded-[20px] p-3 snap-start hover:bg-white/[0.09] transition group cursor-pointer">
                         <div className="relative aspect-square rounded-[16px] overflow-hidden mb-3">
-                          <img loading="lazy" decoding="async" src={pl.cover} alt="" className="w-full h-full object-cover group-hover:scale-105 transition duration-700"/>
+                          <CoverImg track={pl} className="w-full h-full object-cover group-hover:scale-105 transition duration-700"/>
                           <div className={`absolute inset-0 bg-gradient-to-br ${pl.color} opacity-70 mix-blend-overlay`}/>
                           <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent"/>
                           <button onClick={(e)=>{ e.stopPropagation(); playPlaylistNow(pl) }} className="absolute bottom-3 right-3 w-10 h-10 rounded-full bg-white text-black grid place-items-center shadow-xl opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0 transition"><PlayMini/></button>
@@ -2174,7 +2221,7 @@ export default function App(){
                         return (
                           <div key={t.id+String(i)} className={`flex items-center gap-3 p-2 rounded-xl transition ${isCur? 'bg-white text-black':'hover:bg-white/5'}`}>
                             <span className={`hidden sm:block w-6 text-center text-xs font-bold ${isCur? 'text-black/40':'text-white/30'}`}>{String(i+1).padStart(2,'0')}</span>
-                            <button onClick={()=> playTrack(t)} className="flex items-center gap-3 flex-1 min-w-0 text-left"><span className="relative block w-11 h-11 rounded-lg overflow-hidden shrink-0"><img loading="lazy" decoding="async" src={t.cover} alt="" className="w-full h-full object-cover"/><span className={`absolute inset-0 grid place-items-center bg-black/40 opacity-0 hover:opacity-100 ${isCur? 'opacity-100 bg-black/20':''}`}>{isCur && isPlaying? <PauseMini dark/>:<PlayMini dark/>}</span></span><span className="min-w-0 flex-1 block"><span className={`block text-sm font-medium truncate ${isCur? 'text-black':'text-white'}`}>{t.title} {t.source && <span className="text-[10px] bg-black/5 px-1.5 py-0.5 rounded-full border border-black/10 ml-1">{t.source}</span>}</span><span className={`block text-xs truncate ${isCur? 'text-black/60':'text-white/50'}`}>{t.artist}</span></span></button>
+                            <button onClick={()=> playTrack(t)} className="flex items-center gap-3 flex-1 min-w-0 text-left"><span className="relative block w-11 h-11 rounded-lg overflow-hidden shrink-0"><CoverImg track={t} className="w-full h-full object-cover"/><span className={`absolute inset-0 grid place-items-center bg-black/40 opacity-0 hover:opacity-100 ${isCur? 'opacity-100 bg-black/20':''}`}>{isCur && isPlaying? <PauseMini dark/>:<PlayMini dark/>}</span></span><span className="min-w-0 flex-1 block"><span className={`block text-sm font-medium truncate ${isCur? 'text-black':'text-white'}`}>{t.title} {t.source && <span className="text-[10px] bg-black/5 px-1.5 py-0.5 rounded-full border border-black/10 ml-1">{t.source}</span>}</span><span className={`block text-xs truncate ${isCur? 'text-black/60':'text-white/50'}`}>{t.artist}</span></span></button>
                             <button onClick={()=> toggleLike(t.id, t)} className={`hidden sm:grid w-8 h-8 place-items-center rounded-full ${liked.has(t.id)? 'text-[#C35445]': isCur? 'text-black/30':'text-white/30 hover:text-white'}`}><Heart filled={liked.has(t.id)} size={16}/></button>
                             <button onClick={()=> handleDownload(t)} className={`hidden sm:grid w-8 h-8 place-items-center rounded-full border ${downloaded.find(d=> String(d.id)===String(t.id))? 'bg-emerald-500 border-emerald-500 text-white':'border-white/10 text-white/40'}`}><DownloadIcon size={12}/></button>
                             <span className={`text-xs font-medium ${isCur? 'text-black/60':'text-white/40'}`}>{t.durationLabel}</span>
@@ -2200,7 +2247,7 @@ export default function App(){
                           <div className="space-y-1 max-h-[300px] overflow-y-auto">
                             {artistTracks.map(tr=>(
                               <button key={tr.id} onClick={()=> playTrack(tr, artistTracks)} className="w-full flex items-center gap-2 p-1.5 rounded-xl hover:bg-white/10 text-left">
-                                <img loading="lazy" decoding="async" src={tr.cover} alt="" className="w-8 h-8 rounded-lg object-cover"/>
+                                <CoverImg track={tr} className="w-8 h-8 rounded-lg object-cover"/>
                                 <div className="min-w-0 flex-1"><div className="text-xs font-medium truncate">{tr.title}</div><div className="text-[11px] text-white/50 truncate">{tr.artist}</div></div>
                                 <PlayMini size={10}/>
                               </button>
@@ -2220,7 +2267,7 @@ export default function App(){
                         <div className="inline-flex items-center gap-2 text-xs font-bold tracking-widest bg-white/15 backdrop-blur px-3 py-1.5 rounded-full border border-white/10">✨ MAXMUSIC ORIGINALS</div>
                         <h3 className="text-2xl font-bold font-display leading-tight mt-3">Monsoon Mix 2025</h3><p className="text-sm text-white/80 mt-2 leading-relaxed">Baarishein, Heeriye & 30 soulful tracks for chai & late nights.</p>
                         <div className="flex items-center gap-3 mt-4"><button onClick={()=>{ if(homeTracks.length) playTrack(homeTracks[0], homeTracks); else showToast('Pehle tracks load hojne do…') }} className="px-6 py-2.5 rounded-full bg-white text-black text-sm font-bold flex items-center gap-2"><PlayMini/> Play</button><button onClick={()=>{ if(homeTracks.length){ toggleLike(homeTracks[0].id, homeTracks[0]) } }} className={`w-10 h-10 rounded-full backdrop-blur grid place-items-center border ${homeTracks.length&&liked.has(homeTracks[0].id)? 'bg-[#C35445] border-[#C35445] text-white':'bg-white/15 border-white/15 text-white'}`}><Heart filled={!!(homeTracks.length&&liked.has(homeTracks[0].id))}/></button></div>
-                        <div className="flex -space-x-2 mt-5">{homeTracks.slice(0,4).map(x=> (<img loading="lazy" decoding="async" key={x.id} src={x.cover} alt="" className="w-8 h-8 rounded-full object-cover border-2 border-[#6A418E]"/>))}{homeTracks.length>4 && <span className="w-8 h-8 rounded-full bg-black/30 backdrop-blur border-2 border-white/20 grid place-items-center text-xs font-bold">+{homeTracks.length-4}</span>}</div>
+                        <div className="flex -space-x-2 mt-5">{homeTracks.slice(0,4).map(x=> (<CoverImg key={x.id} track={x} className="w-8 h-8 rounded-full object-cover border-2 border-[#6A418E]"/>))}{homeTracks.length>4 && <span className="w-8 h-8 rounded-full bg-black/30 backdrop-blur border-2 border-white/20 grid place-items-center text-xs font-bold">+{homeTracks.length-4}</span>}</div>
                       </div>
                     </section>
                   </div>
@@ -2231,7 +2278,7 @@ export default function App(){
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
                     {(activeCat==="All"? (homeTracks.length? homeTracks.slice(0,6) : []) : (homeTracks.length? homeTracks.slice(0,12) : [])).map(t=>(
                       <button key={t.id} onClick={()=> playTrack(t, activeCat==="All"? (homeTracks.length? homeTracks : localSongs) : getCategoryTracks(activeCat))} className="text-left glass rounded-[18px] p-3 hover:bg-white/10 transition group">
-                        <div className="relative aspect-square rounded-xl overflow-hidden mb-3"><img loading="lazy" decoding="async" src={t.cover} alt="" className="w-full h-full object-cover group-hover:scale-105 transition duration-700"/><span className="absolute bottom-2 right-2 w-9 h-9 rounded-full bg-[#D5AA55] text-black grid place-items-center shadow-lg translate-y-1 opacity-0 group-hover:opacity-100 group-hover:translate-y-0 transition"><PlayMini/></span>{t.isLocal && <span className="absolute top-2 left-2 text-[10px] font-bold bg-emerald-500 text-white px-2 py-0.5 rounded-full">LOCAL</span>}{activeCat!=="All" && <span className="absolute top-2 right-2 text-[10px] font-bold bg-black/60 backdrop-blur text-white px-2 py-0.5 rounded-full border border-white/10">{activeCat}</span>}</div>
+                        <div className="relative aspect-square rounded-xl overflow-hidden mb-3"><CoverImg track={t} className="w-full h-full object-cover group-hover:scale-105 transition duration-700"/><span className="absolute bottom-2 right-2 w-9 h-9 rounded-full bg-[#D5AA55] text-black grid place-items-center shadow-lg translate-y-1 opacity-0 group-hover:opacity-100 group-hover:translate-y-0 transition"><PlayMini/></span>{t.isLocal && <span className="absolute top-2 left-2 text-[10px] font-bold bg-emerald-500 text-white px-2 py-0.5 rounded-full">LOCAL</span>}{activeCat!=="All" && <span className="absolute top-2 right-2 text-[10px] font-bold bg-black/60 backdrop-blur text-white px-2 py-0.5 rounded-full border border-white/10">{activeCat}</span>}</div>
                         <div className="text-sm font-semibold leading-tight truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div>
                       </button>
                     ))}
@@ -2247,7 +2294,7 @@ export default function App(){
                 <div className="absolute top-0 left-0 right-0 h-[3px] bg-white/10"><div className="h-full bg-[#D5AA55] rounded-r-full transition-all" style={{ width:`${duration? Math.min(100,(progress/duration)*100):0}%`}}/></div>
                 <div className="flex items-center gap-3 px-3 py-3 lg:px-4">
                   <button onClick={()=> setShowFull(true)} className="flex items-center gap-3 min-w-0 flex-1 text-left">
-                    <div className="relative w-12 h-12 lg:w-14 lg:h-14 rounded-xl overflow-hidden shrink-0"><img loading="lazy" decoding="async" src={current.cover} alt="" className="w-full h-full object-cover"/><div className="absolute inset-0 ring-1 ring-white/10 rounded-xl"/></div>
+                    <div className="relative w-12 h-12 lg:w-14 lg:h-14 rounded-xl overflow-hidden shrink-0"><CoverImg track={current} className="w-full h-full object-cover"/><div className="absolute inset-0 ring-1 ring-white/10 rounded-xl"/></div>
                     <div className="min-w-0"><div className="text-sm font-semibold leading-tight truncate pr-2">{current.title} {current.source && <span className="text-[10px] bg-white/10 px-1.5 py-0.5 rounded-full border border-white/10 ml-1">{current.source}</span>}</div><div className="text-xs text-white/60 truncate pr-2 flex items-center gap-2">{current.artist}<span className="hidden sm:inline-flex items-center gap-1 text-[11px] bg-white/10 px-2 py-0.5 rounded-full"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"/> {downloaded.find(d=> String(d.id)===String(current.id))? 'Offline':'Live'}</span></div></div>
                   </button>
                   <button onClick={()=> toggleLike(current.id, current)} className={`hidden sm:grid w-9 h-9 place-items-center rounded-full border ${liked.has(current.id)? 'bg-[#C35445] border-[#C35445] text-white':'border-white/10 text-white/60 hover:text-white hover:bg-white/10'}`}><Heart filled={liked.has(current.id)}/></button>
@@ -2281,7 +2328,7 @@ export default function App(){
                 <div className="max-w-3xl mx-auto px-4 py-5 pb-32">
                   <button onClick={()=> setSelectedPlaylist(null)} className="flex items-center gap-2 text-sm text-white/70 hover:text-white mb-4"><ChevronLeft/> Back</button>
                   <div className="flex gap-4 items-center">
-                    <img loading="lazy" decoding="async" src={pl.cover} alt="" className="w-28 h-28 sm:w-36 sm:h-36 rounded-2xl object-cover shadow-xl shrink-0"/>
+                    <CoverImg track={pl} className="w-28 h-28 sm:w-36 sm:h-36 rounded-2xl object-cover shadow-xl shrink-0"/>
                     <div className="min-w-0 flex-1">
                       <div className="text-[11px] font-bold tracking-widest text-white/50">PLAYLIST</div>
                       <h2 className="text-2xl font-bold font-display leading-tight truncate">{pl.title}</h2>
@@ -2301,7 +2348,7 @@ export default function App(){
                         <div key={String(t.id)+i} className={`flex items-center gap-3 p-2 rounded-xl ${isCur?'bg-white text-black':'hover:bg-white/5'}`}>
                           <span className={`w-6 text-center text-xs font-bold shrink-0 ${isCur?'text-black/40':'text-white/30'}`}>{String(i+1).padStart(2,'0')}</span>
                           <button onClick={()=> playTrack(t, tracks)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
-                            <img loading="lazy" decoding="async" src={t.cover} alt="" className="w-11 h-11 rounded-lg object-cover shrink-0"/>
+                            <CoverImg track={t} className="w-11 h-11 rounded-lg object-cover shrink-0"/>
                             <span className="min-w-0 flex-1 block"><span className={`block text-sm font-medium truncate ${isCur?'text-black':'text-white'}`}>{t.title}</span><span className={`block text-xs truncate ${isCur?'text-black/60':'text-white/50'}`}>{t.artist}</span></span>
                           </button>
                           <span className={`text-xs hidden sm:block shrink-0 ${isCur?'text-black/60':'text-white/40'}`}>{t.durationLabel}</span>
@@ -2327,7 +2374,7 @@ export default function App(){
                     <div className="space-y-1 max-h-[320px] overflow-y-auto">
                       {artistTracks.map(tr=>(
                         <button key={tr.id} onClick={()=> playTrack(tr, artistTracks)} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/10 text-left">
-                          <img loading="lazy" decoding="async" src={tr.cover} alt="" className="w-10 h-10 rounded-lg object-cover shrink-0"/>
+                          <CoverImg track={tr} className="w-10 h-10 rounded-lg object-cover shrink-0"/>
                           <div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{tr.title}</div><div className="text-xs text-white/50 truncate">{tr.artist}</div></div>
                           <span className="text-xs text-white/40 shrink-0">{tr.durationLabel}</span>
                         </button>
@@ -2369,7 +2416,7 @@ export default function App(){
             onTouchStart={e=>{ touchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() } }}
             onTouchEnd={e=>{ const s = touchRef.current; if(!s) return; const dx = e.changedTouches[0].clientX - s.x; const dy = e.changedTouches[0].clientY - s.y; if(Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy)*1.4){ if(dx < 0) handleNext(); else handlePrev(); } else if(dy > 120 && Math.abs(dy) > Math.abs(dx)*1.2){ setShowFull(false) } touchRef.current=null }}>
             <div className="min-h-screen relative">
-              <div className="absolute inset-0 overflow-hidden"><img loading="lazy" decoding="async" src={current.cover} alt="" className="w-full h-full object-cover scale-110 blur-[60px] opacity-30"/><div className="absolute inset-0 bg-gradient-to-b from-[#060306]/40 via-[#060306]/70 to-[#060306]"/><div className="absolute inset-0" style={{ background:`radial-gradient(600px 600px at 50% 0%, ${current.color}40, transparent)`}}/></div>
+              <div className="absolute inset-0 overflow-hidden"><CoverImg track={current} className="w-full h-full object-cover scale-110 blur-[60px] opacity-30"/><div className="absolute inset-0 bg-gradient-to-b from-[#060306]/40 via-[#060306]/70 to-[#060306]"/><div className="absolute inset-0" style={{ background:`radial-gradient(600px 600px at 50% 0%, ${current.color}40, transparent)`}}/></div>
               <div className="relative max-w-[980px] mx-auto px-4 lg:px-6 py-4 lg:py-6">
                 <div className="flex items-center justify-between gap-4">
                   <button onClick={()=> setShowFull(false)} className="w-10 h-10 rounded-full bg-white/10 backdrop-blur border border-white/10 grid place-items-center hover:bg-white/15"><ChevronDownLarge/></button>
@@ -2379,7 +2426,7 @@ export default function App(){
                 <div className="mt-6 lg:mt-10 grid grid-cols-1 lg:grid-cols-[1.1fr_0.9fr] gap-8 lg:gap-12 items-center min-w-0">
                   <div className="relative mx-auto w-full max-w-[520px] min-w-0">
                     <div className="relative aspect-square rounded-[32px] overflow-hidden shadow-[0_30px_80px_rgba(0,0,0,0.6)] bg-black">
-                      <img loading="lazy" decoding="async" src={current.cover} alt="" className={`w-full h-full object-cover ${isPlaying? 'scale-[1.02]':'scale-100'} transition duration-[2000ms]`}/>
+                      <CoverImg track={current} className={`w-full h-full object-cover ${isPlaying? 'scale-[1.02]':'scale-100'} transition duration-[2000ms]`}/>
                       <div className="absolute inset-0 rounded-[32px] ring-1 ring-white/10"/>
                       <div className={`absolute inset-0 grid place-items-center transition-opacity ${showLyrics? 'opacity-0':'opacity-100'}`}>
                         <div className={`w-[18%] aspect-square rounded-full bg-black/70 backdrop-blur border-4 border-white/10 grid place-items-center shadow-2xl ${isPlaying? 'animate-spin':''}`} style={{ animationDuration:'8s'}}><div className="w-3 h-3 rounded-full bg-[#D5AA55]"/></div>
@@ -2430,14 +2477,14 @@ export default function App(){
                   </div>
                 )}
                 {showQueue && (
-                  <div className="mt-8 glass rounded-[24px] p-6"><div className="flex items-center justify-between mb-4"><h3 className="font-bold">Up next</h3><button onClick={()=> setShowQueue(false)} className="text-sm text-white/60 hover:text-white">Close</button></div><div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">{queue.slice(currentIndex+1, currentIndex+6).map(t=> (<button key={t.id} onClick={()=>{ const idx=queue.findIndex(x=> String(x.id)===String(t.id)); setCurrentIndex(idx); setIsPlaying(true)}} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/10 text-left"><img loading="lazy" decoding="async" src={t.cover} alt="" className="w-11 h-11 rounded-lg object-cover"/><div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div></div><span className="text-xs text-white/40">{t.durationLabel}</span></button>))}</div></div>
+                  <div className="mt-8 glass rounded-[24px] p-6"><div className="flex items-center justify-between mb-4"><h3 className="font-bold">Up next</h3><button onClick={()=> setShowQueue(false)} className="text-sm text-white/60 hover:text-white">Close</button></div><div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">{queue.slice(currentIndex+1, currentIndex+6).map(t=> (<button key={t.id} onClick={()=>{ const idx=queue.findIndex(x=> String(x.id)===String(t.id)); setCurrentIndex(idx); setIsPlaying(true)}} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/10 text-left"><CoverImg track={t} className="w-11 h-11 rounded-lg object-cover"/><div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div></div><span className="text-xs text-white/40">{t.durationLabel}</span></button>))}</div></div>
                 )}
               </div>
             </div>
           </div>}
 
           {current && showQueue && !showFull && (
-            <div className="fixed inset-0 z-40"><div onClick={()=> setShowQueue(false)} className="absolute inset-0 bg-black/60 backdrop-blur-sm"/><div className="absolute bottom-[88px] right-4 left-4 lg:left-auto lg:right-6 w-auto lg:w-[380px] glass-strong rounded-[20px] p-4 max-h-[60vh] flex flex-col shadow-2xl"><div className="flex items-center justify-between mb-3"><h3 className="font-bold">Queue</h3><button onClick={()=> setShowQueue(false)} className="w-8 h-8 grid place-items-center rounded-full hover:bg-white/10"><CloseIcon/></button></div><div className="text-xs font-semibold tracking-widest text-white/40 mb-2">NOW PLAYING</div><div className="flex items-center gap-3 p-2 rounded-xl bg-white text-black mb-3"><img loading="lazy" decoding="async" src={current.cover} alt="" className="w-11 h-11 rounded-lg object-cover"/><div className="min-w-0"><div className="text-sm font-semibold truncate">{current.title}</div><div className="text-xs text-black/60 truncate">{current.artist}</div></div><Equalizer dark/></div><div className="text-xs font-semibold tracking-widest text-white/40 mb-2">NEXT UP</div><div className="space-y-1 overflow-y-auto flex-1 pr-1">{queue.slice(currentIndex+1, currentIndex+7).map(t=> (<button key={t.id} onClick={()=>{ const idx=queue.findIndex(x=> String(x.id)===String(t.id)); setCurrentIndex(idx); setIsPlaying(true)}} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 text-left"><img loading="lazy" decoding="async" src={t.cover} alt="" className="w-10 h-10 rounded-lg object-cover"/><div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div></div><PlayMini/></button>))}</div><button onClick={()=>{ setShuffle(true); handleNext()}} className="mt-3 w-full py-2.5 rounded-full bg-white text-black text-sm font-bold">Shuffle play</button></div></div>
+            <div className="fixed inset-0 z-40"><div onClick={()=> setShowQueue(false)} className="absolute inset-0 bg-black/60 backdrop-blur-sm"/><div className="absolute bottom-[88px] right-4 left-4 lg:left-auto lg:right-6 w-auto lg:w-[380px] glass-strong rounded-[20px] p-4 max-h-[60vh] flex flex-col shadow-2xl"><div className="flex items-center justify-between mb-3"><h3 className="font-bold">Queue</h3><button onClick={()=> setShowQueue(false)} className="w-8 h-8 grid place-items-center rounded-full hover:bg-white/10"><CloseIcon/></button></div><div className="text-xs font-semibold tracking-widest text-white/40 mb-2">NOW PLAYING</div><div className="flex items-center gap-3 p-2 rounded-xl bg-white text-black mb-3"><CoverImg track={current} className="w-11 h-11 rounded-lg object-cover"/><div className="min-w-0"><div className="text-sm font-semibold truncate">{current.title}</div><div className="text-xs text-black/60 truncate">{current.artist}</div></div><Equalizer dark/></div><div className="text-xs font-semibold tracking-widest text-white/40 mb-2">NEXT UP</div><div className="space-y-1 overflow-y-auto flex-1 pr-1">{queue.slice(currentIndex+1, currentIndex+7).map(t=> (<button key={t.id} onClick={()=>{ const idx=queue.findIndex(x=> String(x.id)===String(t.id)); setCurrentIndex(idx); setIsPlaying(true)}} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 text-left"><CoverImg track={t} className="w-10 h-10 rounded-lg object-cover"/><div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div></div><PlayMini/></button>))}</div><button onClick={()=>{ setShuffle(true); handleNext()}} className="mt-3 w-full py-2.5 rounded-full bg-white text-black text-sm font-bold">Shuffle play</button></div></div>
           )}
 
           {/* itrace-25: npPermBar nag banner removed — permission auto-granted, no popup on open */}
@@ -2500,7 +2547,7 @@ export default function App(){
             <div className="fixed inset-0 z-50 grid place-items-center p-4"><div onClick={()=> setShowCreatePl(false)} className="absolute inset-0 bg-black/70 backdrop-blur-sm"/><div className="relative w-full max-w-md glass-strong rounded-[24px] p-6"><h3 className="text-lg font-bold">Create playlist</h3><p className="text-sm text-white/60 mt-1">Give your playlist a name — you can add songs later from Search or Library.</p><input autoFocus value={newPlName} onChange={e=> setNewPlName(e.target.value)} placeholder="My Playlist #1" className="mt-4 w-full h-11 px-4 rounded-full bg-white text-black placeholder:text-black/40 outline-none"/><div className="flex gap-2 mt-4"><button onClick={()=> setShowCreatePl(false)} className="flex-1 py-2.5 rounded-full bg-white/10 border border-white/10 font-semibold">Cancel</button><button onClick={handleCreatePlaylist} className="flex-1 py-2.5 rounded-full bg-white text-black font-bold">Create</button></div></div></div>
           )}
           {showAddToPl && (
-            <div className="fixed inset-0 z-50 grid place-items-center p-4"><div onClick={()=> setShowAddToPl(null)} className="absolute inset-0 bg-black/70 backdrop-blur-sm"/><div className="relative w-full max-w-md glass-strong rounded-[24px] p-6 max-h-[80vh] flex flex-col"><h3 className="font-bold">Add to playlist</h3><p className="text-sm text-white/60 truncate">"{showAddToPl.title}" • {showAddToPl.artist}</p><div className="mt-4 space-y-2 overflow-y-auto flex-1 pr-1">{playlists.map(pl=> (<button key={pl.id} onClick={()=> handleAddToPlaylist(pl.id, showAddToPl)} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/10 text-left"><img loading="lazy" decoding="async" src={pl.cover} alt="" className="w-12 h-12 rounded-lg object-cover"/><div className="min-w-0 flex-1"><div className="text-sm font-semibold truncate">{pl.title}</div><div className="text-xs text-white/50">{pl.count}</div></div><PlusIcon/></button>))}<button onClick={()=>{ setShowCreatePl(true); setShowAddToPl(null)}} className="w-full mt-2 py-3 rounded-xl border-2 border-dashed border-white/15 text-sm font-semibold hover:bg-white/5">+ New Playlist</button></div><button onClick={()=> setShowAddToPl(null)} className="mt-4 w-full py-2.5 rounded-full bg-white/10 border border-white/10">Close</button></div></div>
+            <div className="fixed inset-0 z-50 grid place-items-center p-4"><div onClick={()=> setShowAddToPl(null)} className="absolute inset-0 bg-black/70 backdrop-blur-sm"/><div className="relative w-full max-w-md glass-strong rounded-[24px] p-6 max-h-[80vh] flex flex-col"><h3 className="font-bold">Add to playlist</h3><p className="text-sm text-white/60 truncate">"{showAddToPl.title}" • {showAddToPl.artist}</p><div className="mt-4 space-y-2 overflow-y-auto flex-1 pr-1">{playlists.map(pl=> (<button key={pl.id} onClick={()=> handleAddToPlaylist(pl.id, showAddToPl)} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/10 text-left"><CoverImg track={pl} className="w-12 h-12 rounded-lg object-cover"/><div className="min-w-0 flex-1"><div className="text-sm font-semibold truncate">{pl.title}</div><div className="text-xs text-white/50">{pl.count}</div></div><PlusIcon/></button>))}<button onClick={()=>{ setShowCreatePl(true); setShowAddToPl(null)}} className="w-full mt-2 py-3 rounded-xl border-2 border-dashed border-white/15 text-sm font-semibold hover:bg-white/5">+ New Playlist</button></div><button onClick={()=> setShowAddToPl(null)} className="mt-4 w-full py-2.5 rounded-full bg-white/10 border border-white/10">Close</button></div></div>
           )}
 
           {showEQ && (
@@ -2660,7 +2707,7 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
             <h3 className="font-bold mb-3">{t('recentpl')}</h3>
             <div className="space-y-2">
               {playlists.slice(0,3).map(pl=> (
-                <div key={pl.id} onClick={()=> X.onOpenPlaylist && X.onOpenPlaylist(pl.id)} className="flex gap-3 items-center p-2 rounded-xl hover:bg-white/5 cursor-pointer"><img loading="lazy" decoding="async" src={pl.cover} alt="" className="w-12 h-12 rounded-lg object-cover"/><div><div className="text-sm font-semibold">{pl.title}</div><div className="text-xs text-white/50">{pl.count}</div></div></div>
+                <div key={pl.id} onClick={()=> X.onOpenPlaylist && X.onOpenPlaylist(pl.id)} className="flex gap-3 items-center p-2 rounded-xl hover:bg-white/5 cursor-pointer"><CoverImg track={pl} className="w-12 h-12 rounded-lg object-cover"/><div><div className="text-sm font-semibold">{pl.title}</div><div className="text-xs text-white/50">{pl.count}</div></div></div>
               ))}
               {playlists.length===0 && <div className="text-sm text-white/50">{t('nopl')}</div>}
             </div>
@@ -2695,7 +2742,7 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
             <div className="space-y-2">
               {playlists.map(pl=> (
                 <div key={pl.id} className="flex gap-3 items-center p-2 rounded-xl hover:bg-white/5">
-                  <button onClick={()=> X.onOpenPlaylist && X.onOpenPlaylist(pl.id)} className="flex gap-3 items-center flex-1 min-w-0 text-left"><img loading="lazy" decoding="async" src={pl.cover} alt="" className="w-12 h-12 rounded-lg object-cover shrink-0"/><div className="min-w-0"><div className="text-sm font-semibold truncate">{pl.title}</div><div className="text-xs text-white/50">{pl.count || `${(pl.tracks||pl.songs||[]).length} songs`}</div></div></button>
+                  <button onClick={()=> X.onOpenPlaylist && X.onOpenPlaylist(pl.id)} className="flex gap-3 items-center flex-1 min-w-0 text-left"><CoverImg track={pl} className="w-12 h-12 rounded-lg object-cover shrink-0"/><div className="min-w-0"><div className="text-sm font-semibold truncate">{pl.title}</div><div className="text-xs text-white/50">{pl.count || `${(pl.tracks||pl.songs||[]).length} songs`}</div></div></button>
                   <button onClick={()=> X.onPlayPlaylist && X.onPlayPlaylist(pl)} className="w-9 h-9 rounded-full bg-white text-black grid place-items-center shrink-0"><PlayMini/></button>
                 </div>
               ))}
@@ -2712,7 +2759,7 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
                 {(X.recently||[]).slice(0,20).map((t,i)=> (
                   <button key={String(t.id)+i} onClick={()=> X.onPlayTrack && X.onPlayTrack(t, X.recently)} className="w-full flex gap-3 items-center p-2 rounded-xl hover:bg-white/5 text-left">
                     <span className="w-6 text-center text-xs text-white/30 shrink-0">{String(i+1).padStart(2,'0')}</span>
-                    <img loading="lazy" decoding="async" src={t.cover} alt="" className="w-10 h-10 rounded-lg object-cover shrink-0"/>
+                    <CoverImg track={t} className="w-10 h-10 rounded-lg object-cover shrink-0"/>
                     <div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div></div>
                     <span className="text-xs text-white/40 shrink-0">{t.durationLabel}</span>
                   </button>
@@ -2735,6 +2782,22 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
 
 /* Icons */
 function HomeIcon({ active, size=18 }){ return <svg width={size} height={size} viewBox="0 0 24 24" fill={active?"currentColor":"none"} stroke="currentColor" strokeWidth={active?0:1.8}><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> }
+// Track artwork with a real fallback chain (itrace-29): canonical same-video
+// YouTube thumbnail / normalized Saavn CDN URL first, the track's own cover
+// next, and a neutral LOCAL placeholder last. A dead URL can never surface as
+// a broken-image glyph again, and no other song's art is ever substituted.
+function CoverImg({ track, src, videoId, className, style }){
+  const t = track || { cover: src, videoId }
+  const list = coverCandidates(t)
+  const sig = list.join('\n')
+  const [idx, setIdx] = useState(0)
+  useEffect(()=>{ setIdx(0) },[sig])
+  const cur = list[Math.min(idx, list.length-1)] || list[list.length-1]
+  return <img loading="lazy" decoding="async" referrerPolicy="no-referrer" src={cur} alt="" className={className} style={style} onError={()=>{
+    try{ const h = String(cur||'').replace(/^https?:\/\//,'').split('/')[0]; if(h) window.__artFail = h }catch{}
+    setIdx(i=> Math.min(i+1, list.length-1))
+  }}/>
+}
 function Avatar({ src, name, className, style }){
   const fallback = `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='96' height='96'><rect width='96' height='96' rx='20' fill='#2A1E2A'/><text x='48' y='64' font-size='42' font-family='system-ui,sans-serif' font-weight='700' fill='#D5AA55' text-anchor='middle'>${((String(name||'').trim()[0])||'S').toUpperCase()}</text></svg>`)}`
   return <img loading="lazy" decoding="async" src={src || fallback} alt="" className={className} style={style} onError={e=>{ e.currentTarget.onerror=null; e.currentTarget.src = fallback }}/>

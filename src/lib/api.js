@@ -1,6 +1,7 @@
 // YouTube Music-like — Piped (YouTube) primary with Invidious fallback, Saavn for Indian, Audius for global
 import CryptoJS from 'crypto-js'
 import { nativeJson, canNativeHttp } from './nativehttp.js'
+import { normalizeCoverUrl, ytThumb } from './trackmeta.js'
 const PIPED_HOSTS = [
   "https://pipedapi.kavin.rocks",
   "https://pipedapi.adminforge.de",
@@ -145,7 +146,9 @@ export async function searchPiped(query, limit=20, nextpage=null){
     videoId = videoId.split('?')[0].split('&')[0]
     const title = s.title || "Unknown"
     const artist = s.uploaderName || s.uploader || "YouTube"
-    const cover = s.thumbnail || s.thumbnails?.[0]?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
+    // Canonical same-video thumbnail — Piped instance proxy thumbnails die with
+    // their host / expire, which is why YouTube covers broke en masse (itrace-29).
+    const cover = ytThumb(videoId)
     const dur = s.duration || 0
     return {
       id: `piped-${videoId}`,
@@ -184,7 +187,7 @@ export async function searchInvidious(query, limit=20){
           title: decode(v.title||"Unknown"),
           artist: v.author || "YouTube",
           album: v.author || "YouTube",
-          cover: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+          cover: ytThumb(videoId),
           audio: null,
           durationLabel: formatSec(v.lengthSeconds||0),
           durationSec: v.lengthSeconds||200,
@@ -509,15 +512,17 @@ async function searchSaavnOfficialDevice(query, limit=18){
       let audioQ = null
       if(urls.length >= 3) audioQ = { eco: urls[0], std: urls[1], hd: urls[2] }
       else if(urls.length === 2) audioQ = { eco: urls[0], std: urls[1], hd: urls[1] }
+      // image shapes seen live: string URL | [{quality,link|url},...] | {link|url}
       let img = s.image || mi.image || ''
-      if(Array.isArray(img)) img = img[img.length-1]?.link || img[img.length-1]?.url || ''
-      if(typeof img === 'string' && img.includes('150x150')) img = img.replace('150x150','500x500')
+      if(Array.isArray(img)){ const strs = img.map(x=> (typeof x==='string' ? x : (x && (x.link || x.url)) || '')); img = strs[strs.length-1] || '' }
+      else if(img && typeof img === 'object') img = img.link || img.url || ''
+      img = normalizeCoverUrl(img)
       const title = decode(s.title || s.song || s.name || 'Unknown')
       const artistVal = s.primary_artists || s.primaryArtists || s.subtitle || s.artists || s.singers || mi.music || 'Unknown'
       const album = (s.album && (s.album.name || (typeof s.album==='string' ? s.album : ''))) || mi.album || s.album_name || 'Single'
       const dur = Number(s.duration) || Number(mi.duration) || 0
       mapped.push({ id:`saavn-${s.id||title}-${Math.random().toString(36).slice(2,5)}`, title, artist:String(artistVal), album:String(album),
-        cover: (typeof img==='string' && img.startsWith('http')) ? img : 'https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=600&auto=format&fit=crop&q=60',
+        cover: img || '',
         audio, audioQ, durationLabel: dur? formatSec(dur):'3:30', durationSec:dur||210,
         plays:`${(Math.random()*800+50).toFixed(0)}M`, color:pickColor(), source:'Saavn • Full', isPreview:false,
         language:String(s.language||mi.language||'').toLowerCase(), original:s, videoId:null })
@@ -555,10 +560,11 @@ export async function searchSaavnMirrors(query, limit=18){
       if(!songs.length) throw new Error('empty')
       const mapped = songs.slice(0,limit).map(s=>{
         let img = null
-        if(Array.isArray(s.image)) img = s.image[2]?.url || s.image[2]?.link || s.image[1]?.url || s.image[1]?.link || s.image[0]?.url || s.image[0]?.link
+        if(Array.isArray(s.image)){ const strs = s.image.map(x=> (typeof x==='string' ? x : (x && (x.url || x.link)) || '')); img = strs[strs.length-1] || null }
         else if(typeof s.image==='string') img=s.image
         else if(s.image?.url) img=s.image.url
         else if(s.image?.link) img=s.image.link
+        img = normalizeCoverUrl(img)
         let audio=null
         if(Array.isArray(s.downloadUrl)){
           const last=s.downloadUrl[s.downloadUrl.length-1]
@@ -571,7 +577,7 @@ export async function searchSaavnMirrors(query, limit=18){
         const album=s.album?.name || (typeof s.album==='string'? s.album:null) || s.albumName || "Single"
         const dur=Number(s.duration)||Number(s.playTime)||Number(s.more_info?.duration)||0
         if(typeof audio==='string' && audio.startsWith('http') && !audio.includes('encrypted')){
-          return { id:`saavn-${s.id||title}-${Math.random().toString(36).slice(2,5)}`, title, artist:artistVal, album, cover: typeof img==='string'? img: img||"https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=600&auto=format&fit=crop&q=60", audio, durationLabel: dur? formatSec(dur):"3:30", durationSec:dur||210, plays:`${(Math.random()*800+50).toFixed(0)}M`, color:pickColor(), source:'Saavn • Full', isPreview:false, language:String(s.language||'').toLowerCase(), original:s, videoId:null }
+          return { id:`saavn-${s.id||title}-${Math.random().toString(36).slice(2,5)}`, title, artist:artistVal, album, cover: img || '', audio, durationLabel: dur? formatSec(dur):"3:30", durationSec:dur||210, plays:`${(Math.random()*800+50).toFixed(0)}M`, color:pickColor(), source:'Saavn • Full', isPreview:false, language:String(s.language||'').toLowerCase(), original:s, videoId:null }
         }
         return null
       }).filter(Boolean).filter(x=> x.audio && x.audio.startsWith('http'))
@@ -958,7 +964,7 @@ export async function getRelatedTracks(videoId, limit=12){
         if(!vid) return null
         return {
           id:`piped-${vid}`, videoId:vid, title:decode(s.title||"Unknown"), artist:s.uploaderName||"Related", album:"Related",
-          cover:s.thumbnail||`https://i.ytimg.com/vi/${vid}/hqdefault.jpg`,
+          cover: ytThumb(vid),
           audio:null, durationLabel:s.duration? formatSec(s.duration):"3:30", durationSec:s.duration||200,
           plays: s.views? `${(s.views/1000000).toFixed(1)}M`:`${(Math.random()*200).toFixed(0)}M`,
           color:pickColor(), source:'YouTube • Related', isPreview:false, original:s, host

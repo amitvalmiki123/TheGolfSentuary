@@ -68,11 +68,28 @@ export function npUpdate(meta){
   // Always mirror state to the WebView — the native service READS window.__np directly
   // (evaluateJavascript ticker), so the notification works even if the Capacitor bridge
   // never initializes. Plugin/raw calls below are just the faster path when available.
-  try{ window.__np = Object.assign({}, window.__np||{}, meta, { playing: meta.state ? meta.state!=='paused' : true }) }catch{}
+  let m = meta || {}
+  // Native artwork must be a bitmap-decodable https URL — never a data:/SVG URI.
+  if(m.artUrl && !/^https:\/\//.test(String(m.artUrl))) m = Object.assign({}, m, { artUrl: '' })
+  try{
+    const prev = window.__np || {}
+    if(m.key){
+      // Reject a stale snapshot from an older track generation (late async writer).
+      if(prev.key && prev.key !== m.key && (Number(m.gen)||0) < (Number(prev.gen)||0)) return
+      // Same track: merge (preserves fields a partial writer didn't send);
+      // new track: REPLACE, so no field (art/pos/dur) leaks from the old song.
+      const next = prev.key === m.key ? Object.assign({}, prev, m) : Object.assign({}, m)
+      // A metadata-only refresh must never wipe a known duration with 0.
+      if(prev.key === m.key && !(Number(next.dur) > 0) && Number(prev.dur) > 0) next.dur = prev.dur
+      window.__np = Object.assign(next, { playing: m.state ? m.state !== 'paused' : true })
+    } else {
+      window.__np = Object.assign({}, prev, m, { playing: m.state ? m.state !== 'paused' : true })
+    }
+  }catch{}
   if(npDisabled()) return
   const p = getProxy()
-  if(p){ try{ p.update && p.update(meta).catch(()=>{}) }catch{}; return }
-  rawCall('update', meta)
+  if(p){ try{ p.update && p.update(m).catch(()=>{}) }catch{}; return }
+  rawCall('update', m)
 }
 
 export function npStop(){

@@ -62,7 +62,7 @@ public class NowPlayingService extends Service {
             if (!t.isEmpty()) title = t;
             if (!a.isEmpty()) artist = a;
             playing = pl;
-            if (changed) { reposts++; lastCause = "tick1"; if (trackChanged) { posSec = 0; durSec = 0; durPosted = -1; updateSession(); startForegroundNow(); } else updateStateOnly(); }
+            if (changed) { reposts++; lastCause = "tick1"; if (trackChanged) { onTrackChangedNative(); updateSession(); startForegroundNow(); } else updateStateOnly(); }
             setWake(playing);
           }
         }
@@ -81,11 +81,12 @@ public class NowPlayingService extends Service {
               String art = o.optString("art");
               String t = normT(o.optString("t"));
               String a0 = normA(o.optString("a"));
+              npEngine = o.optString("e");
               if (!t.isEmpty()) { String a = a0; boolean pl = o.optBoolean("p");
                 boolean trackChanged = !t.equals(title) || (!a.isEmpty() && !a.equals(artist));
                 boolean changed = trackChanged || pl != playing;
                 title = t; if (!a.isEmpty()) artist = a; album = al; playing = pl;
-                if (changed) { reposts++; lastCause = "tick2"; if (trackChanged) { posSec = 0; durSec = 0; durPosted = -1; updateSession(); startForegroundNow(); } else updateStateOnly(); }
+                if (changed) { reposts++; lastCause = "tick2"; if (trackChanged) { onTrackChangedNative(); updateSession(); startForegroundNow(); } else updateStateOnly(); }
                 setWake(playing);
               }
               double jpos = o.optDouble("pos", -1); double jdur = o.optDouble("dur", -1);
@@ -116,6 +117,10 @@ public class NowPlayingService extends Service {
                 if (s.length() > 1 && s.charAt(0) == '"') s = s.substring(1, s.length() - 1);
                 String[] pp = s.split("\\|");
                 if (pp.length < 2) return;
+                // YT-iframe tracks: window.__np already carries the iframe's
+                // real pos/dur (tick2); the <audio> element can still hold the
+                // PREVIOUS song, and scraping it resurrected stale dur/pos.
+                if ("yt".equals(npEngine)) return;
                 double np = Double.parseDouble(pp[0]); double nd = Double.parseDouble(pp[1]);
                 ingestPos(np, nd);
               } catch (Exception ignored) {}
@@ -166,6 +171,14 @@ public class NowPlayingService extends Service {
   // so pause/resume never restarts the title marquee.
   private void updateStateOnly() { updatePos(); startForegroundNow(); }
 
+  // REAL track change only: reset position/duration and drop the previous
+  // song's bitmap immediately — showing another song's art while the new one
+  // loads (or when it has none) is worse than a brief placeholder.
+  private void onTrackChangedNative() {
+    posSec = 0; durSec = 0; durPosted = -1;
+    artGen++; art = null; artWanted = ""; artUrlLoaded = ""; artFailUrl = "";
+  }
+
 
   public interface ActionListener { void onAction(String action); }
   public static volatile ActionListener listener;
@@ -178,6 +191,16 @@ public class NowPlayingService extends Service {
   private android.os.PowerManager.WakeLock wakeLock;
   private volatile Bitmap art;
   private volatile String artUrlLoaded = "";
+  // Artwork generation guard (itrace-29): a bitmap is published ONLY if its URL
+  // is still the wanted one for the current track generation — late replies
+  // from a previous song can never overwrite the new track. artUrlLoaded is
+  // set ONLY after a successful decode, so failures retry (with backoff).
+  private volatile String artWanted = "";
+  private volatile String artLoading = "";
+  private volatile String artFailUrl = "";
+  private volatile long artFailAt = 0;
+  private volatile int artGen = 0;
+  private volatile String npEngine = "";
   private volatile String title = "MaxMusic";
   private volatile String artist = "Music";
   private volatile String album = "";
@@ -269,15 +292,18 @@ public class NowPlayingService extends Service {
     if (intent != null) {
       // DEDUP: JS re-pushes identical meta every 2.6s (watchdog) — re-posting each time
       // restarts the notification title marquee ("same song sliding again and again").
-      boolean metaChanged = false, playChanged = false;
+      boolean metaChanged = false, playChanged = false, identityChanged = false;
       String t = normX(intent.getStringExtra("title"), 60);
-      if (t != null && !t.equals(title)) { title = t; metaChanged = true; }
+      if (t != null && !t.equals(title)) { title = t; metaChanged = true; identityChanged = true; }
       String s = normX(intent.getStringExtra("artist"), 40);
-      if (s != null && !s.equals(artist)) { artist = s; metaChanged = true; }
+      if (s != null && !s.equals(artist)) { artist = s; metaChanged = true; identityChanged = true; }
       String m = normX(intent.getStringExtra("album"), 140);
       if (m != null && !m.equals(album)) { album = m; metaChanged = true; }
       boolean pl = intent.getBooleanExtra("playing", playing);
       if (pl != playing) { playing = pl; playChanged = true; }
+      // Identity reset BEFORE artwork: bump the generation first so the new
+      // track's load below is captured under the new generation (itrace-29).
+      if (identityChanged) onTrackChangedNative();
       String url = intent.getStringExtra("artUrl");
       if (url != null && !url.isEmpty() && !url.equals(artUrlLoaded)) loadArt(url);
       if (metaChanged) { reposts++; lastCause = "push"; updateSession(); startForegroundNow(); }
@@ -356,7 +382,7 @@ public class NowPlayingService extends Service {
         | PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_SKIP_TO_NEXT
         | PlaybackState.ACTION_SKIP_TO_PREVIOUS | PlaybackState.ACTION_SEEK_TO)
       .setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED,
-        posMs, 1f, SystemClock.elapsedRealtime())
+        posMs, playing ? 1f : 0f, SystemClock.elapsedRealtime())
       .build());
     } catch (Exception ignored) {}
   }
@@ -450,39 +476,70 @@ public class NowPlayingService extends Service {
     return (Build.VERSION.SDK_INT >= 26) ? b.build() : b.getNotification();
   }
 
-  private void loadArt(final String url) {
-    artUrlLoaded = url;
+  private void loadArt(final String rawUrl) {
+    if (rawUrl == null) return;
+    String u = rawUrl.trim();
+    // Native bitmap decode needs a plain https raster URL — never a data:/SVG
+    // URI, blob: or cleartext http (upgraded, matching the JS normalizer).
+    if (u.startsWith("http://")) u = "https://" + u.substring(7);
+    if (!u.startsWith("https://")) return;
+    if (u.toLowerCase().contains(".svg")) return;
+    final String want = u;
+    if (want.equals(artLoading)) return; // already in flight
+    if (want.equals(artFailUrl) && System.currentTimeMillis() - artFailAt < 15000) return; // failure backoff
+    artWanted = want;
+    artLoading = want;
+    final int gen = artGen;
     new Thread(() -> {
       HttpURLConnection c = null;
+      Bitmap bmp = null;
       try {
-        c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(4000);
-        c.setReadTimeout(4000);
-        c.setInstanceFollowRedirects(true);
-        c.connect();
+        c = openArt(want);
         InputStream in = c.getInputStream();
         BitmapFactory.Options opts = new BitmapFactory.Options();
         opts.inJustDecodeBounds = true;
         BitmapFactory.decodeStream(in, null, opts);
-        in.close();
+        try { in.close(); } catch (Exception ignored) {}
+        c.disconnect();
         int sample = 1;
         while (opts.outWidth / sample > 512) sample *= 2;
-        c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(4000);
-        c.setReadTimeout(4000);
-        c.connect();
+        c = openArt(want);
         BitmapFactory.Options o2 = new BitmapFactory.Options();
         o2.inSampleSize = sample;
-        Bitmap bmp = BitmapFactory.decodeStream(c.getInputStream(), null, o2);
-        if (bmp != null) {
-          art = bmp;
-          new Handler(Looper.getMainLooper()).post(() -> { reposts++; lastCause = "art"; updateSession(); startForegroundNow(); });
-        }
+        bmp = BitmapFactory.decodeStream(c.getInputStream(), null, o2);
       } catch (Exception ignored) {
       } finally {
         if (c != null) { try { c.disconnect(); } catch (Exception ignored) {} }
+        if (want.equals(artLoading)) artLoading = "";
+      }
+      final Bitmap got = bmp;
+      if (got != null) {
+        new Handler(Looper.getMainLooper()).post(() -> {
+          // Publish ONLY if this is still the current track's wanted art.
+          if (gen != artGen || !want.equals(artWanted)) return;
+          art = got; artUrlLoaded = want; artFailUrl = "";
+          reposts++; lastCause = "art"; updateSession(); startForegroundNow();
+        });
+      } else if (gen == artGen && want.equals(artWanted)) {
+        // NOT marked loaded: the ticker retries after the backoff above
+        // instead of the old behaviour (failed once = broken forever).
+        artFailUrl = want; artFailAt = System.currentTimeMillis();
       }
     }).start();
+  }
+
+  private HttpURLConnection openArt(String u) throws Exception {
+    HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
+    c.setConnectTimeout(5000);
+    c.setReadTimeout(5000);
+    c.setInstanceFollowRedirects(true);
+    // Several image CDNs refuse the default Java UA / missing Accept.
+    c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13) MaxMusic");
+    c.setRequestProperty("Accept", "image/avif,image/webp,image/jpeg,image/png,*/*");
+    c.connect();
+    int code = c.getResponseCode();
+    if (code < 200 || code >= 300) throw new Exception("http " + code);
+    return c;
   }
 
   @Override

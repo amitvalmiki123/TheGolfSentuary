@@ -61,12 +61,21 @@ export function createTrackTracker() {
   }
 }
 
-// Canonical YouTube thumbnail for THIS video — genuine same-video artwork
-// that exists for every public video, unlike per-instance Piped/Invidious
-// proxy thumbnail URLs (dead hosts, expired signatures).
+// Canonical YouTube thumbnails for THIS video — genuine same-video artwork,
+// unlike per-instance Piped/Invidious proxy thumbnail URLs (dead hosts,
+// expired signatures). Variant choice matters (build-111 phone test):
+// hqdefault is 480x360 with the 16:9 picture LETTERBOXED inside it, so in a
+// square frame the art itself looked small/padded no matter the object-fit.
+// mqdefault (320x180) is true 16:9 and exists for every public video;
+// maxresdefault (1280x720) is genuine when present and 404s when not, so it
+// is safe as the FIRST candidate of an error-advancing chain.
 export function ytThumb(videoId) {
   const vid = cleanStr(videoId).trim()
-  return vid ? `https://i.ytimg.com/vi/${encodeURIComponent(vid)}/hqdefault.jpg` : ''
+  return vid ? `https://i.ytimg.com/vi/${encodeURIComponent(vid)}/mqdefault.jpg` : ''
+}
+export function ytThumbMax(videoId) {
+  const vid = cleanStr(videoId).trim()
+  return vid ? `https://i.ytimg.com/vi/${encodeURIComponent(vid)}/maxresdefault.jpg` : ''
 }
 
 // Normalize ONE raw cover value into a loadable https raster URL, or ''.
@@ -102,7 +111,7 @@ export function coverCandidates(track) {
   const out = []
   const push = (u) => { if (u && !out.includes(u)) out.push(u) }
   const vid = cleanStr(t.videoId).trim()
-  if (vid) push(ytThumb(vid))
+  if (vid) { push(ytThumbMax(vid)); push(ytThumb(vid)) }
   push(normalizeCoverUrl(t.cover))
   push(COVER_PLACEHOLDER)
   return out
@@ -113,7 +122,12 @@ export function coverCandidates(track) {
 // clears the previous song's bitmap instead of keeping it). Data URIs and
 // SVG are never handed to native code.
 export function nativeArtUrl(track) {
-  for (const u of coverCandidates(track)) {
+  const t = track || {}
+  // Native gets ONE URL with no fallback chain: for YouTube that must be the
+  // variant that always exists (mq) — maxres would 404-stick the loader.
+  const vid = cleanStr(t.videoId).trim()
+  if (vid) return ytThumb(vid)
+  for (const u of coverCandidates(t)) {
     if (/^https:\/\//i.test(u)) return u
   }
   return ''

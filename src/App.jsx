@@ -4,6 +4,7 @@ import { checkAppUpdate, openExternal, APP_BUILD_NO } from './lib/updater.js'
 import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
 import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npAskBattery, npOpenNotifSettings, npPing, npLastCrash, npSetDisabled, npDisabled, npBridgeMode, hasNativeBridge, wvGuess } from './lib/nowplaying.js'
 import { trackKeyOf, createTrackTracker, buildSnapshot, activeEngine, nativeArtUrl, coverCandidates } from './lib/trackmeta.js'
+import { createPager } from './lib/pager.js'
 
 const BASE = import.meta.env.BASE_URL || '/'
 // In the native app (Capacitor WebView) pretend the page is always visible — stops the
@@ -228,7 +229,6 @@ export default function App(){
   const [lyricsLoading, setLyricsLoading] = useState(false)
   const lyricsBoxRef = useRef(null)
   const lyricSeqRef = useRef(0)
-  const homeFailRef = useRef(0)
   const [showCreatePl, setShowCreatePl] = useState(false)
   const [newPlName, setNewPlName] = useState("")
   const [showAddToPl, setShowAddToPl] = useState(null) // track id
@@ -244,7 +244,9 @@ export default function App(){
   const [homeLoading, setHomeLoading] = useState(true)
   const [homeNextPage, setHomeNextPage] = useState(null)
   const homeNextRef = useRef(null)
-  const homeLoadingRef = useRef(false)
+  const homePagerRef = useRef(null); if(!homePagerRef.current) homePagerRef.current = createPager()
+  const searchPagerRef = useRef(null); if(!searchPagerRef.current) searchPagerRef.current = createPager()
+  const searchRef = useRef('')
   const homePageRef = useRef(0)
   const homeLoadMoreRef = useRef(null)
   const lastProgRef = useRef(0)
@@ -260,6 +262,7 @@ export default function App(){
   const [artistLoadingMore, setArtistLoadingMore] = useState(false)
   const artistSentinelRef = useRef(null)
   const [searchPage, setSearchPage] = useState(1)
+  const onlineResultsRef = useRef([])
   const [searchNextPage, setSearchNextPage] = useState(null)
   const searchSentinelRef = useRef(null)
   // YouTube-style: search history + live suggestions
@@ -448,7 +451,7 @@ export default function App(){
     setNext(null)
     homePageRef.current = 0
     setHomeEnded(false)
-    homeFailRef.current = 0
+    homePagerRef.current = createPager()
     trendingByCategory(qcat, 30).then(t=>{
       if(cancelled) return
       if(t && t.length){
@@ -490,10 +493,15 @@ export default function App(){
     return ()=> { cancelled=true }
   },[activeCat])
 
-  // infinite scroll for home category — auto load total on scroll like YouTube Music
+  // infinite scroll for home category — auto load total on scroll like YouTube Music.
+  // All triggers (observer, scroll backup, button) funnel into the pager:
+  // atomic in-flight, no-progress/repeated-cursor termination, latched done.
   const handleLoadMoreHome = async()=>{
-    if(homeLoadingRef.current || !homeNextRef.current) return
-    homeLoadingRef.current = true; setHomeLoadingMore(true)
+    const pager = homePagerRef.current
+    const token = homeNextRef.current
+    if(!pager || pager.inFlight || pager.done || !token) return
+    setHomeLoadingMore(true)
+    const catAtStart = activeCat
     try{
       const qmap = {
         Punjabi: "Punjabi songs Sidhu Moose Wala AP Dhillon official audio",
@@ -511,44 +519,30 @@ export default function App(){
       const withTimeout = (p, ms)=> Promise.race([p, new Promise((_,rej)=> setTimeout(()=>rej(new Error('lm-timeout')), ms))])
       // Rotated Saavn queries keep lists growing when Piped pages run dry or die
       const svSuffix = ['', 'top hits', 'new songs', 'evergreen hits', 'party songs', 'love songs', 'sad songs', '90s hits']
-      const saavnTopup = async ()=>{
+      const res = await pager.run(token, async(cur)=>{
+        if(cur !== 'saavn'){
+          try{
+            const r = await withTimeout(searchPiped(q, 20, cur), 10000)
+            if(r && r.tracks && r.tracks.length){
+              const batch = mergeDedup(homeTracksRef.current || [], r.tracks)
+              if(r.nextpage) return { added: batch, nextCursor: r.nextpage }
+              // Piped exhausted: fall through to the Saavn rotation below.
+            }
+          }catch(e){ /* Piped dead -> Saavn rotation below */ }
+        }
         const page = homePageRef.current++
+        if(page >= svSuffix.length * 2) return { added: [], nextCursor: null }
         const qq = `${q} ${svSuffix[page % svSuffix.length]}`.trim()
         const sv = await withTimeout(searchSaavn(qq, 20).catch(()=>[]), 10000).catch(()=>[])
-        if(activeCatRef.current !== catAtStart) return false
         const fresh = mergeDedup(homeTracksRef.current || [], (sv||[]).filter(x=> x && x.audio))
-        if(fresh.length){ setHomeTracks(prev=> [...prev, ...mergeDedup(prev, fresh)]); return true }
-        return false
+        return { added: fresh, nextCursor: 'saavn' }
+      }, added=>{ if(activeCatRef.current === catAtStart) setHomeTracks(prev=> [...prev, ...mergeDedup(prev, added)]) })
+      if(activeCatRef.current !== catAtStart || homePagerRef.current !== pager) return
+      if(res.status === 'ok' || res.status === 'error'){
+        if(res.done){ setNext(null); setHomeEnded(true); if(res.status === 'ok') showToast('You\u2019ve reached the end of this list') }
+        else setNext(res.nextCursor)
       }
-      const token = homeNextRef.current
-      const catAtStart = activeCat
-      let res = null
-      if(token !== 'saavn'){ try{ res = await withTimeout(searchPiped(q, 20, token), 10000) }catch(e){ res = null } }
-      if(activeCatRef.current !== catAtStart) return
-      if(token === 'saavn' || !res || !res.tracks || !res.tracks.length){
-        let ok = false
-        try{ ok = await saavnTopup() }catch{}
-        if(activeCatRef.current !== catAtStart) return
-        if(ok){ homeFailRef.current = 0 }
-        else{
-          homeFailRef.current += 1
-          if(homeFailRef.current >= 2){ setNext(null); setHomeEnded(true); showToast('You\u2019ve reached the end of this list') }
-        }
-      } else {
-        homeFailRef.current = 0
-        const batch = mergeDedup(homeTracksRef.current || [], res.tracks)
-        if(batch.length) setHomeTracks(prev=> [...prev, ...mergeDedup(prev, batch)])
-        if(res.nextpage) setNext(res.nextpage)
-        else{
-          let ok = false
-          try{ ok = await saavnTopup() }catch{}
-          if(activeCatRef.current !== catAtStart) return
-          if(ok) setNext('saavn')
-          else{ homeFailRef.current += 1; if(homeFailRef.current >= 2){ setNext(null); setHomeEnded(true) } }
-        }
-      }
-    }catch(e){ console.warn('home loadMore', e); homeFailRef.current += 1; if(homeFailRef.current >= 2){ setNext(null); setHomeEnded(true) } }
-    finally{ homeLoadingRef.current = false; setHomeLoadingMore(false) }
+    }finally{ setHomeLoadingMore(false) }
   }
 
   homeLoadMoreRef.current = handleLoadMoreHome
@@ -557,7 +551,7 @@ export default function App(){
     const el = homeSentinelRef.current
     if(!el) return
     const io = new IntersectionObserver(entries=>{
-      if(entries[0].isIntersecting && !homeLoadingRef.current && homeNextRef.current){
+      if(entries[0].isIntersecting && !(homePagerRef.current && homePagerRef.current.inFlight) && homeNextRef.current){
         try{ homeLoadMoreRef.current && homeLoadMoreRef.current() }catch{}
       }
     }, { rootMargin: '400px' })
@@ -569,7 +563,7 @@ export default function App(){
     let last = 0
     const onScroll = ()=>{
       const now = Date.now(); if(now - last < 350) return; last = now
-      if(homeLoadingRef.current || !homeNextRef.current) return
+      if((homePagerRef.current && homePagerRef.current.inFlight) || !homeNextRef.current) return
       const el = homeSentinelRef.current; if(!el) return
       try{ if(el.getBoundingClientRect().top < window.innerHeight + 500){ homeLoadMoreRef.current && homeLoadMoreRef.current() } }catch{}
     }
@@ -732,6 +726,8 @@ export default function App(){
   const isPlayingRef = useRef(false)
   currentRef.current = current
   isPlayingRef.current = isPlaying
+  onlineResultsRef.current = onlineResults
+  searchRef.current = search
   // itrace-29: single identity/generation + live-position source shared by
   // every now-playing writer (bridge push, window.__np, MediaSession).
   const npTrackerRef = useRef(null); if(!npTrackerRef.current) npTrackerRef.current = createTrackTracker()
@@ -1165,6 +1161,7 @@ export default function App(){
     const tm = setTimeout(async()=>{
       setSearching(true)
       setSearchPage(1)
+      searchPagerRef.current = createPager()
       try{
         // JioSaavn-like fast search — Saavn first, then Piped
         const fb = await unifiedSearch(search, 40)
@@ -1231,27 +1228,32 @@ export default function App(){
   }, [search, searching, onlineResults.length, searchPage, searchNoMore])
 
   const handleLoadMoreSearch = async()=>{
-    if(!search.trim() || searching || searchNoMore) return
+    const pager = searchPagerRef.current
+    const queryAtStart = search.trim()
+    if(!pager || pager.inFlight || pager.done || !queryAtStart || searchNoMore) return
     setSearching(true)
     try{
-      let more = [], next = null
-      const tok = searchNextPage || getLastSearchNextpage()
-      if(tok){
-        const r = await unifiedSearchPaginated(search, 24, tok)
-        more = r.tracks || []; next = r.nextpage || null
-      } else {
-        const res = await searchPiped(search, 24, null)
-        more = res.tracks || []; next = res.nextpage || null
+      const res = await pager.run(searchNextPage || getLastSearchNextpage(), async(tok)=>{
+        let more = [], next = null
+        if(tok){
+          const r = await unifiedSearchPaginated(queryAtStart, 24, tok)
+          more = r.tracks || []; next = r.nextpage || null
+        } else {
+          const r2 = await searchPiped(queryAtStart, 24, null)
+          more = r2.tracks || []; next = r2.nextpage || null
+        }
+        const seen = new Set((onlineResultsRef.current||[]).map(p=> String(p.id)))
+        const seenVid = new Set((onlineResultsRef.current||[]).map(p=> p.videoId).filter(Boolean))
+        const fresh = more.filter(m=> m && isRealTrack(m) && !seen.has(String(m.id)) && !(m.videoId && seenVid.has(m.videoId)))
+        return { added: fresh, nextCursor: next }
+      }, added=>{ if(searchRef.current.trim() === queryAtStart) setOnlineResults(prev=> [...prev, ...added]) })
+      if(searchRef.current.trim() !== queryAtStart || searchPagerRef.current !== pager) return
+      if(res.status === 'ok' || res.status === 'error'){
+        setSearchNextPage(res.nextCursor)
+        setSearchPage(p=> p+1)
+        if(res.done) setSearchNoMore(true)
       }
-      const seen = new Set(onlineResults.map(p=> String(p.id)))
-      const seenVid = new Set(onlineResults.map(p=> p.videoId).filter(Boolean))
-      const fresh = more.filter(m=> m && isRealTrack(m) && !seen.has(String(m.id)) && !(m.videoId && seenVid.has(m.videoId)))
-      if(fresh.length) setOnlineResults(prev=> [...prev, ...fresh])
-      setSearchNextPage(next)
-      setSearchPage(p=> p+1)
-      if(!next && !fresh.length) setSearchNoMore(true)
-    }catch(e){ setSearchNoMore(true) }
-    setSearching(false)
+    }finally{ setSearching(false) }
   }
 
   const filteredLocal = useMemo(()=>{
@@ -1993,8 +1995,9 @@ export default function App(){
                             })}
                           </div>
                           <div ref={searchSentinelRef} className="h-1" />
-                          {searching && onlineResults.length ? <div className="mt-4 flex items-center justify-center gap-2 text-xs text-white/50"><span className="w-4 h-4 rounded-full border-2 border-white/20 border-t-white animate-spin"/>Loading more results…</div> : null}
-                          {!searching && (searchNoMore || !searchNextPage) && onlineResults.length ? <div className="text-center text-xs text-white/30 mt-3 pb-2">✓ {onlineResults.length} matching results — all loaded</div> : <div className="text-center text-xs text-white/30 mt-2">Showing {onlineResults.length} results • more load automatically on scroll</div>}
+                          <div className="min-h-[44px] flex items-center justify-center">
+                            {searching && onlineResults.length ? <div className="flex items-center justify-center gap-2 text-xs text-white/50"><span className="w-4 h-4 rounded-full border-2 border-white/20 border-t-white animate-spin"/>Loading more results…</div> : (!searching && (searchNoMore || !searchNextPage) && onlineResults.length ? <div className="text-center text-xs text-white/30">✓ {onlineResults.length} matching results — all loaded</div> : <div className="text-center text-xs text-white/30">Showing {onlineResults.length} results • more load automatically on scroll</div>)}
+                          </div>
                         </div>
                         {localSongs.length>0 && (
                           <div>
@@ -2190,7 +2193,9 @@ export default function App(){
                     })}
                   </div>}
                   <div ref={homeSentinelRef} className="h-1" />
-                  {homeNextPage ? <div className="text-center py-3"><button onClick={handleLoadMoreHome} disabled={homeLoadingMore} className="px-6 py-2 min-w-[280px] rounded-full bg-white/10 border border-white/10 text-sm font-bold hover:bg-white hover:text-black disabled:cursor-wait disabled:opacity-80">{homeLoadingMore? t('loadingmore') : t('loadmore')}</button></div> : (homeEnded && !homeLoading && homeTracks.length>0 && <div className="text-center py-3 text-xs text-white/30">{t('theend')}</div>)}
+                  <div className="min-h-[56px] flex items-center justify-center">
+                    {homeNextPage ? <button onClick={handleLoadMoreHome} disabled={homeLoadingMore} className="px-6 h-[42px] min-w-[280px] rounded-full bg-white/10 border border-white/10 text-sm font-bold hover:bg-white hover:text-black disabled:cursor-wait disabled:opacity-80">{homeLoadingMore? t('loadingmore') : t('loadmore')}</button> : (homeEnded && !homeLoading && homeTracks.length>0 && <div className="text-center text-xs text-white/30">{t('theend')}</div>)}
+                  </div>
                   <div className="text-center text-xs text-white/30">{t('showing')} {homeTracks.length} {activeCat} {t('tracksWd')} • {t('scrollauto')}</div>
                   {localSongs.length>0 && (
                     <div className="mt-4 glass rounded-2xl p-3 flex items-center gap-3">

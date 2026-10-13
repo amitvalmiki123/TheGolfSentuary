@@ -51,6 +51,10 @@ async function loadApp(){
   const tmFile=path.join(cache,'lib','trackmeta.js')
   await writeFile(tmFile,tmSrc)
   source=source.replace("'./lib/trackmeta.js'",JSON.stringify(pathToFileURL(tmFile).href))
+  const pagerSrc=await readFile(new URL('../src/lib/pager.js',import.meta.url),'utf8')
+  const pagerFile=path.join(cache,'lib','pager.js')
+  await writeFile(pagerFile,pagerSrc)
+  source=source.replace("'./lib/pager.js'",JSON.stringify(pathToFileURL(pagerFile).href))
   const {code}=await transformWithEsbuild(source,'App.jsx',{
     loader:'jsx',jsx:'automatic',jsxImportSource:'react',
     define:{'import.meta.env':'{"BASE_URL":"/","VITE_APP_BUILD_NO":"108"}'}
@@ -105,7 +109,7 @@ for(const native of [false,true]){
       const np0=window.__np||{}
       assert.equal(np0.title,'Rajasthani search result')
       assert.ok(Number(np0.dur)>0,'snapshot duration must not be 0')
-      if(native) assert.equal(np0.artUrl,'https://i.ytimg.com/vi/test-rajasthani-video/hqdefault.jpg')
+      if(native) assert.equal(np0.artUrl,'https://i.ytimg.com/vi/test-rajasthani-video/mqdefault.jpg')
       const firstAudio=document.querySelector('audio')
       const frame=players.at(-1).frame
       assert.equal(firstAudio.getAttribute('crossorigin'),'anonymous')

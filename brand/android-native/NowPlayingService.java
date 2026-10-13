@@ -374,7 +374,16 @@ public class NowPlayingService extends Service {
   // delivered via a full post when first known or refined by >1s (micro-jitter ignored).
   private void updatePos() {
     if (mediaSession == null) return;
-    if (durSec > 0 && (durPosted < 0 || Math.abs(durSec - durPosted) > 1.0)) { updateSession(); return; }
+    if (durSec > 0 && (durPosted < 0 || Math.abs(durSec - durPosted) > 1.0)) {
+      updateSession();
+      // A session-only update does not make every OEM's panel draw the seekbar:
+      // Transsion/HiOS and similar skins only re-render it when the foreground
+      // notification itself is reposted. Reposting here is what removes the
+      // per-song "seekbar appears only after a notification pause/resume" bug —
+      // that workaround worked precisely because pause/resume reposts.
+      startForegroundNow();
+      return;
+    }
     try {
     long posMs = durSec > 0 ? (long)(posSec * 1000) : PlaybackState.PLAYBACK_POSITION_UNKNOWN;
     mediaSession.setPlaybackState(new PlaybackState.Builder()

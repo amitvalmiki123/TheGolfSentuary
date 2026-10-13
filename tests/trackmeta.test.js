@@ -41,7 +41,8 @@ test('YouTube tracks always get the canonical same-video thumbnail first', () =>
     videoId: 'dQw4w9WgXcQ',
     cover: 'https://pipedproxy.some-instance.example/vi/dQw4w9WgXcQ/hq720.jpg?host=i.ytimg.com',
   })
-  assert.equal(list[0], 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg')
+  assert.equal(list[0], 'https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg')
+  assert.equal(list[1], 'https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg')
   assert.equal(list[list.length - 1], COVER_PLACEHOLDER)
   assert.ok(!list.some(u => /unsplash/i.test(u)), 'never substitute a stock/other-song image')
 })
@@ -61,7 +62,7 @@ test('track with no usable cover gets only the neutral placeholder', () => {
 test('nativeArtUrl is always https raster, never data/SVG', () => {
   assert.equal(
     nativeArtUrl({ videoId: 'abc123', cover: 'https://piped.example/thumb.jpg' }),
-    'https://i.ytimg.com/vi/abc123/hqdefault.jpg')
+    'https://i.ytimg.com/vi/abc123/mqdefault.jpg')
   assert.equal(
     nativeArtUrl({ cover: 'http://c.saavncdn.com/1/A-150x150.jpg' }),
     'https://c.saavncdn.com/1/A-500x500.jpg')

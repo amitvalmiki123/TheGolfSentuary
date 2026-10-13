@@ -739,19 +739,28 @@ export default function App(){
   const durationRef = useRef(0); durationRef.current = duration
   const directForRef = useRef(''); directForRef.current = directFor
   const msKeyRef = useRef('')
+  const npKeyRef = useRef(''); npKeyRef.current = npKey
+  // Which track each engine's live pos/dur currently belongs to. Until an
+  // engine proves it loaded THIS track (loadedmetadata / matching video id),
+  // its element can still hold the PREVIOUS song — its duration/position must
+  // never be reused for the new track (audit fix, itrace-29).
+  const liveKeyRef = useRef({ audio:'', yt:'' })
   // Position/duration from the engine that is ACTUALLY audible: the YT iframe
   // only when it (not a direct <audio> stream) is playing this track; never
   // from an inactive element still holding the previous song.
   const readLivePosition = (engine)=>{
     let pos = progressRef.current || 0, dur = durationRef.current || 0
+    const key = trackKeyOf(currentRef.current)
     try{
       if(engine === 'yt'){
+        if(liveKeyRef.current.yt !== key) return { pos, dur } // player still on previous video
         const p = ytPlayerRef.current
         if(p){
           if(p.getCurrentTime){ const ct = p.getCurrentTime(); if(isFinite(ct)) pos = ct }
           if(p.getDuration){ const d = p.getDuration(); if(isFinite(d) && d > 0) dur = d }
         }
       } else {
+        if(liveKeyRef.current.audio !== key) return { pos, dur } // element still on previous song
         const a = audioRef.current
         if(a){
           if(isFinite(a.currentTime)) pos = a.currentTime
@@ -925,7 +934,7 @@ export default function App(){
           const ct = p.getCurrentTime()
           const dur = p.getDuration()
           if(isFinite(ct) && Math.abs(ct - lastProgRef.current) > 0.75){ lastProgRef.current = ct; setProgress(ct) }
-          if(isFinite(dur) && dur>0) setDuration(dur)
+          if(isFinite(dur) && dur>0){ setDuration(dur); try{ if(String(p.getVideoData?.()?.video_id||'') === String(currentRef.current?.videoId||'')) liveKeyRef.current.yt = npKeyRef.current }catch{} }
         }catch{}
       }
     }, 500)
@@ -939,7 +948,7 @@ export default function App(){
   useEffect(()=>{
     const a=audioRef.current; if(!a) return
     const onTime=()=>{ const ct=a.currentTime; if(Math.abs(ct-lastProgRef.current)>0.75){ lastProgRef.current=ct; setProgress(ct) } }
-    const onLoaded=()=> { setDuration(a.duration||0); setAudioError(null); try{ pushNpMeta() }catch{} }
+    const onLoaded=()=> { setDuration(a.duration||0); setAudioError(null); liveKeyRef.current.audio = npKeyRef.current; try{ pushNpMeta() }catch{} }
     const onEnded=()=>{ if(repeat===2){ a.currentTime=0; a.play().catch(()=>{}) } else handleNext() }
     const onErr=()=>{
       const src = a.currentSrc || a.src || ""

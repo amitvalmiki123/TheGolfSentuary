@@ -23,7 +23,8 @@ async function loadApp(){
     mergeDedup:'(old,fresh)=>(fresh||[]).filter(x=>!(old||[]).some(y=>String(y.id)===String(x.id)))',
     isAuthEnabled:'()=>false', getAuthToken:'()=>null', getLastSearchNextpage:'()=>null',
     resolveDirectAudio:'async()=>"https://maxmusic.test/rajasthani-full.mp3"',
-    resolvePipedAudio:'async()=>"https://maxmusic.test/rajasthani-full.mp3"'
+    resolvePipedAudio:'async()=>"https://maxmusic.test/rajasthani-full.mp3"',
+    findSaavnRecording:'async()=>null'
   }
   const native={
     isNativeApp:'()=>globalThis.__playbackFixture.native',

@@ -68,7 +68,16 @@ function normName(v) {
 export function creditNames(track) {
   const t = track || {}
   const names = []
-  const push = (v) => { const n = normName(v); if (n) names.push(n) }
+  const push = (v) => {
+    // Provider subtitles often look like "Anuv Jain - Arz Kiya Hai" or
+    // "Maan panu, Mazaak - The Last Letter": the segment after " - " is the
+    // album/title, not part of the person's name. Split it away so the real
+    // credited artist can overlap with the YouTube uploader/artist.
+    for (const part of cleanStr(v).split(/\s+-\s+/)) {
+      const n = normName(part)
+      if (n) names.push(n)
+    }
+  }
   const fromObj = (c) => {
     if (!c) return
     if (typeof c === 'string') { push(c); return }
@@ -84,9 +93,34 @@ export function creditNames(track) {
   if (!names.length) {
     const raw = cleanStr(t.artist)
       .replace(/\b(feat\.?|ft\.?|featuring|with)\b/gi, ',')
-    raw.split(/[,;&/•|]/).forEach(push)
+    raw.split(/[,;&/•|]|\s+-\s+/).forEach(push)
   }
   return [...new Set(names)].sort()
+}
+
+function titleVariants(track) {
+  const raw = cleanStr(track && track.title)
+  const out = new Set()
+  const add = (v) => { const n = normalizeTitleCore(v); if (n) out.add(n) }
+  add(raw)
+  // Saavn sometimes appends the popular singer to the song title itself
+  // ("Finding Her, Kushagra") or appends a programme suffix after a pipe
+  // ("Arz Kiya Hai | Coke Studio Bharat"). The segment before those
+  // separators is still the recording title; duration + version + credit
+  // checks below keep this from collapsing genuinely different songs.
+  const noBrackets = normText(raw).replace(/\([^)]*\)/g, ' ').replace(/\[[^\]]*\]/g, ' ')
+  add(noBrackets.split(',')[0])
+  add(noBrackets.split('|')[0])
+  return [...out]
+}
+
+function titleSuffixIsCredit(track, otherCredits) {
+  const raw = normText(cleanStr(track && track.title))
+    .replace(/\([^)]*\)/g, ' ').replace(/\[[^\]]*\]/g, ' ')
+  const idx = raw.indexOf(',')
+  if (idx < 0) return false
+  const suffix = normName(raw.slice(idx + 1))
+  return !!suffix && (otherCredits || []).includes(suffix)
 }
 
 export function creditIds(track) {
@@ -150,8 +184,8 @@ export function isSameRecording(a, b) {
   const pa = providerRecordingId(a), pb = providerRecordingId(b)
   if (pa && pb && pa === pb) return versionSignature(a) === versionSignature(b)
 
-  const ta = normalizeTitleCore(a.title), tb = normalizeTitleCore(b.title)
-  if (!ta || ta !== tb) return false
+  const titleVa = titleVariants(a), titleVb = titleVariants(b)
+  if (!titleVa.length || !titleVb.length || !titleVa.some(n => titleVb.includes(n))) return false
   if (versionSignature(a) !== versionSignature(b)) return false
 
   const da = durationOf(a), db = durationOf(b)
@@ -160,12 +194,37 @@ export function isSameRecording(a, b) {
   const ca = creditNames(a), cb = creditNames(b)
   const overlap = ca.some(n => cb.includes(n))
   const subset = (ca.length && ca.every(n => cb.includes(n))) || (cb.length && cb.every(n => ca.includes(n)))
+  // "Finding Her, Kushagra": Saavn's primary credit can name the composer
+  // while the title suffix names the singer credited on YouTube. That suffix
+  // is explicit provider metadata, so it counts as credit evidence — title
+  // core, version signature and near-identical duration have already passed.
+  const suffixCredit = titleSuffixIsCredit(a, cb) || titleSuffixIsCredit(b, ca)
   if (da > 0 && db > 0) {
     if (!ca.length || !cb.length) return Math.abs(da - db) <= 2
-    return overlap
+    return overlap || suffixCredit
   }
   // Missing duration on one side: only trust an exact/subset credit match.
-  return subset || (overlap && ca.length === cb.length)
+  return subset || suffixCredit || (overlap && ca.length === cb.length)
+}
+
+// Best playable candidate that is confidently the SAME recording as `track`.
+// Used to replace a YouTube-only row with its Saavn recording: covers, live
+// takes, remixes, lofi/slowed edits and other distinct versions return null
+// because isSameRecording keeps their version signatures separate.
+export function findRecordingMatch(track, candidates) {
+  if (!track || !Array.isArray(candidates)) return null
+  let best = null, bestDiff = Infinity, bestScore = -Infinity
+  for (const c of candidates) {
+    if (!c || typeof c.audio !== 'string' || !c.audio.startsWith('http')) continue
+    if (!isSameRecording(track, c)) continue
+    const da = durationOf(track), db = durationOf(c)
+    const diff = da > 0 && db > 0 ? Math.abs(da - db) : 999
+    const score = recordingPreferenceScore(c)
+    if (diff < bestDiff || (diff === bestDiff && score > bestScore)) {
+      best = c; bestDiff = diff; bestScore = score
+    }
+  }
+  return best
 }
 
 const COMPILATION_RE = /best of|greatest hits|collection|compilation|essentials|top hits|hits of|superhit|jukebox|romantic hits|love songs|chartbusters|evergreen|unforgettable|golden hits/i

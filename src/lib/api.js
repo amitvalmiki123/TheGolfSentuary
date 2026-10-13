@@ -2,7 +2,7 @@
 import CryptoJS from 'crypto-js'
 import { nativeJson, canNativeHttp } from './nativehttp.js'
 import { normalizeCoverUrl, ytThumb } from './trackmeta.js'
-import { dedupeRecordings, mergeRecordings, creditNames, creditIds } from './recording.js'
+import { dedupeRecordings, mergeRecordings, creditNames, creditIds, findRecordingMatch } from './recording.js'
 import { categoryQueries, filterCategoryTracks } from './feed.js'
 const PIPED_HOSTS = [
   "https://pipedapi.kavin.rocks",
@@ -850,6 +850,72 @@ export async function unifiedSearchPaginated(query, limit=20, nextpage=null){
   return { tracks: rankByRelevance(tracks, query).slice(0, Math.max(limit, 40)), nextpage: hasMore ? encFeedCursor(st) : null }
 }
 
+// ---- Saavn canonicalization for YouTube-only rows ----------------------
+// Category feeds (especially Indie) can arrive as YouTube-only rows even
+// when the exact same recording is on Saavn ("The Last Letter", "Finding
+// Her", "Arz Kiya Hai"). A YouTube row only starts through the iframe,
+// which Android pauses in the background, so confidently-matched rows are
+// replaced with the Saavn recording BEFORE they reach the list/queue.
+// Distinct covers/live/remix/lofi versions are never replaced: matching
+// requires the same title core, version signature, credit evidence and a
+// near-identical duration (findRecordingMatch in recording.js).
+const _saavnMatchCache = new Map()
+function _saavnSearchTitle(track){
+  return String((track && track.title) || '')
+    .replace(/\([^)]*\)|\[[^\]]*\]/g, ' ')
+    .replace(/\b(official|lyrics?|lyrical|video|audio|visualizer|full\s+song|mv|hd|4k)\b/gi, ' ')
+    .replace(/\s+/g, ' ').trim()
+}
+export async function preferSaavnRecordings(tracks, maxLookups=16){
+  const list = Array.isArray(tracks) ? tracks : []
+  if (!list.some(t => t && t.videoId && !t.audio)) return list
+  const playable = list.filter(t => t && typeof t.audio === 'string' && t.audio.startsWith('http'))
+  const out = [...list]
+  const jobs = []
+  list.forEach((t, i) => { if (t && t.videoId && !t.audio) jobs.push(i) })
+  let cursor = 0, lookups = 0
+  const worker = async () => {
+    while (cursor < jobs.length) {
+      const i = jobs[cursor++]
+      const t = out[i]
+      if (!t) continue
+      const local = findRecordingMatch(t, playable)
+      if (local) { out[i] = { ...local, title: t.title || local.title, artist: t.artist || local.artist, cover: local.cover || t.cover }; continue }
+      if (lookups >= maxLookups) continue
+      lookups++
+      const key = String(t.videoId || `${_saavnSearchTitle(t)}|${t.artist || ''}|${t.durationSec || ''}`).toLowerCase()
+      try {
+        if (_saavnMatchCache.has(key)) {
+          const hit = _saavnMatchCache.get(key)
+          if (hit) out[i] = { ...hit, title: t.title || hit.title, artist: t.artist || hit.artist, cover: hit.cover || t.cover }
+          continue
+        }
+        const firstArtist = String(t.artist || '').split(/[,;&/]/)[0].trim()
+        const q = `${_saavnSearchTitle(t)} ${firstArtist}`.trim()
+        const candidates = q.length > 3 ? await searchSaavn(q, 6).catch(() => []) : []
+        const match = findRecordingMatch(t, candidates || [])
+        _saavnMatchCache.set(key, match || null)
+        if (match) out[i] = { ...match, title: t.title || match.title, artist: t.artist || match.artist, cover: match.cover || t.cover }
+      } catch { try { _saavnMatchCache.set(key, null) } catch {} }
+    }
+  }
+  await Promise.all([worker(), worker(), worker(), worker()])
+  return dedupeRecordings(out)
+}
+
+// Playback-rescue lookup: only a confidently identical Saavn recording may
+// replace a YouTube track. Returning null is intentional for genuine
+// YouTube-only covers/versions — the caller must not play a different song
+// just because it happened to be Saavn's first search result.
+export async function findSaavnRecording(track){
+  if (!track || !track.videoId) return null
+  const firstArtist = String(track.artist || '').split(/[,;&/]/)[0].trim()
+  const q = `${_saavnSearchTitle(track)} ${firstArtist}`.trim()
+  if (q.length <= 3) return null
+  const candidates = await searchSaavn(q, 8).catch(() => [])
+  return findRecordingMatch(track, candidates || [])
+}
+
 const _catCache = new Map()
 export async function trendingByCategory(cat, limit=20, offset=0){
   // 5-min session cache — re-click karte hi instant
@@ -954,6 +1020,9 @@ export async function fetchCategoryPage(cat, cursor=null, limit=24, langs=[]){
     let first = []
     try{ first = await trendingByCategory(cat === 'All' ? 'Trending' : cat, limit) }catch{}
     first = filterCategoryTracks(dedupeRecordings((first||[]).filter(x=> x && !x.isPreview)), cat, langs)
+    // The fast path can still win with a YouTube-only backend page (Indie):
+    // canonicalize those rows to Saavn before the list/queue ever sees them.
+    first = filterCategoryTracks(await preferSaavnRecordings(first, 18), cat, langs)
     const st = { q:0, sp:2, pp:null, bp:2, sDone:false, pDone:false, bDone:false }
     if(first.length) return { tracks:first.slice(0, limit), nextCursor: encFeedCursor(st), total:null }
     cursor = encFeedCursor({ q:0, sp:1, pp:null, bp:1, sDone:false, pDone:false, bDone:false })
@@ -992,7 +1061,7 @@ export async function fetchCategoryPage(cat, cursor=null, limit=24, langs=[]){
     st.pp = np
   }
   let merged = dedupeRecordings([...backendTracks, ...saavnTracks, ...pipedTracks].filter(x=> x && !x.isPreview))
-  merged = filterCategoryTracks(merged, cat, langs)
+  merged = filterCategoryTracks(await preferSaavnRecordings(merged, 16), cat, langs)
   if(st.sDone && st.pDone && st.bDone){
     st.q = (st.q||0)+1; st.sp = 1; st.pp = null; st.bp = 1; st.sDone = false; st.pDone = false; st.bDone = false
   }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
-import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, fetchCategoryPage, fetchArtistProfile, artistSongs, artistSongsPaginated, resolvePipedAudio, resolveDirectAudio, searchSaavn, searchSuggestions, getLastSearchNextpage, fetchLyrics, mergeDedup, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists, apiRedeemPro, apiSetPlan, warmBackend } from './lib/api.js'
+import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, fetchCategoryPage, fetchArtistProfile, artistSongs, artistSongsPaginated, resolvePipedAudio, resolveDirectAudio, searchSaavn, findSaavnRecording, searchSuggestions, getLastSearchNextpage, fetchLyrics, mergeDedup, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists, apiRedeemPro, apiSetPlan, warmBackend } from './lib/api.js'
 import { checkAppUpdate, openExternal, APP_BUILD_NO } from './lib/updater.js'
 import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
 import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npAskBattery, npOpenNotifSettings, npPing, npLastCrash, npSetDisabled, npDisabled, npBridgeMode, hasNativeBridge, wvGuess } from './lib/nowplaying.js'
@@ -1131,6 +1131,34 @@ export default function App(){
       if(a.readyState < 2){ a.load(); a.addEventListener('canplay', tryPlay, {once:true}); setTimeout(tryPlay, 200) } else tryPlay()
     } else a.pause()
   },[isPlaying, currentIndex, queue, ytReady, current, directFor])
+  // A queue advance into a genuinely YouTube-only track can leave the iframe
+  // CUED/UNSTARTED/PAUSED at 0:00 even though app state says "playing" (the
+  // previous track may have ended on <audio>, so there is no fresh user
+  // gesture for the iframe). Keep nudging THIS video for a few seconds; if
+  // the iframe still cannot start in the APK, rescue to the same Saavn
+  // recording or an exact direct stream instead of sitting paused forever.
+  useEffect(()=>{
+    if(!isPlaying || !current?.videoId || directFor) return
+    const vid = String(current.videoId)
+    let tries = 0
+    const id = setInterval(()=>{
+      try{
+        if(!isPlayingRef.current || !currentRef.current || String(currentRef.current.videoId||'') !== vid) return
+        const p = ytPlayerRef.current
+        if(!p || !ytReadyRef.current) return
+        const loaded = p.getVideoData?.()?.video_id
+        if(loaded !== vid){ if(p.loadVideoById) p.loadVideoById(vid); return }
+        const st = p.getPlayerState?.()
+        if(st === 1){ clearInterval(id); return }
+        if(st === 2 || st === 5 || st === -1){ if(p.playVideo) p.playVideo() }
+        if(++tries >= 12){
+          clearInterval(id)
+          if(isNativeApp() && !directForRef.current) rescueTrack(currentRef.current)
+        }
+      }catch{}
+    }, 900)
+    return ()=> clearInterval(id)
+  },[npKey, isPlaying, directFor, ytReady])
   // when queue/current changes while playing, force reload (audio only — YT handled in playEffect)
   useEffect(()=>{
     if(current?.videoId && !directFor) return
@@ -1296,10 +1324,11 @@ export default function App(){
       try{
         showToast('Playback error — real audio dhundh rahe…')
         // RACED: piped-exact ∥ saavn-fast — jo pehle mile wahi bajega (stall-min).
-        const cleanQ = `${String(track.title||'').replace(/\([^)]*\)|\[[^\]]*\]/g,'').trim()} ${String(track.artist||'').split(',')[0]}`.trim()
+        // Saavn may only replace the track when it is the SAME recording;
+        // a first-result cover/remix must never be played under this title.
         const jobs = []
         if(track.videoId) jobs.push((async()=>{ const url = await resolvePipedAudio(track); if(url && String(url).startsWith('http')) return { ...track, videoId: null, audio: String(url), source:'YouTube • Resolved' }; throw new Error('empty') })())
-        if(cleanQ.length > 3) jobs.push((async()=>{ const s = await searchSaavn(cleanQ, 5).catch(()=>[]); if(s && s.length) return { ...s[0], id: track.id, title: track.title||s[0].title, artist: track.artist||s[0].artist, cover: track.cover||s[0].cover }; throw new Error('empty') })())
+        if(track.videoId) jobs.push((async()=>{ const s = await findSaavnRecording(track).catch(()=>null); if(s && s.audio) return { ...s, id: track.id, title: track.title||s.title, artist: track.artist||s.artist, cover: track.cover||s.cover }; throw new Error('empty') })())
         let fixed = null
         try{ fixed = jobs.length ? await Promise.any(jobs) : null }catch{ fixed = null }
         if(fixed && (fixed.audio || fixed.videoId)){

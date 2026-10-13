@@ -6,6 +6,7 @@ import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npA
 import { trackKeyOf, createTrackTracker, buildSnapshot, activeEngine, nativeArtUrl, coverCandidates } from './lib/trackmeta.js'
 import { createPager } from './lib/pager.js'
 import { THEMES, effectiveTheme } from './lib/themes.js'
+import { findArtistForSearch } from './lib/artistsearch.js'
 
 const BASE = import.meta.env.BASE_URL || '/'
 // In the native app (Capacitor WebView) pretend the page is always visible — stops the
@@ -212,6 +213,8 @@ export default function App(){
   // UI
   const [search, setSearch] = useState("")
   const [onlineResults, setOnlineResults] = useState([])
+  const [searchArtist, setSearchArtist] = useState(null)
+  const searchArtistSeqRef = useRef(0)
   const [searching, setSearching] = useState(false)
   const [activeCat, setActiveCat] = useState("All")
   const activeCatRef = useRef("All")
@@ -1238,9 +1241,28 @@ export default function App(){
 
   // search online ONLY (user demand — no hardcoded/local), YouTube Music-like paginated
   useEffect(()=>{
-    if(!search.trim()){ setOnlineResults([]); setSearching(false); setSearchPage(1); setSearchNextPage(null); setSearchNoMore(false); setSugg([]); return }
+    if(!search.trim()){ setOnlineResults([]); setSearchArtist(null); searchArtistSeqRef.current++; setSearching(false); setSearchPage(1); setSearchNextPage(null); setSearchNoMore(false); setSugg([]); return }
     let cancelled = false
+    setSearchArtist(null)
+    searchArtistSeqRef.current++
     const queryAtStart = search
+    const applySearchArtist = (tracks)=>{
+      const found = findArtistForSearch(queryAtStart, tracks || [], allArtists)
+      const seq = ++searchArtistSeqRef.current
+      if(!found){ setSearchArtist(null); return }
+      setSearchArtist({ query: queryAtStart, name: found.name, id: '', image: '', followers: null })
+      fetchArtistProfile(found.name).then(prof=>{
+        if(cancelled || seq !== searchArtistSeqRef.current || searchRef.current !== queryAtStart) return
+        const image = (prof && prof.image) || ''
+        setSearchArtist({ query: queryAtStart, name: found.name, id: (prof && prof.id) || '', image, followers: prof && prof.followers != null ? prof.followers : null })
+        if(image) setArtistPortraits(prev=>{
+          if(prev[found.name] === image) return prev
+          const next = { ...prev, [found.name]: image }
+          try{ localStorage.setItem('sur_artist_portraits', JSON.stringify(next)) }catch{}
+          return next
+        })
+      }).catch(()=>{})
+    }
     const tm = setTimeout(async()=>{
       if(cancelled) return
       setSearching(true)
@@ -1251,6 +1273,7 @@ export default function App(){
         const fb = await unifiedSearch(queryAtStart, 40)
         if(cancelled || searchRef.current !== queryAtStart) return
         if(fb.length){
+          applySearchArtist(fb)
           setOnlineResults(fb)
           setSearchNextPage(getLastSearchNextpage())
           setSearchNoMore(false)
@@ -1260,6 +1283,7 @@ export default function App(){
           if(cancelled || searchRef.current !== queryAtStart) return
           setSearchNextPage(nextpage)
           setSearchNoMore(false)
+          applySearchArtist(tracks)
           setOnlineResults(tracks)
           if(tracks.length) commitHistory(queryAtStart)
         }
@@ -1267,9 +1291,10 @@ export default function App(){
         try{
           const fb = await unifiedSearch(queryAtStart, 40)
           if(cancelled || searchRef.current !== queryAtStart) return
+          applySearchArtist(fb)
           setOnlineResults(fb)
           setSearchNextPage(getLastSearchNextpage())
-        }catch{ if(!cancelled && searchRef.current === queryAtStart) setOnlineResults([]) }
+        }catch{ if(!cancelled && searchRef.current === queryAtStart){ setSearchArtist(null); setOnlineResults([]) } }
       }
       if(!cancelled && searchRef.current === queryAtStart) setSearching(false)
     }, 180)
@@ -2067,10 +2092,21 @@ export default function App(){
                 ) : (
                   <div className="space-y-6">
                     {searching && <div className="flex items-center gap-2 text-sm text-white/60"><span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"/> Searching online (iTunes + Saavn)…</div>}
-                    {!searching && onlineResults.length===0 ? (
+                    {!searching && onlineResults.length===0 && !(searchArtist && searchArtist.query===search) ? (
                       <div className="text-center py-16 text-white/60"><div className="text-5xl mb-4">🔍</div><div className="font-medium">No results for "{search}"</div><div className="text-sm mt-1">Try English/Hindi • e.g. "Arijit", "Punjabi", "Calm Down"</div></div>
                     ) : (
                       <>
+                        {searchArtist && searchArtist.query===search && (
+                          <button onClick={()=> handleArtistClick(searchArtist)} className="w-full min-w-0 max-w-full overflow-hidden flex items-center gap-4 p-3 sm:p-4 rounded-[22px] border border-[#D5AA55]/25 bg-gradient-to-r from-[#543551]/80 via-white/[0.07] to-[#D5AA55]/10 text-left hover:border-[#D5AA55]/60 hover:bg-white/10 transition shadow-[0_16px_45px_rgba(0,0,0,0.28)]">
+                            <ArtistAvatar name={searchArtist.name} src={searchArtist.image || artistPortraitFor(searchArtist.name)} className="w-[72px] h-[72px] sm:w-20 sm:h-20 rounded-full object-cover shrink-0 border-2 border-[#D5AA55]/50 text-2xl"/>
+                            <span className="flex-1 min-w-0 block">
+                              <span className="block text-[10px] font-black tracking-[0.18em] text-[#D5AA55] uppercase">Artist</span>
+                              <span className="block text-xl sm:text-2xl font-black font-display leading-tight truncate mt-0.5">{searchArtist.name}</span>
+                              <span className="block text-xs sm:text-sm text-white/55 truncate mt-1">{searchArtist.followers != null ? `${searchArtist.followers} followers • ` : ''}Open artist page for all credited songs</span>
+                            </span>
+                            <span className="shrink-0 px-3 sm:px-4 py-2 rounded-full bg-white text-black text-xs sm:text-sm font-black">View artist →</span>
+                          </button>
+                        )}
                         <div>
                           <h3 className="font-bold mb-3">Top Results — Online • {onlineResults.filter(r=> r.source!=='Local').length} online • {onlineResults.filter(r=> r.source==='Local').length} local</h3>
                           <div className="space-y-2">

@@ -60,6 +60,10 @@ async function loadApp(){
   const themesFile=path.join(cache,'lib','themes.js')
   await writeFile(themesFile,themesSrc)
   source=source.replace("'./lib/themes.js'",JSON.stringify(pathToFileURL(themesFile).href))
+  const artistSearchSrc=await readFile(new URL('../src/lib/artistsearch.js',import.meta.url),'utf8')
+  const artistSearchFile=path.join(cache,'lib','artistsearch.js')
+  await writeFile(artistSearchFile,artistSearchSrc)
+  source=source.replace("'./lib/artistsearch.js'",JSON.stringify(pathToFileURL(artistSearchFile).href))
   const {code}=await transformWithEsbuild(source,'App.jsx',{
     loader:'jsx',jsx:'automatic',jsxImportSource:'react',
     define:{'import.meta.env':'{"BASE_URL":"/","VITE_APP_BUILD_NO":"108"}'}

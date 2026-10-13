@@ -1,6 +1,9 @@
 // YouTube Music-like — Piped (YouTube) primary with Invidious fallback, Saavn for Indian, Audius for global
 import CryptoJS from 'crypto-js'
 import { nativeJson, canNativeHttp } from './nativehttp.js'
+import { normalizeCoverUrl, ytThumb } from './trackmeta.js'
+import { dedupeRecordings, mergeRecordings, creditNames, creditIds } from './recording.js'
+import { categoryQueries, filterCategoryTracks } from './feed.js'
 const PIPED_HOSTS = [
   "https://pipedapi.kavin.rocks",
   "https://pipedapi.adminforge.de",
@@ -80,9 +83,9 @@ export function sdiag(t){
 }
 // Try backend first (if running), fallback to direct Piped/Saavn — works in memory mode too
 const SAavn_ENDPOINTS = [
-  (q, limit) => `https://saavn.dev/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}`,
-  (q, limit) => `https://jiosaavn-api-privatecvc2.vercel.app/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}`,
-  (q, limit) => `https://jiosaavn-api-with-cors.vercel.app/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}`,
+  (q, limit, page=1) => `https://saavn.dev/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}&page=${Math.max(1,Number(page)||1)}`,
+  (q, limit, page=1) => `https://jiosaavn-api-privatecvc2.vercel.app/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}&page=${Math.max(1,Number(page)||1)}`,
+  (q, limit, page=1) => `https://jiosaavn-api-with-cors.vercel.app/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}&page=${Math.max(1,Number(page)||1)}`,
 ]
 
 async function fetchJsonWithCors(url, ms=4500){
@@ -145,7 +148,9 @@ export async function searchPiped(query, limit=20, nextpage=null){
     videoId = videoId.split('?')[0].split('&')[0]
     const title = s.title || "Unknown"
     const artist = s.uploaderName || s.uploader || "YouTube"
-    const cover = s.thumbnail || s.thumbnails?.[0]?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
+    // Canonical same-video thumbnail — Piped instance proxy thumbnails die with
+    // their host / expire, which is why YouTube covers broke en masse (itrace-29).
+    const cover = ytThumb(videoId)
     const dur = s.duration || 0
     return {
       id: `piped-${videoId}`,
@@ -184,7 +189,7 @@ export async function searchInvidious(query, limit=20){
           title: decode(v.title||"Unknown"),
           artist: v.author || "YouTube",
           album: v.author || "YouTube",
-          cover: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+          cover: ytThumb(videoId),
           audio: null,
           durationLabel: formatSec(v.lengthSeconds||0),
           durationSec: v.lengthSeconds||200,
@@ -475,9 +480,10 @@ function saavnUrlsDevice(decrypted){
   if(!m) return [d]
   return [96,160,320].map(q=> `${m[1]}_${q}.${m[2]}${m[3]||''}`)
 }
-async function searchSaavnOfficialDevice(query, limit=18){
+async function searchSaavnOfficialDevice(query, limit=18, page=1){
   const n = Math.min(Math.max(Number(limit)||18,1),30)
-  const target = `https://www.jiosaavn.com/api.php?__call=search.getResults&q=${encodeURIComponent(query)}&p=1&n=${n}&api_version=4&_format=json&_marker=0&ctx=web6dot0`
+  const pg = Math.max(1, Number(page)||1)
+  const target = `https://www.jiosaavn.com/api.php?__call=search.getResults&q=${encodeURIComponent(query)}&p=${pg}&n=${n}&api_version=4&_format=json&_marker=0&ctx=web6dot0`
   // Race NATIVE socket (no CORS, India IP) against WebView fetch+proxies.
   const need = async (p)=>{ const d = await p; if(!d || typeof d !== 'object') throw new Error('empty'); return d }
   const jobs = [need(fetchJsonWithCors(target, 6000))]
@@ -509,18 +515,25 @@ async function searchSaavnOfficialDevice(query, limit=18){
       let audioQ = null
       if(urls.length >= 3) audioQ = { eco: urls[0], std: urls[1], hd: urls[2] }
       else if(urls.length === 2) audioQ = { eco: urls[0], std: urls[1], hd: urls[1] }
+      // image shapes seen live: string URL | [{quality,link|url},...] | {link|url}
       let img = s.image || mi.image || ''
-      if(Array.isArray(img)) img = img[img.length-1]?.link || img[img.length-1]?.url || ''
-      if(typeof img === 'string' && img.includes('150x150')) img = img.replace('150x150','500x500')
+      if(Array.isArray(img)){ const strs = img.map(x=> (typeof x==='string' ? x : (x && (x.link || x.url)) || '')); img = strs[strs.length-1] || '' }
+      else if(img && typeof img === 'object') img = img.link || img.url || ''
+      img = normalizeCoverUrl(img)
       const title = decode(s.title || s.song || s.name || 'Unknown')
       const artistVal = s.primary_artists || s.primaryArtists || s.subtitle || s.artists || s.singers || mi.music || 'Unknown'
       const album = (s.album && (s.album.name || (typeof s.album==='string' ? s.album : ''))) || mi.album || s.album_name || 'Single'
       const dur = Number(s.duration) || Number(mi.duration) || 0
+      const creditNamesRaw = String(artistVal).split(/[,;&/]/).map(x=> x.trim()).filter(Boolean)
+      const creditIdsRaw = String(s.primary_artists_id || mi.primary_artists_id || '').split(/[,&]/).map(x=> x.trim()).filter(Boolean)
+      const artistCredits = creditNamesRaw.map((name,i)=> ({ name, id: creditIdsRaw[i] || '' }))
       mapped.push({ id:`saavn-${s.id||title}-${Math.random().toString(36).slice(2,5)}`, title, artist:String(artistVal), album:String(album),
-        cover: (typeof img==='string' && img.startsWith('http')) ? img : 'https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=600&auto=format&fit=crop&q=60',
+        cover: img || '',
         audio, audioQ, durationLabel: dur? formatSec(dur):'3:30', durationSec:dur||210,
         plays:`${(Math.random()*800+50).toFixed(0)}M`, color:pickColor(), source:'Saavn • Full', isPreview:false,
-        language:String(s.language||mi.language||'').toLowerCase(), original:s, videoId:null })
+        language:String(s.language||mi.language||'').toLowerCase(), original:s, videoId:null,
+        providerId: s.id ? `saavn-${s.id}` : '', isrc: String(s.isrc || mi.isrc || ''), year: Number(s.year || mi.year) || 0,
+        artistCredits, artistIds: creditIdsRaw })
     }catch(e){ continue }
   }
   if(!mapped.length) throw new Error('empty')
@@ -530,18 +543,18 @@ async function searchSaavnOfficialDevice(query, limit=18){
 
 // Combined Saavn: official-on-device RACED against wrapper mirrors — first with
 // results wins. Either family alive = Saavn works.
-export async function searchSaavn(query, limit=18){
+export async function searchSaavn(query, limit=18, page=1){
   try{ window.__svSrc='' }catch(e){}
   const need = async (p)=>{ const r = await p; if(!r || !r.length) throw new Error('empty'); return r }
-  try{ return await Promise.any([ need(searchSaavnOfficialDevice(query, limit)), need(searchSaavnMirrors(query, limit)) ]) }
+  try{ return await Promise.any([ need(searchSaavnOfficialDevice(query, limit, page)), need(searchSaavnMirrors(query, limit, page)) ]) }
   catch(e){ return [] }
 }
 
-export async function searchSaavnMirrors(query, limit=18){
+export async function searchSaavnMirrors(query, limit=18, page=1){
   // RACED: all mirrors at once, first with results wins — a dead mirror no longer
   // burns 4s before the next one is tried (old loop: 3 × 3.8s worst case).
   const one = async (buildUrl)=>{
-      const url = buildUrl(query, limit)
+      const url = buildUrl(query, limit, page)
       const data = await fetchJsonWithCors(url, 5000)
       let songs = []
       if(Array.isArray(data?.data?.results)) songs = data.data.results
@@ -555,10 +568,11 @@ export async function searchSaavnMirrors(query, limit=18){
       if(!songs.length) throw new Error('empty')
       const mapped = songs.slice(0,limit).map(s=>{
         let img = null
-        if(Array.isArray(s.image)) img = s.image[2]?.url || s.image[2]?.link || s.image[1]?.url || s.image[1]?.link || s.image[0]?.url || s.image[0]?.link
+        if(Array.isArray(s.image)){ const strs = s.image.map(x=> (typeof x==='string' ? x : (x && (x.url || x.link)) || '')); img = strs[strs.length-1] || null }
         else if(typeof s.image==='string') img=s.image
         else if(s.image?.url) img=s.image.url
         else if(s.image?.link) img=s.image.link
+        img = normalizeCoverUrl(img)
         let audio=null
         if(Array.isArray(s.downloadUrl)){
           const last=s.downloadUrl[s.downloadUrl.length-1]
@@ -568,10 +582,14 @@ export async function searchSaavnMirrors(query, limit=18){
         else if(s.url) audio=s.url
         const title=decode(s.name||s.title||s.song||"Unknown")
         const artistVal=s.artists?.primary?.map(a=>a.name).join(', ') || s.primaryArtists || s.artist || s.singers || "Unknown"
+        const creditImage=(a)=>{ let im=a&&a.image; if(Array.isArray(im)){ const ss=im.map(x=> (typeof x==='string'? x : (x&&(x.url||x.link))||'')); im=ss[ss.length-1]||'' } else if(im&&typeof im==='object') im=im.url||im.link||''; return normalizeCoverUrl(im||'') }
+        const creditSrc=[...(s.artists?.primary||[]), ...(s.artists?.featured||[])]
+        const artistCredits=creditSrc.filter(a=> a&&(a.name||a.id)).map(a=> ({ id:String(a.id||''), name:String(a.name||''), image:creditImage(a) }))
+        const artistIds=artistCredits.map(a=>a.id).filter(Boolean)
         const album=s.album?.name || (typeof s.album==='string'? s.album:null) || s.albumName || "Single"
         const dur=Number(s.duration)||Number(s.playTime)||Number(s.more_info?.duration)||0
         if(typeof audio==='string' && audio.startsWith('http') && !audio.includes('encrypted')){
-          return { id:`saavn-${s.id||title}-${Math.random().toString(36).slice(2,5)}`, title, artist:artistVal, album, cover: typeof img==='string'? img: img||"https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=600&auto=format&fit=crop&q=60", audio, durationLabel: dur? formatSec(dur):"3:30", durationSec:dur||210, plays:`${(Math.random()*800+50).toFixed(0)}M`, color:pickColor(), source:'Saavn • Full', isPreview:false, language:String(s.language||'').toLowerCase(), original:s, videoId:null }
+          return { id:`saavn-${s.id||title}-${Math.random().toString(36).slice(2,5)}`, title, artist:artistVal, album, cover: img || '', audio, durationLabel: dur? formatSec(dur):"3:30", durationSec:dur||210, plays:`${(Math.random()*800+50).toFixed(0)}M`, color:pickColor(), source:'Saavn • Full', isPreview:false, language:String(s.language||'').toLowerCase(), original:s, videoId:null, providerId: s.id ? `saavn-${s.id}` : '', isrc: String(s.isrc||''), year: Number(s.year)||0, artistCredits, artistIds }
         }
         return null
       }).filter(Boolean).filter(x=> x.audio && x.audio.startsWith('http'))
@@ -634,19 +652,12 @@ export function rankByRelevance(tracks, query){
   return scored.map(function(x){ return x.t })
 }
 
-const LANG_EXPECT = { Punjabi:'punjabi', Hindi:'hindi', Bollywood:'hindi' }
-function strictByCategory(tracks, cat){
-  const want = LANG_EXPECT[cat]
-  if(!want || !tracks || !tracks.length) return tracks
-  const m = tracks.filter(function(t){
-    const lang = String(t.language||'').toLowerCase()
-    if(lang.includes(want)) return true
-    if(want==='punjabi'){
-      return /[\u0A00-\u0A7F]/.test(String(t.title||'')) || /(sidhu|moose wala|diljit|aujla|shubh|ap dhillon|karoran|waraam|heera|bohra|intense|gill|kaur)/i.test(String(t.artist||''))
-    }
-    return false
-  })
-  return m.length >= 8 ? m : tracks
+// Category membership comes from provider metadata (feed.js): language
+// categories require that exact provider language — artist names/scripts are
+// never used to guess a language, and a thin filtered page stays filtered
+// instead of falling back to a mislabelled full list.
+function strictByCategory(tracks, cat, langs){
+  return filterCategoryTracks(tracks, cat, langs)
 }
 
 
@@ -734,7 +745,7 @@ export async function unifiedSearch(query, limit=24, offset=0){
           const real = data.tracks.filter(x=> x && !String(x.id||'').startsWith('fallback-') && (x.videoId || (typeof x.audio==='string' && x.audio.startsWith('http') && !x.audio.includes('...'))))
           const nSv = _svN(real)
           if(real.length >= 6 && nSv >= 4){
-            { const pure = _noVid(real); _lastSearchNextpage = null; sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}+svonly${pure.length}`); return pure.slice(0, limit) }
+            { const pure = _noVid(real); _lastSearchNextpage = encFeedCursor({sp:2,pp:null,sDone:false,pDone:false}); sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}+svonly${pure.length}`); return pure.slice(0, limit) }
           }
           if(real.length >= 6 && nSv < 4){
             // Backend won with YT-only tracks — top up with device-Saavn so
@@ -742,7 +753,7 @@ export async function unifiedSearch(query, limit=24, offset=0){
             const top = await searchSaavn(query, 16).catch(()=>[])
             const merged = dedup([...(Array.isArray(top)?top:[]), ...real]).slice(0, limit)
             const mSv = _svN(merged)
-            if(mSv >= 2){ const pure = _noVid(merged); _lastSearchNextpage = null; sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}+top${mSv}+svonly${pure.length}`); return pure.slice(0, limit) }
+            if(mSv >= 2){ const pure = _noVid(merged); _lastSearchNextpage = encFeedCursor({sp:2,pp:null,sDone:false,pDone:false}); sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}+top${mSv}+svonly${pure.length}`); return pure.slice(0, limit) }
             sdiag(`s:${qtag} be:ok${real.length}/sv${nSv}+top${mSv}`)
             return merged
           }
@@ -767,7 +778,7 @@ export async function unifiedSearch(query, limit=24, offset=0){
     const filtered = tracks.filter(x=> !x.isPreview)
     if(filtered.length >= 4) tracks = filtered
   }
-  if(tracks.length >= 14){ let out = rankByRelevance(tracks, query).slice(0, limit); if(_svN(out) >= 2){ out = _noVid(out); _lastSearchNextpage = null } try{ sdiag(`s:${qtag} out:${out.length}/sv${_svN(out)}`) }catch(e){}; return out }
+  if(tracks.length >= 14){ let out = rankByRelevance(tracks, query).slice(0, limit); if(_svN(out) >= 2){ out = _noVid(out); _lastSearchNextpage = encFeedCursor({sp:2, pp:_lastSearchNextpage||null, sDone:false, pDone:!_lastSearchNextpage}) } try{ sdiag(`s:${qtag} out:${out.length}/sv${_svN(out)}`) }catch(e){}; return out }
   if(tracks.length < 12){
     const inv = await searchInvidious(query, limit - tracks.length).catch(()=>({tracks:[]}))
     tracks = dedup([...tracks, ...(inv.tracks||[])])
@@ -793,34 +804,50 @@ export async function unifiedSearch(query, limit=24, offset=0){
     if(filtered.length >= 4) tracks = filtered
   }
   let outF = rankByRelevance(tracks, query).slice(0, limit)
-  if(_svN(outF) >= 2){ outF = _noVid(outF); _lastSearchNextpage = null }
+  if(_svN(outF) >= 2){ outF = _noVid(outF); _lastSearchNextpage = encFeedCursor({sp:2, pp:_lastSearchNextpage||null, sDone:false, pDone:!_lastSearchNextpage}) }
   try{ sdiag(`s:${qtag} out:${outF.length}/sv${_svN(outF)}`) }catch(e){}
   return outF
 }
 
 // Paginated version for infinite scroll — genuine full only
 export async function unifiedSearchPaginated(query, limit=20, nextpage=null){
-  const res = await searchPiped(query, limit, nextpage)
-  let tracks = res.tracks || []
-  if(!nextpage && tracks.length < 10){
-    const qlow=query.toLowerCase()
-    const isIndian=/[\u0900-\u097F]|arijit|punjab|punjabi|hindi|love|bollywood/.test(qlow)
-    if(isIndian){
-      const saavn = await searchSaavn(query, 12).catch(()=>[])
-      tracks = dedup([...tracks, ...saavn])
-    }
-    if(tracks.length < 8){
-      const inv = await searchInvidious(query, 8).catch(()=>({tracks:[]}))
-      tracks = dedup([...tracks, ...(inv.tracks||[])])
-    }
+  // Composite cursor: Saavn page number + Piped cursor advance independently.
+  // A page of only already-seen recordings still returns the NEXT composite
+  // cursor (App's pager advances through it), never a repeated one.
+  let st = { sp:1, pp:null, sDone:false, pDone:false, first:true }
+  if(nextpage){
+    if(typeof nextpage === 'string' && nextpage.startsWith('mx1.')){
+      try{ st = { ...st, ...JSON.parse(decodeURIComponent(nextpage.slice(4))), first:false } }catch{}
+    } else st = { sp:2, pp:nextpage, sDone:false, pDone:false, first:false }
   }
-  // filter out preview if full exists
+  const qlow=String(query||'').toLowerCase()
+  const isIndian=/[\u0900-\u097F]|arijit|punjab|punjabi|hindi|love|bollywood/.test(qlow)
+  let pipedTracks = []
+  if(!st.pDone){
+    const res = await searchPiped(query, limit, st.pp || null).catch(()=>({ tracks:[], nextpage:null }))
+    pipedTracks = res.tracks || []
+    const np = res.nextpage || null
+    if(!np || (st.pp && String(np) === String(st.pp))) st.pDone = true
+    st.pp = np
+  }
+  let saavnTracks = []
+  if(!st.sDone && (isIndian || st.first)){
+    const raw = await searchSaavn(query, 20, st.sp || 1).catch(()=>[])
+    saavnTracks = raw || []
+    st.sp = (st.sp||1)+1
+    if(!raw || raw.length < 20) st.sDone = true
+  } else if(!isIndian) st.sDone = true
+  let tracks = dedup([...pipedTracks, ...saavnTracks])
+  if(st.first && tracks.length < 8){
+    const inv = await searchInvidious(query, 8).catch(()=>({tracks:[]}))
+    tracks = dedup([...tracks, ...(inv.tracks||[])])
+  }
   if(tracks.some(x=> !x.isPreview)){
     const filtered = tracks.filter(x=> !x.isPreview)
     if(filtered.length) tracks = filtered
   }
-  if(_svN(tracks) >= 2) tracks = _noVid(tracks)
-  return { tracks: rankByRelevance(tracks, query).slice(0, limit), nextpage: res.nextpage || null }
+  const hasMore = !st.sDone || !st.pDone
+  return { tracks: rankByRelevance(tracks, query).slice(0, Math.max(limit, 40)), nextpage: hasMore ? encFeedCursor(st) : null }
 }
 
 const _catCache = new Map()
@@ -908,6 +935,71 @@ export async function trendingByCategory(cat, limit=20, offset=0){
   return strictByCategory(await unifiedSearch(q, limit+8, offset), cat).slice(0, limit)
 }
 
+// ---- Real paginated category feed -------------------------------------
+// Cursor is an opaque JSON string carrying PER-PROVIDER state, so a
+// duplicate-only or category-filtered-empty page still advances to the next
+// real provider page/cursor instead of ending the feed. `total` stays null:
+// providers do not report a trustworthy catalog total, and the UI must say
+// "not reported" rather than invent one.
+function encFeedCursor(o){ try{ return 'mx1.'+encodeURIComponent(JSON.stringify(o)) }catch{ return null } }
+function decFeedCursor(s){
+  if(!s || typeof s!=='string') return null
+  if(!s.startsWith('mx1.')) return { q:0, sp:2, pp:s, bp:2, sDone:false, pDone:false, bDone:true }
+  try{ return JSON.parse(decodeURIComponent(s.slice(4))) }catch{ return null }
+}
+export async function fetchCategoryPage(cat, cursor=null, limit=24, langs=[]){
+  const queries = categoryQueries(cat, langs)
+  if(!cursor){
+    // First page keeps the fast existing path (backend + device providers).
+    let first = []
+    try{ first = await trendingByCategory(cat === 'All' ? 'Trending' : cat, limit) }catch{}
+    first = filterCategoryTracks(dedupeRecordings((first||[]).filter(x=> x && !x.isPreview)), cat, langs)
+    const st = { q:0, sp:2, pp:null, bp:2, sDone:false, pDone:false, bDone:false }
+    if(first.length) return { tracks:first.slice(0, limit), nextCursor: encFeedCursor(st), total:null }
+    cursor = encFeedCursor({ q:0, sp:1, pp:null, bp:1, sDone:false, pDone:false, bDone:false })
+  }
+  const st = decFeedCursor(cursor) || { q:0, sp:1, pp:null, bp:1, sDone:false, pDone:false, bDone:false }
+  if(st.q >= queries.length) return { tracks:[], nextCursor:null, total:null }
+  const q = queries[st.q]
+  let backendTracks = []
+  if(BACKEND_URL && !st.bDone){
+    try{
+      const ac = new AbortController(); const tm = setTimeout(()=> ac.abort(), 6000)
+      const r = await fetch(`${BACKEND_URL}/api/trending?cat=${encodeURIComponent(cat)}&limit=${limit}&page=${st.bp||1}${st.pp?`&nextpage=${encodeURIComponent(st.pp)}`:''}`, { headers:{'Accept':'application/json'}, signal: ac.signal })
+      clearTimeout(tm)
+      if(r.ok){
+        const data = await r.json()
+        // Only a backend that echoes the real-pagination contract is trusted
+        // for later pages; an old deployment ignoring `page` is used once
+        // (page 1 path above) and never mistaken for successive pages.
+        if(data && data.paging === 'provider-v1'){ backendTracks = data.tracks||[]; st.bp = (st.bp||1)+1; if(!data.nextpage) st.bDone = true }
+        else st.bDone = true
+      } else st.bDone = true
+    }catch{ st.bDone = true }
+  }
+  let saavnTracks = []
+  if(!st.sDone){
+    saavnTracks = await searchSaavn(q, 20, st.sp||1).catch(()=>[])
+    st.sp = (st.sp||1)+1
+    if(!saavnTracks || saavnTracks.length < 20) st.sDone = true
+  }
+  let pipedTracks = []
+  if(!st.pDone){
+    const res = await searchPiped(q, 20, st.pp || null).catch(()=>({ tracks:[], nextpage:null }))
+    pipedTracks = res.tracks || []
+    const np = res.nextpage || null
+    if(!np || (st.pp && String(np) === String(st.pp))) st.pDone = true
+    st.pp = np
+  }
+  let merged = dedupeRecordings([...backendTracks, ...saavnTracks, ...pipedTracks].filter(x=> x && !x.isPreview))
+  merged = filterCategoryTracks(merged, cat, langs)
+  if(st.sDone && st.pDone && st.bDone){
+    st.q = (st.q||0)+1; st.sp = 1; st.pp = null; st.bp = 1; st.sDone = false; st.pDone = false; st.bDone = false
+  }
+  const hasMore = st.q < queries.length
+  return { tracks: merged.slice(0, Math.max(limit, 40)), nextCursor: hasMore ? encFeedCursor(st) : null, total:null }
+}
+
 export async function artistSongs(artist, limit=24){
   const [pipedRes, saavn, inv] = await Promise.all([
     searchPiped(`${artist} official audio`, limit).catch(()=>({tracks:[]})),
@@ -922,27 +1014,99 @@ export async function artistSongs(artist, limit=24){
   return unifiedSearch(artist, limit).then(r=> r.slice(0,limit))
 }
 
-// Paginated artist songs — total all, not just 24 (YouTube Music-like infinite)
+// ---- Artist identity, profile portrait, and credited songs -------------
+// Songs are only attributed to an artist when PROVIDER credit metadata says
+// so (Saavn artist credits/ids, or a YouTube artist/topic channel). A generic
+// name search that merely mentions the name never attributes a song, and a
+// song/album cover is never used as the artist's portrait.
+function normArtistName(v){
+  return String(v||'').normalize('NFKD').replace(/[̀-ͯ]/g,'').toLowerCase()
+    .replace(/\s*-\s*topic$/i,'').replace(/\bvevo$/i,'')
+    .replace(/[^a-z0-9\u0900-\u097F]+/gi,' ').replace(/\s+/g,' ').trim()
+}
+function trackCreditsArtist(track, artistName, artistId){
+  if(artistId && creditIds(track).map(String).includes(String(artistId))) return true
+  const want = normArtistName(artistName)
+  if(!want) return false
+  return creditNames(track).some(n=> normArtistName(n) === want)
+}
+function artistImageFrom(data){
+  if(!data || typeof data!=='object') return ''
+  let im = data.image || data.images || data.avatar || ''
+  if(Array.isArray(im)){ const ss = im.map(x=> (typeof x==='string'? x : (x&&(x.url||x.link))||'')); im = ss[ss.length-1] || '' }
+  else if(im && typeof im==='object') im = im.url || im.link || ''
+  return normalizeCoverUrl(im || '')
+}
+const ARTIST_API_BASES = [
+  'https://saavn.dev/api',
+  'https://jiosaavn-api-privatecvc2.vercel.app/api',
+  'https://jiosaavn-api-with-cors.vercel.app/api',
+]
+export async function fetchArtistProfile(artist){
+  const name = typeof artist === 'string' ? artist : (artist && artist.name) || ''
+  let id = (artist && typeof artist === 'object' && (artist.id || artist.artistId)) || ''
+  let image = (artist && typeof artist === 'object' && artist.image) ? normalizeCoverUrl(artist.image) : ''
+  let followers = null
+  // A genuine portrait already carried by provider artist-credit metadata.
+  if(!image && artist && Array.isArray(artist.artistCredits)){
+    const hit = artist.artistCredits.find(c=> c && normArtistName(c.name) === normArtistName(name) && c.image)
+    if(hit) image = normalizeCoverUrl(hit.image)
+  }
+  try{
+    if(!id){
+      for(const base of ARTIST_API_BASES){
+        try{
+          const d = await fetchJsonWithCors(`${base}/search/artists?query=${encodeURIComponent(name)}&limit=5`, 4000)
+          const list = (d && d.data && (d.data.results || d.data)) || (d && d.results) || []
+          const hit = (Array.isArray(list)? list: []).find(a=> a && normArtistName(a.name) === normArtistName(name))
+          if(hit){ id = String(hit.id || ''); image = image || artistImageFrom(hit); if(hit.followerCount != null) followers = hit.followerCount; break }
+        }catch(e){ continue }
+      }
+    }
+    if(id){
+      for(const base of ARTIST_API_BASES){
+        try{
+          const d = await fetchJsonWithCors(`${base}/artists/${encodeURIComponent(id)}`, 4000)
+          const a = (d && (d.data || d)) || null
+          if(a && (a.name || a.image)){ image = image || artistImageFrom(a); if(a.followerCount != null) followers = a.followerCount; break }
+        }catch(e){ continue }
+      }
+    }
+  }catch(e){}
+  // No reliable portrait -> image stays '' and the UI renders initials.
+  return { id: String(id || ''), name, image, followers, source: id ? 'saavn' : '' }
+}
+
+// Paginated artist songs — successive Saavn pages + Piped cursors, filtered
+// to tracks that actually credit this artist. Cursor is an opaque mx1 JSON
+// string; a filtered-empty page still carries a valid continuation.
 export async function artistSongsPaginated(artist, limit=20, nextpage=null){
-  // first page uses dedicated artistSongs, next pages use searchPiped with nextpage token
+  const name = typeof artist === 'string' ? artist : (artist && artist.name) || ''
+  const artistId = (artist && typeof artist === 'object' && (artist.id || artist.artistId)) || ''
+  let st = { sp:1, pp:null, sDone:false, pDone:false }
   if(nextpage){
-    const res = await searchPiped(`${artist} songs official audio`, limit, nextpage)
-    let tracks = res.tracks || []
-    // strict music already filtered in searchPiped; add Saavn only on first page
-    return { tracks: tracks.slice(0,limit), nextpage: res.nextpage }
+    if(typeof nextpage === 'string' && nextpage.startsWith('mx1.')){
+      try{ st = { ...st, ...JSON.parse(decodeURIComponent(nextpage.slice(4))) } }catch{}
+    } else st = { sp:2, pp:nextpage, sDone:true, pDone:false }
   }
-  // first page: combine all sources for 24, then paginate via Piped
-  const [pipedRes, saavn] = await Promise.all([
-    searchPiped(`${artist} songs official audio`, limit).catch(()=>({tracks:[], nextpage:null})),
-    searchSaavn(artist, 10).catch(()=>[])
-  ])
-  let tracks = dedup([...(pipedRes.tracks||[]), ...saavn])
-  if(tracks.length < 12){
-    const inv = await searchInvidious(`${artist} songs official`, 8).catch(()=>({tracks:[]}))
-    tracks = dedup([...tracks, ...(inv.tracks||[])])
+  let saavnTracks = []
+  if(!st.sDone){
+    const raw = await searchSaavn(name, 20, st.sp || 1).catch(()=>[])
+    saavnTracks = (raw||[]).filter(t=> trackCreditsArtist(t, name, artistId))
+    st.sp = (st.sp||1)+1
+    if(!raw || raw.length < 20) st.sDone = true
   }
-  if(_svN(tracks) >= 2) tracks = _noVid(tracks)
-  return { tracks: tracks.slice(0,limit), nextpage: pipedRes.nextpage || null }
+  let pipedTracks = []
+  if(!st.pDone){
+    const res = await searchPiped(`${name} songs official audio`, limit, st.pp || null).catch(()=>({ tracks:[], nextpage:null }))
+    pipedTracks = (res.tracks||[]).filter(t=> trackCreditsArtist(t, name, artistId))
+    const np = res.nextpage || null
+    if(!np || (st.pp && String(np) === String(st.pp))) st.pDone = true
+    st.pp = np
+  }
+  const tracks = dedupeRecordings([...saavnTracks, ...pipedTracks].filter(x=> x && !x.isPreview))
+  const hasMore = !st.sDone || !st.pDone
+  return { tracks: tracks.slice(0, Math.max(limit, 40)), nextpage: hasMore ? encFeedCursor(st) : null, total: null }
 }
 
 export async function getRelatedTracks(videoId, limit=12){
@@ -958,7 +1122,7 @@ export async function getRelatedTracks(videoId, limit=12){
         if(!vid) return null
         return {
           id:`piped-${vid}`, videoId:vid, title:decode(s.title||"Unknown"), artist:s.uploaderName||"Related", album:"Related",
-          cover:s.thumbnail||`https://i.ytimg.com/vi/${vid}/hqdefault.jpg`,
+          cover: ytThumb(vid),
           audio:null, durationLabel:s.duration? formatSec(s.duration):"3:30", durationSec:s.duration||200,
           plays: s.views? `${(s.views/1000000).toFixed(1)}M`:`${(Math.random()*200).toFixed(0)}M`,
           color:pickColor(), source:'YouTube • Related', isPreview:false, original:s, host
@@ -969,40 +1133,13 @@ export async function getRelatedTracks(videoId, limit=12){
   return []
 }
 
-// Same-recording detection: title core + sorted artist tokens + version tag + duration bucket.
-// Catches "same song from 8 compilations" while keeping Reprise/Unplugged/Remix distinct.
-function trackKey(s){
-  try{
-    const rawT = String((s&&s.title)||'')
-    const vt = (rawT+' '+((s&&s.album)||'')).toLowerCase()
-    const vm = vt.match(/reprise|unplugged|remix|\blive\b|acoustic|lofi|slowed|reverb|\bcover\b|version|\bmix\b|\bclub\b|\bdj\b|instrumental|karaoke|mashup|\b8d\b|sped ?up|pitch|unwind/) || []
-    const T = rawT.toLowerCase().replace(/\([^)]*\)/g,' ').replace(/\[[^\]]*\]/g,' ').replace(/from\s+["'][^"']*["']/g,' ').replace(/["']/g,'').replace(/[^\p{L}\p{N} ]/gu,' ').replace(/\s+/g,' ').trim()
-    const A = String((s&&s.artist)||'').toLowerCase().split(/[,;&/]/).map(x=> x.replace(/[^\p{L}\p{N} ]/gu,' ').replace(/\s+/g,' ').trim()).filter(Boolean).sort().join('|')
-    let D = ''
-    const dd = Number(s&&s.durationSec)||0
-    if(dd > 0) D = String(Math.round(dd/15))
-    return T+'|'+A+'|'+vm.join('+')+'|'+D
-  }catch{ return 'k'+String(Math.random()) }
-}
-function dedup(arr){
-  const seen=new Set()
-  return (arr||[]).filter(s=>{
-    if(!s) return false
-    const k=trackKey(s)
-    if(seen.has(k)) return false
-    seen.add(k); return true
-  })
-}
-export function mergeDedup(prev, incoming){
-  const ids=new Set((prev||[]).map(s=> String(s&&s.id)))
-  const keys=new Set((prev||[]).map(s=> trackKey(s)))
-  return (incoming||[]).filter(s=>{
-    if(!s) return false
-    const k=trackKey(s)
-    if(ids.has(String(s.id))||keys.has(k)) return false
-    ids.add(String(s.id)); keys.add(k); return true
-  })
-}
+// Same-recording dedup lives in recording.js (stable media/ISRC identity,
+// then title+version+credit-overlap+duration). Album/provider row ids never
+// make a compilation copy unique; live/remix/reprise/acoustic stay distinct.
+function dedup(arr){ return dedupeRecordings(arr) }
+export function mergeDedup(prev, incoming){ return mergeRecordings(prev, incoming) }
+export { dedupeRecordings, mergeRecordings }
+
 function formatMs(ms){ if(!ms) return "3:30"; const s=Math.floor(ms/1000); return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}` }
 function formatSec(s){ if(!s) return "3:30"; const sec=Number(s); if(isNaN(sec)) return "3:30"; return `${Math.floor(sec/60)}:${String(Math.floor(sec%60)).padStart(2,'0')}` }
 function decode(s){ if(!s) return s; try{ return decodeURIComponent(s).replace(/&quot;/g,'"').replace(/&amp;/g,'&').replace(/&#039;/g,"'").replace(/&lt;/g,'<').replace(/&gt;/g,'>') }catch{ return s } }

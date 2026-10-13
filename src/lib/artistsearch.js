@@ -32,9 +32,46 @@ function cleanQueryTokens(query) {
   return tokensOf(query).filter(token => !DESCRIPTOR_TOKENS.has(token))
 }
 
+function editDistance(a, b) {
+  if (Math.abs(a.length - b.length) > 2) return 3
+  const row = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    let diagonal = row[0]
+    row[0] = i
+    for (let j = 1; j <= b.length; j++) {
+      const above = row[j]
+      row[j] = Math.min(
+        row[j] + 1,
+        row[j - 1] + 1,
+        diagonal + (a[i - 1] === b[j - 1] ? 0 : 1),
+      )
+      diagonal = above
+    }
+  }
+  return row[b.length]
+}
+
+function tokenMatches(queryToken, candidateToken) {
+  if (queryToken === candidateToken) return true
+  // Tolerate common transliteration spelling people actually type
+  // ("Arman" -> Armaan, "Sidhe" -> Seedhe) without opening up loose
+  // fuzzy matching for short words or song titles.
+  const longest = Math.max(queryToken.length, candidateToken.length)
+  const allowed = longest >= 6 ? 2 : 1
+  return queryToken.length >= 4
+    && candidateToken.length >= 4
+    && queryToken[0] === candidateToken[0]
+    && editDistance(queryToken, candidateToken) <= allowed
+}
+
 function allIncluded(needles, haystack) {
-  const set = new Set(haystack)
-  return needles.every(token => set.has(token))
+  const used = new Set()
+  return needles.every(needle => {
+    const index = haystack.findIndex((token, i) => !used.has(i) && tokenMatches(needle, token))
+    if (index < 0) return false
+    used.add(index)
+    return true
+  })
 }
 
 export function creditedArtistNames(track) {

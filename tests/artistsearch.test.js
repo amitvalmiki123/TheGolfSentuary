@@ -23,6 +23,25 @@ test('artist search: artist name plus generic words still shows the artist', () 
   assert.equal(findArtistForSearch('Diljit latest songs', [], known)?.name, 'Diljit Dosanjh')
 })
 
+test('artist search: artists outside the small home list resolve from credited results', () => {
+  const tracks = [
+    { title: 'Lag Ja Gale', artist: 'Lata Mangeshkar', artistCredits: [{ name: 'Lata Mangeshkar' }] },
+    { title: 'Nayaab', artist: 'Seedhe Maut', artistCredits: [{ name: 'Seedhe Maut' }] },
+    { title: 'Tum Ho', artist: 'Armaan Malik', artistCredits: [{ name: 'Armaan Malik' }] },
+  ]
+  assert.equal(findArtistForSearch('Lata Mangeshkar', tracks, known)?.name, 'Lata Mangeshkar')
+  assert.equal(findArtistForSearch('Shreya Ghoshal', tracks, known)?.name, 'Shreya Ghoshal')
+})
+
+test('artist search: common one-letter spelling differences use the credited official name', () => {
+  const tracks = [
+    { title: 'Nayaab', artist: 'Seedhe Maut', artistCredits: [{ name: 'Seedhe Maut' }] },
+    { title: 'Tum Ho', artist: 'Armaan Malik', artistCredits: [{ name: 'Armaan Malik' }] },
+  ]
+  assert.equal(findArtistForSearch('Sidhe Maut', tracks, known)?.name, 'Seedhe Maut')
+  assert.equal(findArtistForSearch('Arman Malik', tracks, known)?.name, 'Armaan Malik')
+})
+
 test('artist search: a song-title search does not promote its singer', () => {
   assert.equal(findArtistForSearch('Tum Hi Ho', arijitTracks, known), null)
   assert.equal(findArtistForSearch('Gehra Hua', arijitTracks, known), null)

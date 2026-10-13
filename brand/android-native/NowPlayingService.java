@@ -175,7 +175,7 @@ public class NowPlayingService extends Service {
   // song's bitmap immediately — showing another song's art while the new one
   // loads (or when it has none) is worse than a brief placeholder.
   private void onTrackChangedNative() {
-    posSec = 0; durSec = 0; durPosted = -1;
+    posSec = 0; durSec = 0; durPosted = -1; durAnnouncedFor = -1;
     artGen++; art = null; artWanted = ""; artUrlLoaded = ""; artFailUrl = "";
   }
 
@@ -369,19 +369,52 @@ public class NowPlayingService extends Service {
     updatePos();
   }
 
+  // First-valid-duration publication for THIS track (build-113 follow-up).
+  // Build 112/113 already reposted the notification when the duration first
+  // became known, yet on the phone the panel seekbar still appeared only
+  // after a pause/resume tapped IN the panel. That toggle does two things
+  // our single repost did not: it publishes a NEW PlaybackState AFTER the
+  // notification repost, and it happens seconds later — after SystemUI's
+  // notification listener has bound this session. So on first duration we
+  // now, guarded once per track (durAnnouncedFor):
+  //   1. publish metadata + playback state,
+  //   2. repost the foreground notification,
+  //   3. re-publish the playback state AFTER the repost,
+  //   4. schedule ONE delayed full refresh (~1.2s, a single tick) that
+  //      repeats 1-3 only if this is still the current track and the same
+  //      duration — never the previous song's duration, never a loop.
+  private volatile long durAnnouncedFor = -1;
+  private void publishSeekbarOnce() {
+    if (mediaSession == null || durSec <= 0) return;
+    final long token = (long)(durSec * 1000);
+    durAnnouncedFor = token;
+    updateSession();
+    startForegroundNow();
+    updatePos();
+    try {
+      new Handler(Looper.getMainLooper()).postDelayed(() -> {
+        try {
+          if (mediaSession == null || durSec <= 0) return;
+          if (durAnnouncedFor != (long)(durSec * 1000)) return; // new track/value already announced itself
+          updateSession();
+          startForegroundNow();
+          updatePos();
+        } catch (Exception ignored) {}
+      }, 1200);
+    } catch (Exception ignored) {}
+  }
+
   // Position-only refresh for the seekbar tick — NEVER re-delivers metadata, so
   // system UI doesn't re-bind the title (marquee restart) every ~2s. Duration is
   // delivered via a full post when first known or refined by >1s (micro-jitter ignored).
   private void updatePos() {
     if (mediaSession == null) return;
     if (durSec > 0 && (durPosted < 0 || Math.abs(durSec - durPosted) > 1.0)) {
-      updateSession();
-      // A session-only update does not make every OEM's panel draw the seekbar:
-      // Transsion/HiOS and similar skins only re-render it when the foreground
-      // notification itself is reposted. Reposting here is what removes the
-      // per-song "seekbar appears only after a notification pause/resume" bug —
-      // that workaround worked precisely because pause/resume reposts.
-      startForegroundNow();
+      // First/materially-refined duration for this track: full seekbar
+      // publication (metadata + repost + post-repost state + one delayed
+      // refresh). See publishSeekbarOnce. Later position ticks below keep
+      // the state fresh without re-delivering metadata.
+      publishSeekbarOnce();
       return;
     }
     try {

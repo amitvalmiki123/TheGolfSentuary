@@ -134,6 +134,10 @@ jobs:
           import sys, json, datetime
           ver, run, notes = sys.argv[1], int(sys.argv[2]), json.loads(sys.argv[3])
           features = json.loads(sys.argv[4]) if len(sys.argv) > 4 else []
+          # Older installed apps only read "notes"; mirror the curated,
+          # user-facing features there so they never show raw commit text.
+          if features:
+              notes = features
           repo = "${{ github.repository }}"
           data = {
             "app": "MaxMusic",

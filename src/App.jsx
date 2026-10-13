@@ -5,6 +5,7 @@ import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
 import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npAskBattery, npOpenNotifSettings, npPing, npLastCrash, npSetDisabled, npDisabled, npBridgeMode, hasNativeBridge, wvGuess } from './lib/nowplaying.js'
 import { trackKeyOf, createTrackTracker, buildSnapshot, activeEngine, nativeArtUrl, coverCandidates } from './lib/trackmeta.js'
 import { createPager } from './lib/pager.js'
+import { THEMES, effectiveTheme } from './lib/themes.js'
 
 const BASE = import.meta.env.BASE_URL || '/'
 // In the native app (Capacitor WebView) pretend the page is always visible — stops the
@@ -319,6 +320,22 @@ export default function App(){
   const [updateInfo, setUpdateInfo] = useState(null)
   const [showUpdate, setShowUpdate] = useState(false)
   const [updChecking, setUpdChecking] = useState(false)
+  const [themeId, setThemeId] = useState(()=>{ try{ return localStorage.getItem('sur_theme') || 'midnight' }catch{ return 'midnight' } })
+  const activeTheme = effectiveTheme(themeId, isPro)
+  useEffect(()=>{
+    try{
+      localStorage.setItem('sur_theme', activeTheme.id)
+      document.documentElement.dataset.theme = activeTheme.id
+      document.documentElement.style.setProperty('--mx-accent', activeTheme.accent)
+      document.documentElement.style.setProperty('--mx-accent2', activeTheme.accent2)
+      document.documentElement.style.setProperty('--mx-bg', activeTheme.bg)
+    }catch{}
+  },[activeTheme.id, activeTheme.accent, activeTheme.accent2, activeTheme.bg])
+  const selectTheme = (theme)=>{
+    if(theme.pro && !isPro){ showToast('Custom themes are a Pro feature'); setShowSubscribe(true); return }
+    setThemeId(theme.id)
+    showToast(`${theme.name} theme applied`)
+  }
   const [stats, setStats] = useState(()=>{ try{ const v=JSON.parse(localStorage.getItem('sur_stats')||'null'); if(v&&typeof v==='object') return {secs:v.secs||0,plays:v.plays||0,langs:v.langs||{}} }catch{}; return {secs:0,plays:0,langs:{}} })
   const [followed, setFollowed] = useState(()=>{ try{ return new Set(JSON.parse(localStorage.getItem('sur_followed')||'[]')) }catch{ return new Set() } })
   const [proStep, setProStep] = useState('plans')
@@ -396,9 +413,9 @@ export default function App(){
     try{
       const r = await checkAppUpdate()
       try{ localStorage.setItem('sur_update_check', new Date().toISOString().slice(0,10)) }catch{}
-      if(r && r.hasUpdate){ setUpdateInfo(r); setShowUpdate(true); if(manual) showToast('Naya update mil gaya 🎉') }
-      else if(manual) showToast(r? 'App updated hai ✓' : 'Update check fail — net dekho')
-    }catch{ if(manual) showToast('Update check fail — net dekho') }
+      if(r && r.hasUpdate){ setUpdateInfo(r); setShowUpdate(true); if(manual) showToast('A new update is ready to install') }
+      else if(manual) showToast(r? 'You are already on the latest version' : 'Could not check for updates. Please check your connection.')
+    }catch{ if(manual) showToast('Could not check for updates. Please check your connection.') }
     setUpdChecking(false)
   }
   useEffect(()=>{ // itrace-27: auto update check, roz ek baar
@@ -1750,12 +1767,12 @@ export default function App(){
   })
 
   return (
-    <div className="min-h-screen bg-[#060306] text-white selection:bg-[#D5AA55]/30 selection:text-white">
+    <div data-theme={activeTheme.id} className={`min-h-screen text-white selection:bg-[#D5AA55]/30 selection:text-white ${activeTheme.mode==='light' ? 'theme-light' : ''}`} style={{ background: activeTheme.bg }}>
       <div className="fixed inset-0 pointer-events-none">
-        <div className="absolute -top-[30%] -left-[20%] w-[90%] h-[80%] rounded-full blur-[120px] opacity-[0.18]" style={{ background:'radial-gradient(circle, #A154D6 0%, #6A418E 30%, transparent 70%)'}}/>
-        <div className="absolute top-[10%] -right-[20%] w-[80%] h-[60%] rounded-full blur-[140px] opacity-[0.15]" style={{ background:'radial-gradient(circle, #C35445 0%, #572223 40%, transparent 70%)'}}/>
-        <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-[120%] h-[50%] blur-[100px] opacity-[0.12]" style={{ background:'radial-gradient(ellipse at center, #543551 0%, transparent 70%)'}}/>
-        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-[#060306]"/>
+        <div className="absolute -top-[30%] -left-[20%] w-[90%] h-[80%] rounded-full blur-[120px] opacity-[0.18]" style={{ background:`radial-gradient(circle, ${activeTheme.glow1} 0%, ${activeTheme.glow1}99 30%, transparent 70%)`}}/>
+        <div className="absolute top-[10%] -right-[20%] w-[80%] h-[60%] rounded-full blur-[140px] opacity-[0.15]" style={{ background:`radial-gradient(circle, ${activeTheme.glow2} 0%, ${activeTheme.glow2}80 40%, transparent 70%)`}}/>
+        <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-[120%] h-[50%] blur-[100px] opacity-[0.12]" style={{ background:`radial-gradient(ellipse at center, ${activeTheme.accent}55 0%, transparent 70%)`}}/>
+        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent" style={{ backgroundImage:`linear-gradient(to bottom, transparent, transparent, ${activeTheme.bg})` }}/>
       </div>
 
       <audio key={audioKey} ref={audioRef} crossOrigin={audioNoCors? undefined : "anonymous"} src={current?.videoId ? (directFor || undefined) : current?.audio} preload="metadata" playsInline onError={handleAudioErr} />
@@ -1895,7 +1912,7 @@ export default function App(){
 
           <main className="flex-1 min-w-0 max-w-full overflow-x-clip px-4 lg:px-6 py-6 pb-28 lg:pb-28 space-y-7">
             {nav==='profile' ? (
-              <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : ("yt-iframe (direct resolve pending/failed)" + (directErr ? " · " + directErr : ""))) : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} x={{ t, lang, setLang, quality, qCycle, langs, toggleLang, sleepMin, cycleSleep, eqOn:eq.on, eqPreset:eq.preset, onOpenEQ:()=>setShowEQ(true), isPro, stats, followedCount:followed.size, onSubscribe:()=>setShowSubscribe(true), onClearHistory, onClearSearches, onShareProfile, autoplay, setAutoplay, onOpenPlaylist:(id)=> setSelectedPlaylist(id), onPlayPlaylist:(pl)=> playPlaylistNow(pl), onCreatePlaylist:()=> setShowCreatePl(true), onPlayTrack:playTrack, recently:recentlyPlayed, followedList:[...followed], updCur:{version:APP_VERSION, build:APP_BUILD_NO}, updInfo:updateInfo, updChecking, onCheckUpdate:()=> runUpdateCheck(true), onPlayAllRecent:()=>{ if(recentlyPlayed.length){ setQueue(recentlyPlayed); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing recent • ${recentlyPlayed.length}`) } } }} />
+              <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : ("yt-iframe (direct resolve pending/failed)" + (directErr ? " · " + directErr : ""))) : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} x={{ t, lang, setLang, quality, qCycle, langs, toggleLang, sleepMin, cycleSleep, eqOn:eq.on, eqPreset:eq.preset, onOpenEQ:()=>setShowEQ(true), isPro, stats, followedCount:followed.size, onSubscribe:()=>setShowSubscribe(true), onClearHistory, onClearSearches, onShareProfile, autoplay, setAutoplay, onOpenPlaylist:(id)=> setSelectedPlaylist(id), onPlayPlaylist:(pl)=> playPlaylistNow(pl), onCreatePlaylist:()=> setShowCreatePl(true), onPlayTrack:playTrack, recently:recentlyPlayed, followedList:[...followed], updCur:{version:APP_VERSION, build:APP_BUILD_NO}, updInfo:updateInfo, updChecking, onCheckUpdate:()=> runUpdateCheck(true), themes:THEMES, themeId:activeTheme.id, onSelectTheme:selectTheme, onPlayAllRecent:()=>{ if(recentlyPlayed.length){ setQueue(recentlyPlayed); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing recent • ${recentlyPlayed.length}`) } } }} />
             ) : nav==='search' ? (
               <>
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -2404,26 +2421,38 @@ export default function App(){
             </div>
           )}
           {/* itrace-27: app update popup */}
-          {showUpdate && updateInfo && (
+          {showUpdate && updateInfo && (()=>{ const highlights = (updateInfo.features && updateInfo.features.length ? updateInfo.features : updateInfo.notes) || []; return (
             <div className="fixed inset-0 z-[80] grid place-items-center p-4">
-              <div onClick={()=> setShowUpdate(false)} className="absolute inset-0 bg-black/70 backdrop-blur-sm"/>
-              <div className="relative w-full max-w-sm glass-strong rounded-[24px] p-6 text-center">
-                <div className="text-4xl mb-2">🎉</div>
-                <h3 className="font-bold text-lg">Naya update aaya hai!</h3>
-                <p className="text-sm text-white/60 mt-1">v{updateInfo.version} • build {updateInfo.build} (tumhara: build {APP_BUILD_NO||'—'})</p>
-                {(updateInfo.notes||[]).length>0 && <ul className="text-left text-xs text-white/70 mt-3 space-y-1 bg-white/5 rounded-2xl p-3">{updateInfo.notes.slice(0,4).map((n,i)=> <li key={i}>• {n}</li>)}</ul>}
-                <button onClick={()=> openExternal(updateInfo.apk)} className="mt-4 w-full py-3 rounded-full bg-emerald-500 text-black text-sm font-bold">Download update ↓</button>
-                <button onClick={()=> setShowUpdate(false)} className="mt-2 w-full py-2.5 rounded-full bg-white/10 border border-white/10 text-sm font-bold">Baad me</button>
-                <p className="text-[11px] text-white/40 mt-3">Download ke baad file kholo → Install dabao. Data safe rahega.</p>
+              <div onClick={()=> setShowUpdate(false)} className="absolute inset-0 bg-black/75 backdrop-blur-md"/>
+              <div className="relative w-full max-w-sm glass-strong rounded-[28px] p-6 text-center overflow-hidden shadow-[0_30px_90px_rgba(0,0,0,0.65)]">
+                <div className="absolute -top-20 left-1/2 -translate-x-1/2 w-64 h-40 rounded-full blur-[70px] opacity-30 pointer-events-none" style={{ background:`radial-gradient(circle, ${activeTheme.accent} 0%, transparent 70%)` }}/>
+                <div className="relative">
+                  <div className="mx-auto w-16 h-16 rounded-[22px] grid place-items-center shadow-2xl" style={{ background:`linear-gradient(135deg, ${activeTheme.accent}, ${activeTheme.accent2})` }}><span className="text-3xl text-white drop-shadow">⬆</span></div>
+                  <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-emerald-400/10 border border-emerald-400/25 px-3 py-1 text-[10px] font-extrabold tracking-[0.16em] text-emerald-300 uppercase"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"/>Update available</div>
+                  <h3 className="font-bold text-[22px] leading-tight font-display mt-3">A new version is ready</h3>
+                  <p className="text-sm text-white/60 mt-1">Version {updateInfo.version || '—'} • Build {updateInfo.build}</p>
+                  <p className="text-[11px] text-white/40 mt-1">You are currently on build {APP_BUILD_NO || '—'}</p>
+                  {highlights.length>0 ? (
+                    <div className="text-left mt-5 rounded-[22px] bg-white/[0.06] border border-white/10 p-4">
+                      <div className="text-[10px] font-extrabold tracking-[0.18em] text-white/45 uppercase mb-3">What’s new</div>
+                      <ul className="space-y-2.5">{highlights.slice(0,6).map((n,i)=> <li key={i} className="flex gap-2.5 text-[13px] leading-relaxed text-white/80"><span className="mt-0.5 w-5 h-5 shrink-0 rounded-full grid place-items-center text-[10px] font-black text-black" style={{ background: activeTheme.accent }}>✓</span><span>{n}</span></li>)}</ul>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-white/65 leading-relaxed mt-5 rounded-[22px] bg-white/[0.06] border border-white/10 p-4">This update includes performance improvements and bug fixes.</p>
+                  )}
+                  <button onClick={()=> openExternal(updateInfo.apk)} className="mt-5 w-full py-3.5 rounded-full text-sm font-extrabold text-black shadow-lg active:scale-[0.99] transition" style={{ background:`linear-gradient(135deg, ${activeTheme.accent}, ${activeTheme.accent2})` }}>Download update</button>
+                  <button onClick={()=> setShowUpdate(false)} className="mt-2.5 w-full py-3 rounded-full bg-white/10 border border-white/10 text-sm font-bold hover:bg-white/15">Maybe later</button>
+                  <p className="text-[11px] leading-relaxed text-white/40 mt-4">Open the downloaded file and tap Install. Your library, playlists and downloads will remain intact.</p>
+                </div>
               </div>
             </div>
-          )}
+          )})()}
           {/* Full player */}
-          {current && <div className={`fixed inset-0 z-50 w-full max-w-[100vw] overflow-y-auto overflow-x-hidden bg-[#060306] transition-transform duration-500 ${showFull? 'translate-y-0':'translate-y-full'}`}
+          {current && <div style={{ background: activeTheme.bg }} className={`fixed inset-0 z-50 w-full max-w-[100vw] overflow-y-auto overflow-x-hidden transition-transform duration-500 ${showFull? 'translate-y-0':'translate-y-full'}`}
             onTouchStart={e=>{ touchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() } }}
             onTouchEnd={e=>{ const s = touchRef.current; if(!s) return; const dx = e.changedTouches[0].clientX - s.x; const dy = e.changedTouches[0].clientY - s.y; if(Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy)*1.4){ if(dx < 0) handleNext(); else handlePrev(); } else if(dy > 120 && Math.abs(dy) > Math.abs(dx)*1.2){ setShowFull(false) } touchRef.current=null }}>
             <div className="min-h-screen relative">
-              <div className="absolute inset-0 overflow-hidden"><CoverImg track={current} className="w-full h-full object-cover scale-110 blur-[60px] opacity-30"/><div className="absolute inset-0 bg-gradient-to-b from-[#060306]/40 via-[#060306]/70 to-[#060306]"/><div className="absolute inset-0" style={{ background:`radial-gradient(600px 600px at 50% 0%, ${current.color}40, transparent)`}}/></div>
+              <div className="absolute inset-0 overflow-hidden"><CoverImg track={current} className="w-full h-full object-cover scale-110 blur-[60px] opacity-30"/><div className="absolute inset-0" style={{ background:`linear-gradient(to bottom, ${activeTheme.bg}66, ${activeTheme.bg}B3, ${activeTheme.bg})` }}/><div className="absolute inset-0" style={{ background:`radial-gradient(600px 600px at 50% 0%, ${activeTheme.accent}40, transparent)`}}/></div>
               <div className="relative max-w-[980px] mx-auto px-4 lg:px-6 py-4 lg:py-6">
                 <div className="flex items-center justify-between gap-4">
                   <button onClick={()=> setShowFull(false)} className="w-10 h-10 rounded-full bg-white/10 backdrop-blur border border-white/10 grid place-items-center hover:bg-white/15"><ChevronDownLarge/></button>
@@ -2587,7 +2616,7 @@ export default function App(){
                 <div className="grid gap-3">
                   {[
                     { id:'free', name:'Free', price:'₹0', feats:['5 offline downloads','Standard quality 160kbps','Equalizer locked'], cta:'Current plan', active: !isPro },
-                    { id:'pro', name:'MaxMusic Pro', price:'₹79/mo', feats:['Unlimited downloads','HD quality 320kbps','Equalizer unlocked','Priority new features'], cta:'Go Pro ₹79', active: isPro, highlight:true },
+                    { id:'pro', name:'MaxMusic Pro', price:'₹79/mo', feats:['Unlimited downloads','HD quality 320kbps','Equalizer unlocked','Custom themes and appearance','Priority new features'], cta:'Go Pro ₹79', active: isPro, highlight:true },
                   ].map(p=> (
                     <div key={p.id} className={`p-4 rounded-2xl border-2 ${p.highlight? 'bg-white text-black border-white':'bg-white/5 border-white/10 text-white'} ${p.active? 'ring-2 ring-emerald-400':''}`}>
                       <div className="flex items-center justify-between"><div className="font-bold">{p.name} {p.highlight && <span className="ml-2 text-xs bg-black text-white px-2 py-0.5 rounded-full">POPULAR</span>}</div><div className="font-bold">{p.price}</div></div>
@@ -2732,7 +2761,31 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
           <div className="py-3 border-b border-white/5"><div className="text-sm font-medium">{t('muslang')}</div><div className="text-xs text-white/50 mb-2">Shapes your Home mix</div><div className="flex gap-2">{['hindi','punjabi','english'].map(L=> <button key={L} onClick={()=> X.toggleLang(L)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${(X.langs||[]).includes(L)?'bg-white text-black border-white':'bg-white/10 border-white/10 text-white/60'}`}>{L[0].toUpperCase()+L.slice(1)}</button>)}</div></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('applang')}</div><div className="text-xs text-white/50">Interface language</div></div><div className="flex gap-2">{[['en','English'],['hi','हिंदी']].map(([v,l])=> <button key={v} onClick={()=> X.setLang(v)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${X.lang===v?'bg-white text-black border-white':'bg-white/10 border-white/10 text-white/60'}`}>{l}</button>)}</div></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('sleep')}</div><div className="text-xs text-white/50">{X.sleepMin?`Stops after ${X.sleepMin} min`:'Music keeps playing'}</div></div><button onClick={X.cycleSleep} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{X.sleepMin?X.sleepMin+'m':t('off')}</button></div>
-          <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">App updates</div><div className="text-xs text-white/50">v{(X.updCur&&X.updCur.version)||'?'} • build {(X.updCur&&X.updCur.build)||'—'}{X.updInfo&&X.updInfo.hasUpdate?' • NAYA UPDATE! 🎉':''}</div></div><button onClick={()=> X.onCheckUpdate && X.onCheckUpdate()} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{X.updChecking?'…':'Check'}</button></div>
+          <div className="py-3 border-b border-white/5">
+            <div className="flex items-center justify-between gap-3"><div><div className="text-sm font-medium">Appearance</div><div className="text-xs text-white/50">Choose a look for the app</div></div><span className="text-[10px] font-extrabold tracking-widest text-white/35 uppercase">Themes</span></div>
+            <div className="grid grid-cols-2 gap-2 mt-3">
+              {(X.themes||[]).filter(th=> !th.pro).map(th=> (
+                <button key={th.id} onClick={()=> X.onSelectTheme && X.onSelectTheme(th)} className={`p-3 rounded-2xl border text-left transition ${X.themeId===th.id?'bg-white text-black border-white':'bg-white/5 border-white/10 hover:bg-white/10'}`}>
+                  <span className="flex -space-x-1 mb-2">{th.swatch.map(c=> <span key={c} className="w-5 h-5 rounded-full border border-black/20" style={{ background:c }}/>)}</span>
+                  <span className="block text-xs font-extrabold">{th.mode==='light'?'☀ ':'☾ '}{th.name}</span><span className={`block text-[10px] mt-0.5 ${X.themeId===th.id?'text-black/55':'text-white/40'}`}>{th.tagline}</span>
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center justify-between mt-4 mb-2"><div className="text-xs font-extrabold tracking-widest text-white/40 uppercase">Custom themes</div>{!X.isPro && <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-[#D5AA55] text-black">PRO</span>}</div>
+            <div className="grid grid-cols-3 gap-2">
+              {(X.themes||[]).filter(th=> th.pro).map(th=> (
+                <button key={th.id} onClick={()=> X.onSelectTheme && X.onSelectTheme(th)} className={`p-3 rounded-2xl border text-left transition relative overflow-hidden ${X.themeId===th.id?'bg-white text-black border-white':'bg-white/5 border-white/10 hover:bg-white/10'}`}>
+                  <span className="absolute inset-x-0 top-0 h-1" style={{ background:`linear-gradient(90deg, ${th.accent}, ${th.accent2})` }}/>
+                  <span className="flex -space-x-1 mb-2 mt-1">{th.swatch.map(c=> <span key={c} className="w-5 h-5 rounded-full border border-black/20" style={{ background:c }}/>)}</span>
+                  <span className="block text-[11px] font-extrabold leading-tight">{th.name}</span><span className={`block text-[10px] mt-1 ${X.themeId===th.id?'text-black/55':'text-white/40'}`}>{X.isPro ? th.tagline : 'Pro only'}</span>
+                  {!X.isPro && <span className="absolute top-2 right-2 text-[11px]">🔒</span>}
+                  {X.themeId===th.id && <span className="absolute top-2 right-2 text-[11px] font-black">✓</span>}
+                </button>
+              ))}
+            </div>
+            {!X.isPro && <button onClick={X.onSubscribe} className="mt-3 w-full py-2.5 rounded-full bg-gradient-to-r from-[#D5AA55] to-[#C35445] text-black text-xs font-extrabold">Unlock custom themes with Pro</button>}
+          </div>
+          <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">App updates</div><div className="text-xs text-white/50">v{(X.updCur&&X.updCur.version)||'?'} • build {(X.updCur&&X.updCur.build)||'—'}{X.updInfo&&X.updInfo.hasUpdate?' • Update available':''}</div></div><button onClick={()=> X.onCheckUpdate && X.onCheckUpdate()} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{X.updChecking?'Checking…':'Check'}</button></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('onlinemusic')}</div><div className="text-xs text-white/50">JioSaavn + YouTube — full length</div></div><span className="text-xs text-emerald-400">●</span></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('offlinemode')}</div><div className="text-xs text-white/50">{downloaded.length>0? `${downloaded.length} songs saved offline`:'No downloads yet'}</div></div><span className="text-xs text-emerald-400">●</span></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('cloudsync')}</div><div className="text-xs text-white/50">{authUser? `ON — ${authUser.email}`:'Off — sign in to sync'}</div></div>{authUser? <button onClick={onSignOut} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{t('signout')}</button> : <button onClick={onSignIn} className="text-xs font-bold px-3 py-1.5 rounded-full bg-[#D5AA55] text-black">{t('signin')}</button>}</div>

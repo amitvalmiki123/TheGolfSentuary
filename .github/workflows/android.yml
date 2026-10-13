@@ -128,10 +128,12 @@ jobs:
           VER=$(node -p "require('./package.json').version")
           RUN=${{ github.run_number }}
           NOTES_JSON=$(git log -3 --pretty=format:'%s' | python3 -c "import sys,json; print(json.dumps([l.strip() for l in sys.stdin if l.strip()][:3]))")
+          FEATURES_JSON=$(python3 -c "import json; print(json.dumps(json.load(open('docs/release-features.json'))))" 2>/dev/null || echo '[]')
           write_feed() {
-            python3 - "$VER" "$RUN" "$NOTES_JSON" <<'PYEOF'
+            python3 - "$VER" "$RUN" "$NOTES_JSON" "$FEATURES_JSON" <<'PYEOF'
           import sys, json, datetime
           ver, run, notes = sys.argv[1], int(sys.argv[2]), json.loads(sys.argv[3])
+          features = json.loads(sys.argv[4]) if len(sys.argv) > 4 else []
           repo = "${{ github.repository }}"
           data = {
             "app": "MaxMusic",
@@ -140,6 +142,7 @@ jobs:
             "apk": f"https://github.com/{repo}/releases/download/v{ver}-b{run}/MaxMusic.apk",
             "page": f"https://github.com/{repo}/releases/tag/v{ver}-b{run}",
             "notes": notes,
+            "features": features,
             "date": datetime.date.today().isoformat()
           }
           open('docs/version.json','w').write(json.dumps(data, indent=2) + "\n")

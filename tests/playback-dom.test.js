@@ -55,6 +55,10 @@ async function loadApp(){
   const pagerFile=path.join(cache,'lib','pager.js')
   await writeFile(pagerFile,pagerSrc)
   source=source.replace("'./lib/pager.js'",JSON.stringify(pathToFileURL(pagerFile).href))
+  const themesSrc=await readFile(new URL('../src/lib/themes.js',import.meta.url),'utf8')
+  const themesFile=path.join(cache,'lib','themes.js')
+  await writeFile(themesFile,themesSrc)
+  source=source.replace("'./lib/themes.js'",JSON.stringify(pathToFileURL(themesFile).href))
   const {code}=await transformWithEsbuild(source,'App.jsx',{
     loader:'jsx',jsx:'automatic',jsxImportSource:'react',
     define:{'import.meta.env':'{"BASE_URL":"/","VITE_APP_BUILD_NO":"108"}'}
@@ -139,7 +143,9 @@ for(const native of [false,true]){
         assert.ok(button,`Missing ${label} button`)
         await act(async()=>button.dispatchEvent(new window.MouseEvent('click',{bubbles:true})))
       }
-      assert.ok(document.body.textContent.includes('App updated hai ✓'))
+      assert.ok(document.body.textContent.includes('You are already on the latest version'))
+      assert.ok(document.body.textContent.includes('Appearance'))
+      assert.ok(document.body.textContent.includes('Unlock custom themes with Pro'))
       assert.equal(frame.parentNode,host)
       assert.deepEqual(env.errors,[])
     }finally{ close(env) }

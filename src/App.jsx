@@ -239,6 +239,7 @@ export default function App(){
   const [recentlyPlayed, setRecentlyPlayed] = useState(()=>{ try{ return (JSON.parse(localStorage.getItem('sur_recent')||'[]')||[]).filter(isRealTrack) }catch{ return [] } })
   const [categoryLoading, setCategoryLoading] = useState(false)
   const [homeTracks, setHomeTracks] = useState([])
+  const [trendingTracks, setTrendingTracks] = useState([])
   const homeTracksRef = useRef([])
   homeTracksRef.current = homeTracks
   const [homeErr, setHomeErr] = useState(false)
@@ -264,6 +265,8 @@ export default function App(){
   const [artistLoadingMore, setArtistLoadingMore] = useState(false)
   const [artistPageOpen, setArtistPageOpen] = useState(false)
   const [artistProfile, setArtistProfile] = useState(null)
+  const [artistPortraits, setArtistPortraits] = useState(()=>{ try{ const v=JSON.parse(localStorage.getItem('sur_artist_portraits')||'{}'); return v && typeof v==='object' ? v : {} }catch{ return {} } })
+  const artistSyncRef = useRef(new Set())
   const [artistTotal, setArtistTotal] = useState(null)
   const [artistEnded, setArtistEnded] = useState(false)
   const [artistLoading, setArtistLoading] = useState(false)
@@ -504,6 +507,57 @@ export default function App(){
     }).catch(()=>{ if(!cancelled){ if(!hadCache){ setHomeTracks([]); setHomeErr(true) } setHomeLoading(false) }})
     return ()=> { cancelled=true }
   },[activeCat, langs])
+
+  // Search gets its OWN current-trending feed. It must not simply mirror the
+  // active Home category: opening Search loads fresh trending/category rows
+  // plus current YouTube music results, then the normal tap-to-play rescue can
+  // canonicalize a YouTube row to the exact Saavn recording when one exists.
+  useEffect(()=>{
+    if(nav !== 'search' || search.trim() || trendingTracks.length) return
+    let cancelled = false
+    ;(async()=>{
+      try{
+        const [catRes, ytRes, hitsRes] = await Promise.all([
+          fetchCategoryPage('Trending', null, 24, langs).catch(()=>({ tracks:[] })),
+          searchPiped('trending songs today', 18).catch(()=>({ tracks:[] })),
+          searchPiped('top hits today', 18).catch(()=>({ tracks:[] })),
+        ])
+        const merged = mergeDedup([], [
+          ...((ytRes && ytRes.tracks) || []),
+          ...((hitsRes && hitsRes.tracks) || []),
+          ...((catRes && catRes.tracks) || []),
+        ]).filter(isRealTrack)
+        if(!cancelled && merged.length) setTrendingTracks(merged.slice(0, 18))
+      }catch{}
+    })()
+    return ()=>{ cancelled = true }
+  },[nav, search, trendingTracks.length, langs])
+
+  // Artist tiles auto-sync ONLY genuine provider artist/profile portraits.
+  // Results are cached on-device; no song/album cover is ever substituted.
+  useEffect(()=>{
+    const visible = showAllArtists ? allArtists : getFilteredArtists(activeCat).slice(0, 6)
+    const names = visible.map(a=> a.name).filter(name=> name && !artistPortraits[name] && !artistSyncRef.current.has(name))
+    if(!names.length) return
+    names.forEach(name=> artistSyncRef.current.add(name))
+    let cancelled = false
+    ;(async()=>{
+      for(const name of names){
+        try{
+          const profile = await fetchArtistProfile(name)
+          if(!cancelled && profile && profile.image){
+            setArtistPortraits(prev=>{
+              if(prev[name]) return prev
+              const next = { ...prev, [name]: profile.image }
+              try{ localStorage.setItem('sur_artist_portraits', JSON.stringify(next)) }catch{}
+              return next
+            })
+          }
+        }catch{}
+      }
+    })()
+    return ()=>{ cancelled = true }
+  },[activeCat, showAllArtists, artistPortraits])
 
   // Infinite scroll for home category. The pager advances through
   // duplicate-only / filtered-empty provider pages (valid new cursor) and
@@ -1295,7 +1349,9 @@ export default function App(){
   // an artist's face; without a reliable portrait the UI shows initials.
   const artistPortraitFor = (name)=>{
     if(artistProfile && artistProfile.name === name && artistProfile.image) return artistProfile.image
-    return ''
+    if(artistPortraits && artistPortraits[name]) return artistPortraits[name]
+    const known = allArtists.find(a=> a.name === name)
+    return (known && known.image) || ''
   }
 
   const togglePlay = ()=>{
@@ -1968,7 +2024,7 @@ export default function App(){
               <>
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
                   <h2 className="text-2xl font-bold font-display">{search? `Search "${search}"` : "Browse all"} <span className="text-sm font-normal text-white/50">• Real-time online + local</span></h2>
-                  <span className="text-sm text-white/50">{search ? `${onlineResults.length||filteredLocal.length} results` : `${homeTracks.length} trending • ${localSongs.length} local`}</span>
+                  <span className="text-sm text-white/50">{search ? `${onlineResults.length||filteredLocal.length} results` : `${(trendingTracks.length || homeTracks.length)} trending • ${localSongs.length} local`}</span>
                 </div>
 
                 {!search ? (
@@ -1989,19 +2045,19 @@ export default function App(){
                         </button>
                       ))}
                     </div>
-                    <div className="pt-2">
-                      <h3 className="font-bold mb-3">Trending Now — Worldwide Full • Tap to play</h3>
-                      {!homeTracks.length && <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">{Array.from({length:6}).map((_,i)=> <div key={i} className="h-16 rounded-xl bg-white/5 animate-pulse border border-white/5"/> )}</div>}
-                      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                        {homeTracks.slice(0,12).map(t=>{
+                    <div className="pt-2 min-w-0 max-w-full overflow-hidden">
+                      <h3 className="font-bold mb-3">Trending Now — India + Global • Tap to play</h3>
+                      {!(trendingTracks.length || homeTracks.length) && <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 min-w-0 max-w-full">{Array.from({length:6}).map((_,i)=> <div key={i} className="h-16 min-w-0 rounded-xl bg-white/5 animate-pulse border border-white/5"/> )}</div>}
+                      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 min-w-0 max-w-full">
+                        {(trendingTracks.length ? trendingTracks : homeTracks).slice(0,12).map(t=>{
                           const idx=queue.findIndex(x=> String(x.id)===String(t.id))
                           return (
-                            <div key={t.id} className={`flex items-center gap-3 p-2 pr-2 rounded-xl border text-left ${idx===currentIndex?'bg-white text-black border-white':'bg-white/5 hover:bg-white/10 border-white/5'}`}>
+                            <div key={t.id} className={`flex min-w-0 max-w-full overflow-hidden items-center gap-3 p-2 pr-2 rounded-xl border text-left ${idx===currentIndex?'bg-white text-black border-white':'bg-white/5 hover:bg-white/10 border-white/5'}`}>
                               <button onClick={()=> playTrack(t)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
                                 <CoverImg track={t} className="w-12 h-12 rounded-lg object-cover shrink-0"/>
-                                <div className="min-w-0"><div className={`text-sm font-semibold truncate ${idx===currentIndex?'text-black':'text-white'}`}>{t.title}</div><div className={`text-xs truncate ${idx===currentIndex?'text-black/60':'text-white/60'}`}>{t.artist}</div></div>
+                                <div className="min-w-0 flex-1"><div className={`text-sm font-semibold truncate ${idx===currentIndex?'text-black':'text-white'}`}>{t.title}</div><div className={`text-xs truncate ${idx===currentIndex?'text-black/60':'text-white/60'}`}>{t.artist}</div></div>
                               </button>
-                              <button onClick={()=> handleDownload(t)} disabled={downloadingId===t.id} className={`w-8 h-8 grid place-items-center rounded-full border ${downloaded.find(d=> String(d.id)===String(t.id))? 'bg-emerald-500 border-emerald-500 text-white':'border-white/15 text-white/60 hover:text-white'}`}>{downloadingId===t.id? <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"/> : <DownloadIcon/>}</button>
+                              <button onClick={()=> handleDownload(t)} disabled={downloadingId===t.id} className={`w-8 h-8 shrink-0 grid place-items-center rounded-full border ${downloaded.find(d=> String(d.id)===String(t.id))? 'bg-emerald-500 border-emerald-500 text-white':'border-white/15 text-white/60 hover:text-white'}`}>{downloadingId===t.id? <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"/> : <DownloadIcon/>}</button>
                             </div>
                           )
                         })}
@@ -2300,7 +2356,7 @@ export default function App(){
                       <div className="grid grid-cols-3 gap-3 text-center">
                         {getFilteredArtists(activeCat).slice(0,6).map(a=>(
                           <button key={a.name} onClick={()=> handleArtistClick(a.name)} className="group text-center min-w-0 max-w-full">
-                            <div className="relative mx-auto w-[72px] h-[72px] sm:w-20 sm:h-20 rounded-full overflow-hidden border-2 border-white/10 group-hover:border-[#D5AA55]/70 transition group-hover:scale-105"><ArtistAvatar name={a.name} src={a.image || ''} className="w-full h-full object-cover text-xl"/><div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent opacity-0 group-hover:opacity-100 transition grid place-items-end justify-center pb-2"><span className="text-[10px] font-bold bg-white text-black px-2 py-0.5 rounded-full">Play</span></div></div>
+                            <div className="relative mx-auto w-[72px] h-[72px] sm:w-20 sm:h-20 rounded-full overflow-hidden border-2 border-white/10 group-hover:border-[#D5AA55]/70 transition group-hover:scale-105"><ArtistAvatar name={a.name} src={artistPortraitFor(a.name)} className="w-full h-full object-cover text-xl"/><div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent opacity-0 group-hover:opacity-100 transition grid place-items-end justify-center pb-2"><span className="text-[10px] font-bold bg-white text-black px-2 py-0.5 rounded-full">Play</span></div></div>
                             <div className="text-xs font-semibold mt-2 leading-tight break-words group-hover:text-[#D5AA55]">{a.name}</div><div className="text-[11px] text-white/40">{a.plays} • {a.cat}</div>
                           </button>
                         ))}
@@ -2462,7 +2518,7 @@ export default function App(){
                 <div className="mt-4 grid grid-cols-3 sm:grid-cols-4 gap-3">
                   {getFilteredArtists(activeCat).map(a=>(
                     <button key={a.name} onClick={()=> handleArtistClick(a.name)} className="glass rounded-2xl p-3 text-center hover:bg-white/10 transition">
-                      <ArtistAvatar name={a.name} src={a.image || ''} className="mx-auto w-16 h-16 sm:w-20 sm:h-20 rounded-full object-cover border-2 border-white/10 text-lg"/>
+                      <ArtistAvatar name={a.name} src={artistPortraitFor(a.name)} className="mx-auto w-16 h-16 sm:w-20 sm:h-20 rounded-full object-cover border-2 border-white/10 text-lg"/>
                       <div className="text-xs font-semibold mt-2 leading-tight break-words">{a.name}</div>
                       <div className="text-[11px] text-white/40">{a.plays} • {a.cat}</div>
                     </button>
@@ -2916,8 +2972,8 @@ function ArtistAvatar({ name, src, className, style }){
   const [bad, setBad] = useState(false)
   useEffect(()=>{ setBad(false) },[src])
   const initials = String(name||'?').trim().split(/\s+/).slice(0,2).map(w=> w[0]||'').join('').toUpperCase() || '?'
-  if(!src || bad) return <div className={`${className||''} grid place-items-center bg-[#2A1E2A] text-[#D5AA55] font-bold select-none`} style={style}>{initials}</div>
-  return <img loading="lazy" decoding="async" src={src} alt="" className={className} style={style} onError={()=> setBad(true)}/>
+  if(!src || bad) return <div className={`${className||''} relative overflow-hidden grid place-items-center text-[#F3D27A] font-black select-none shadow-inner`} style={{ background:'radial-gradient(circle at 28% 18%, rgba(213,170,85,.42), transparent 34%), linear-gradient(145deg,#543551 0%,#2A1E2A 58%,#120A12 100%)', ...(style||{}) }}><span className="relative z-10 tracking-wide drop-shadow">{initials}</span><span className="absolute bottom-1.5 text-[10px] text-[#D5AA55]/70">♪</span></div>
+  return <img loading="lazy" decoding="async" referrerPolicy="no-referrer" src={src} alt="" className={className} style={style} onError={()=> setBad(true)}/>
 }
 function Avatar({ src, name, className, style }){
   const fallback = `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='96' height='96'><rect width='96' height='96' rx='20' fill='#2A1E2A'/><text x='48' y='64' font-size='42' font-family='system-ui,sans-serif' font-weight='700' fill='#D5AA55' text-anchor='middle'>${((String(name||'').trim()[0])||'S').toUpperCase()}</text></svg>`)}`

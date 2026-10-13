@@ -885,13 +885,37 @@ function _saavnSearchTitle(track){
     .replace(/\b(official|lyrics?|lyrical|video|audio|visualizer|full\s+song|mv|hd|4k)\b/gi, ' ')
     .replace(/\s+/g, ' ').trim()
 }
-export async function preferSaavnRecordings(tracks, maxLookups=16){
+export async function preferSaavnRecordings(tracks, maxLookups=16, options={}){
   const list = Array.isArray(tracks) ? tracks : []
   if (!list.some(t => t && t.videoId && !t.audio)) return list
   const playable = list.filter(t => t && typeof t.audio === 'string' && t.audio.startsWith('http'))
   const out = [...list]
   const jobs = []
   list.forEach((t, i) => { if (t && t.videoId && !t.audio) jobs.push(i) })
+  const exhaustive = !!(options && options.exhaustive)
+  const lookupTimeoutMs = Math.max(250, Number(options?.timeoutMs) || (exhaustive ? 7000 : 2400))
+  const lookupDeadline = Date.now() + Math.max(lookupTimeoutMs, Number(options?.deadlineMs) || (exhaustive ? 16000 : 6000))
+  const withLookupTimeout = (promise) => new Promise(resolve => {
+    let settled = false
+    const timer = setTimeout(() => { if (!settled) { settled = true; resolve(undefined) } }, lookupTimeoutMs)
+    Promise.resolve(promise).then(value => { if (!settled) { settled = true; clearTimeout(timer); resolve(value) } }, () => { if (!settled) { settled = true; clearTimeout(timer); resolve(undefined) } })
+  })
+  // Fast list lookup: one raced provider search per query shape. It is a
+  // bounded optimisation for rendering, never a proof that no Saavn copy
+  // exists; a timeout therefore returns undefined and is not negative-cached.
+  const boundedLookup = async (t) => {
+    const title = _saavnSearchTitle(t)
+    const artist = String(t.artist || '').split(/[,;&/]/)[0].trim()
+    const queries = [...new Set([`${title} ${artist}`.trim(), title].filter(q => q && q.length > 3))]
+    for (const q of queries) {
+      if (Date.now() >= lookupDeadline) return undefined
+      const hits = await withLookupTimeout(searchSaavn(q, 20).catch(() => []))
+      if (hits === undefined) return undefined
+      const match = findSaavnMatch(t, hits || [])
+      if (match) return match
+    }
+    return null
+  }
   let cursor = 0, lookups = 0
   const worker = async () => {
     while (cursor < jobs.length) {
@@ -900,7 +924,7 @@ export async function preferSaavnRecordings(tracks, maxLookups=16){
       if (!t) continue
       const local = findSaavnMatch(t, playable)
       if (local) { out[i] = { ...local, title: t.title || local.title, artist: t.artist || local.artist, cover: local.cover || t.cover }; continue }
-      if (lookups >= maxLookups) continue
+      if (lookups >= maxLookups || Date.now() >= lookupDeadline) continue
       lookups++
       const key = String(t.videoId || `${_saavnSearchTitle(t)}|${t.artist || ''}|${t.durationSec || ''}`).toLowerCase()
       try {
@@ -909,8 +933,11 @@ export async function preferSaavnRecordings(tracks, maxLookups=16){
           if (hit) out[i] = { ...hit, title: t.title || hit.title, artist: t.artist || hit.artist, cover: hit.cover || t.cover }
           continue
         }
-        const match = await findSaavnRecording(t).catch(() => null)
-        _saavnMatchCache.set(key, match || null)
+        const match = exhaustive
+          ? await withLookupTimeout(findSaavnRecording(t).catch(() => null))
+          : await boundedLookup(t)
+        // undefined means "not checked in time", not "no such recording".
+        if (match !== undefined) _saavnMatchCache.set(key, match || null)
         if (match) out[i] = { ...match, title: t.title || match.title, artist: t.artist || match.artist, cover: match.cover || t.cover }
       } catch { try { _saavnMatchCache.set(key, null) } catch {} }
     }
@@ -1063,7 +1090,7 @@ export async function fetchCategoryPage(cat, cursor=null, limit=24, langs=[]){
     first = filterCategoryTracks(dedupeRecordings((first||[]).filter(x=> x && !x.isPreview)), cat, langs)
     // The fast path can still win with a YouTube-only backend page (Indie):
     // canonicalize those rows to Saavn before the list/queue ever sees them.
-    first = filterCategoryTracks(await preferSaavnRecordings(first, 18), cat, langs)
+    first = filterCategoryTracks(await preferSaavnRecordings(first, 8, { timeoutMs: 1800, deadlineMs: 4000 }), cat, langs)
     const st = { q:0, sp:2, pp:null, bp:2, sDone:false, pDone:false, bDone:false }
     if(first.length) return { tracks:first.slice(0, limit), nextCursor: encFeedCursor(st), total:null }
     cursor = encFeedCursor({ q:0, sp:1, pp:null, bp:1, sDone:false, pDone:false, bDone:false })
@@ -1072,37 +1099,46 @@ export async function fetchCategoryPage(cat, cursor=null, limit=24, langs=[]){
   if(st.q >= queries.length) return { tracks:[], nextCursor:null, total:null }
   const q = queries[st.q]
   let backendTracks = []
-  if(BACKEND_URL && !st.bDone){
+  let saavnTracks = []
+  let pipedTracks = []
+  const bpAtStart = st.bp || 1
+  const ppAtStart = st.pp || null
+  const loadBackend = async()=>{
+    if(!BACKEND_URL || st.bDone) return
     try{
       const ac = new AbortController(); const tm = setTimeout(()=> ac.abort(), 6000)
-      const r = await fetch(`${BACKEND_URL}/api/trending?cat=${encodeURIComponent(cat)}&limit=${limit}&page=${st.bp||1}${st.pp?`&nextpage=${encodeURIComponent(st.pp)}`:''}`, { headers:{'Accept':'application/json'}, signal: ac.signal })
+      const r = await fetch(`${BACKEND_URL}/api/trending?cat=${encodeURIComponent(cat)}&limit=${limit}&page=${bpAtStart}${ppAtStart?`&nextpage=${encodeURIComponent(ppAtStart)}`:''}`, { headers:{'Accept':'application/json'}, signal: ac.signal })
       clearTimeout(tm)
       if(r.ok){
         const data = await r.json()
         // Only a backend that echoes the real-pagination contract is trusted
         // for later pages; an old deployment ignoring `page` is used once
         // (page 1 path above) and never mistaken for successive pages.
-        if(data && data.paging === 'provider-v1'){ backendTracks = data.tracks||[]; st.bp = (st.bp||1)+1; if(!data.nextpage) st.bDone = true }
+        if(data && data.paging === 'provider-v1'){ backendTracks = data.tracks||[]; st.bp = bpAtStart+1; if(!data.nextpage) st.bDone = true }
         else st.bDone = true
       } else st.bDone = true
     }catch{ st.bDone = true }
   }
-  let saavnTracks = []
-  if(!st.sDone){
-    saavnTracks = await searchSaavn(q, 20, st.sp||1).catch(()=>[])
-    st.sp = (st.sp||1)+1
+  const loadSaavn = async()=>{
+    if(st.sDone) return
+    const page = st.sp || 1
+    saavnTracks = await searchSaavn(q, 20, page).catch(()=>[])
+    st.sp = page+1
     if(!saavnTracks || saavnTracks.length < 20) st.sDone = true
   }
-  let pipedTracks = []
-  if(!st.pDone){
-    const res = await searchPiped(q, 20, st.pp || null).catch(()=>({ tracks:[], nextpage:null }))
+  const loadPiped = async()=>{
+    if(st.pDone) return
+    const res = await searchPiped(q, 20, ppAtStart).catch(()=>({ tracks:[], nextpage:null }))
     pipedTracks = res.tracks || []
     const np = res.nextpage || null
-    if(!np || (st.pp && String(np) === String(st.pp))) st.pDone = true
+    if(!np || (ppAtStart && String(np) === String(ppAtStart))) st.pDone = true
     st.pp = np
   }
+  // Providers are independent: race them together instead of paying every
+  // provider's latency one after another on each infinite-scroll page.
+  await Promise.all([loadBackend(), loadSaavn(), loadPiped()])
   let merged = dedupeRecordings([...backendTracks, ...saavnTracks, ...pipedTracks].filter(x=> x && !x.isPreview))
-  merged = filterCategoryTracks(await preferSaavnRecordings(merged, 16), cat, langs)
+  merged = filterCategoryTracks(await preferSaavnRecordings(merged, 0), cat, langs)
   if(st.sDone && st.pDone && st.bDone){
     st.q = (st.q||0)+1; st.sp = 1; st.pp = null; st.bp = 1; st.sDone = false; st.pDone = false; st.bDone = false
   }

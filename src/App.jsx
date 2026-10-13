@@ -1322,7 +1322,7 @@ export default function App(){
     rescueRef.current[key] = Date.now()
     ;(async()=>{
       try{
-        showToast('Playback error — real audio dhundh rahe…')
+        showToast('Finding the Best Version…')
         // RACED: piped-exact ∥ saavn-fast — jo pehle mile wahi bajega (stall-min).
         // Saavn may only replace the track when it is the SAME recording;
         // a first-result cover/remix must never be played under this title.
@@ -1340,8 +1340,16 @@ export default function App(){
           setQueue(prev=>{ const q=[...prev]; const i=q.findIndex(x=> String(x.id)===key); if(i>=0){ q[i] = { ...q[i], ...fixed, id: q[i].id }; swapped = true } return q })
           setTimeout(()=>{ try{ if(!swapped) return; const a = audioRef.current; if(a && fixed.audio){ a.src = fixed.audio; a.currentTime = 0; if(isPlayingRef.current){ a.play().catch(()=>{}); setIsPlaying(true) } } }catch{} }, 500)
           showToast('Playing Now')
+        } else if(track.videoId) {
+          // No Saavn/direct replacement was found, but the YouTube version
+          // itself is still a valid player — keep it going instead of
+          // showing an error-style message or pausing a playable song.
+          showToast('Playing YouTube Version')
+          setIsPlaying(true)
+          try{ if(ytPlayerRef.current && ytReadyRef.current && ytPlayerRef.current.playVideo) ytPlayerRef.current.playVideo() }catch{}
+          delete rescueRef.current[key]
         } else {
-          showToast('Iska source nahi mila — skip; agli baar retry hoga')
+          showToast('Audio Unavailable')
           setIsPlaying(false)
           delete rescueRef.current[key]
         }

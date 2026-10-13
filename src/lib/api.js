@@ -2,7 +2,7 @@
 import CryptoJS from 'crypto-js'
 import { nativeJson, canNativeHttp } from './nativehttp.js'
 import { normalizeCoverUrl, ytThumb } from './trackmeta.js'
-import { dedupeRecordings, mergeRecordings, creditNames, creditIds, findRecordingMatch } from './recording.js'
+import { dedupeRecordings, mergeRecordings, creditNames, creditIds, findSaavnMatch } from './recording.js'
 import { categoryQueries, filterCategoryTracks } from './feed.js'
 const PIPED_HOSTS = [
   "https://pipedapi.kavin.rocks",
@@ -879,7 +879,7 @@ export async function preferSaavnRecordings(tracks, maxLookups=16){
       const i = jobs[cursor++]
       const t = out[i]
       if (!t) continue
-      const local = findRecordingMatch(t, playable)
+      const local = findSaavnMatch(t, playable)
       if (local) { out[i] = { ...local, title: t.title || local.title, artist: t.artist || local.artist, cover: local.cover || t.cover }; continue }
       if (lookups >= maxLookups) continue
       lookups++
@@ -890,10 +890,7 @@ export async function preferSaavnRecordings(tracks, maxLookups=16){
           if (hit) out[i] = { ...hit, title: t.title || hit.title, artist: t.artist || hit.artist, cover: hit.cover || t.cover }
           continue
         }
-        const firstArtist = String(t.artist || '').split(/[,;&/]/)[0].trim()
-        const q = `${_saavnSearchTitle(t)} ${firstArtist}`.trim()
-        const candidates = q.length > 3 ? await searchSaavn(q, 6).catch(() => []) : []
-        const match = findRecordingMatch(t, candidates || [])
+        const match = await findSaavnRecording(t).catch(() => null)
         _saavnMatchCache.set(key, match || null)
         if (match) out[i] = { ...match, title: t.title || match.title, artist: t.artist || match.artist, cover: match.cover || t.cover }
       } catch { try { _saavnMatchCache.set(key, null) } catch {} }
@@ -903,17 +900,37 @@ export async function preferSaavnRecordings(tracks, maxLookups=16){
   return dedupeRecordings(out)
 }
 
+function _saavnAlbumHint(track){
+  const title = String((track && track.title) || '')
+  const m = title.match(/\(\s*from\s+["']?([^)"']+)["']?\s*\)/i) || title.match(/\[\s*from\s+([^\]]+)\]/i)
+  if (m) return m[1].replace(/["']/g, '').trim()
+  const album = String((track && track.album) || '').trim()
+  return album && !/^(single|unknown|youtube|—|-)$/i.test(album) && album !== String((track && track.artist) || '').trim() ? album : ''
+}
+
 // Playback-rescue lookup: only a confidently identical Saavn recording may
 // replace a YouTube track. Returning null is intentional for genuine
 // YouTube-only covers/versions — the caller must not play a different song
-// just because it happened to be Saavn's first search result.
+// just because it happened to be Saavn's first search result. Several query
+// shapes are tried because the first provider query can rank an unrelated
+// mashup/compilation above the exact song when an artist spelling differs.
 export async function findSaavnRecording(track){
   if (!track || !track.videoId) return null
+  const title = _saavnSearchTitle(track)
+  if (title.length <= 3) return null
   const firstArtist = String(track.artist || '').split(/[,;&/]/)[0].trim()
-  const q = `${_saavnSearchTitle(track)} ${firstArtist}`.trim()
-  if (q.length <= 3) return null
-  const candidates = await searchSaavn(q, 8).catch(() => [])
-  return findRecordingMatch(track, candidates || [])
+  const albumHint = _saavnAlbumHint(track)
+  const queries = [...new Set([
+    `${title} ${firstArtist}`.trim(),
+    title,
+    albumHint ? `${title} ${albumHint}`.trim() : '',
+  ].filter(q => q && q.length > 3))]
+  for (const q of queries) {
+    const candidates = await searchSaavn(q, 10).catch(() => [])
+    const match = findSaavnMatch(track, candidates || [])
+    if (match) return match
+  }
+  return null
 }
 
 const _catCache = new Map()

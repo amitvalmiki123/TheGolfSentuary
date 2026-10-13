@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { dedupeRecordings, mergeRecordings, isSameRecording, creditNames, findRecordingMatch } from '../src/lib/recording.js'
+import { dedupeRecordings, mergeRecordings, isSameRecording, creditNames, findRecordingMatch, findSaavnMatch } from '../src/lib/recording.js'
 
 const apnaOriginal = { id:'saavn-1-a', providerId:'saavn-111', title:'Apna Bana Le', artist:'Arijit Singh, Pritam', album:'Bhediya', durationSec:261, audio:'https://cdn.test/apna.mp3', source:'Saavn • Full', cover:'https://img.test/apna.jpg' }
 const apnaCompilation = { id:'saavn-2-b', providerId:'saavn-222', title:'Apna Bana Le', artist:'Pritam, Arijit Singh', album:'Romantic Hits Collection', durationSec:260, audio:'https://cdn.test/apna2.mp3', source:'Saavn • Full', cover:'https://img.test/comp.jpg' }
@@ -68,4 +68,24 @@ test('recording: Saavn title-suffix singer still matches, a lofi cover never col
   const HusnOriginalSv = { id:'saavn-X0zxHHfs-x', providerId:'saavn-X0zxHHfs', title:'Husn', artist:'Anuv Jain - Husn', durationSec:217, audio:'https://aac.saavncdn.com/Husn_320.mp4', source:'Saavn • Full' }
   assert.equal(findRecordingMatch(HusnCoverYt, [HusnOriginalSv]), null)
   assert.equal(isSameRecording(HusnCoverYt, HusnOriginalSv), false)
+})
+
+test('recording: Saavn replacement tolerates provider artist spelling and video-length differences', () => {
+  const nasheYt = { id:'piped-ZI3R0Gn5sa8', videoId:'ZI3R0Gn5sa8', title:'Nashe Si Chadh Gayi (From "Befikre")', artist:'Vishal and Sheykhar', durationSec:238, audio:null, source:'YouTube • Full' }
+  const nasheSv = { id:'saavn-yshGBwsU-x', providerId:'saavn-yshGBwsU', title:'Nashe Si Chadh Gayi', artist:'Vishal & Shekhar, Arijit Singh, Caralisa Monteiro, Jaideep Sahni - Befikre', album:'Befikre', durationSec:237, audio:'https://aac.saavncdn.com/nashe_320.mp4', source:'Saavn • Full' }
+  assert.equal(findSaavnMatch(nasheYt, [nasheSv]), nasheSv)
+
+  const pehliYt = { id:'piped-pehli', videoId:'pehli-video', title:'Pehli Dafa', artist:'Atif Aslam', durationSec:290, audio:null, source:'YouTube • Full' }
+  const pehliSv = { id:'saavn-pehli-x', providerId:'saavn-pehli', title:'Pehli Dafa', artist:'Atif Aslam', album:'Pehli Dafa', durationSec:274, audio:'https://aac.saavncdn.com/pehli_320.mp4', source:'Saavn • Full' }
+  assert.equal(findSaavnMatch(pehliYt, [pehliSv]), pehliSv)
+})
+
+test('recording: Saavn replacement still rejects different singers and remix versions', () => {
+  const samjhawanYt = { id:'piped-samjhawan', videoId:'samjhawan-video', title:'Samjhawan', artist:'Jawad Ahmed', durationSec:260, audio:null, source:'YouTube • Full' }
+  const filmSamjhawanSv = { id:'saavn-samjhawan-x', providerId:'saavn-samjhawan', title:'Samjhawan', artist:'Arijit Singh, Shreya Ghoshal', album:'Humpty Sharma Ki Dulhania', durationSec:269, audio:'https://aac.saavncdn.com/samjhawan_320.mp4', source:'Saavn • Full' }
+  assert.equal(findSaavnMatch(samjhawanYt, [filmSamjhawanSv]), null)
+
+  const nasheRemixSv = { id:'saavn-nashe-remix-x', providerId:'saavn-nashe-remix', title:'Nashe Si Chadh Gayi - Remix', artist:'Vishal & Shekhar, Arijit Singh', album:'Nashe Si Chadh Gayi - Remix', durationSec:238, audio:'https://aac.saavncdn.com/nashe-remix_320.mp4', source:'Saavn • Full' }
+  const nasheYt = { id:'piped-ZI3R0Gn5sa8', videoId:'ZI3R0Gn5sa8', title:'Nashe Si Chadh Gayi (From "Befikre")', artist:'Vishal and Sheykhar', durationSec:238, audio:null, source:'YouTube • Full' }
+  assert.equal(findSaavnMatch(nasheYt, [nasheRemixSv]), null)
 })

@@ -227,6 +227,92 @@ export function findRecordingMatch(track, candidates) {
   return best
 }
 
+const CREDIT_TOKEN_STOPS = new Set(['and', 'the', 'feat', 'ft', 'featuring', 'with', 'by', 'official', 'music', 'song', 'songs', 'topic', 'vevo'])
+
+export function creditTokens(track) {
+  const out = []
+  for (const name of creditNames(track)) {
+    for (const tok of name.split(' ')) {
+      const t = tok.trim()
+      if (t.length > 1 && !CREDIT_TOKEN_STOPS.has(t) && !out.includes(t)) out.push(t)
+    }
+  }
+  return out
+}
+
+function editDistance(a, b) {
+  const x = String(a || ''), y = String(b || '')
+  if (Math.abs(x.length - y.length) > 1) return 99
+  const prev = Array.from({ length: y.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= x.length; i++) {
+    let last = prev[0]
+    prev[0] = i
+    for (let j = 1; j <= y.length; j++) {
+      const cur = prev[j]
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, last + (x[i - 1] === y[j - 1] ? 0 : 1))
+      last = cur
+    }
+  }
+  return prev[y.length]
+}
+
+function creditTokenEvidence(a, b) {
+  const ta = creditTokens(a), tb = creditTokens(b)
+  const matched = []
+  for (const tok of ta) {
+    if (tb.some(other => other === tok || (Math.min(tok.length, other.length) >= 5 && editDistance(tok, other) <= 1))) matched.push(tok)
+  }
+  return matched
+}
+
+function looseText(v) {
+  return normText(v).replace(/[^a-z0-9\u0900-\u097f]+/gi, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function titleAlbumHint(track) {
+  const title = cleanStr(track && track.title)
+  const m = title.match(/\(\s*from\s+["']?([^)"']+)["']?\s*\)/i) || title.match(/\[\s*from\s+([^\]]+)\]/i)
+  return m ? looseText(m[1]) : ''
+}
+
+function albumEvidence(a, b) {
+  const hints = [titleAlbumHint(a), titleAlbumHint(b), looseText(a && a.album), looseText(b && b.album)]
+    .filter(x => x && !/^(single|unknown|youtube|—|-)$/i.test(x))
+  return hints.some((x, i) => hints.some((y, j) => i !== j && x === y))
+}
+
+// Stronger matcher used ONLY when deciding whether a YouTube row may be
+// replaced by Saavn. Providers disagree in harmless ways here: YouTube may
+// credit "Vishal and Sheykhar" while Saavn credits "Vishal & Shekhar", and
+// a music video can run several seconds longer than the audio recording.
+// The title core and version signature must still match exactly, so covers,
+// live takes, remixes and lofi/slowed versions remain separate recordings.
+export function findSaavnMatch(track, candidates) {
+  const strict = findRecordingMatch(track, candidates)
+  if (strict) return strict
+  if (!track || !Array.isArray(candidates)) return null
+  const titleVa = titleVariants(track)
+  if (!titleVa.length) return null
+  let best = null, bestDiff = Infinity, bestScore = -Infinity
+  for (const c of candidates) {
+    if (!c || typeof c.audio !== 'string' || !c.audio.startsWith('http')) continue
+    if (!titleVariants(c).some(n => titleVa.includes(n))) continue
+    if (versionSignature(track) !== versionSignature(c)) continue
+    const da = durationOf(track), db = durationOf(c)
+    if (!da || !db) continue
+    const diff = Math.abs(da - db)
+    if (diff > 20) continue
+    const matchedTokens = creditTokenEvidence(track, c)
+    const strongCredit = matchedTokens.length >= 2 || (matchedTokens.length >= 1 && albumEvidence(track, c))
+    if (!strongCredit) continue
+    const score = recordingPreferenceScore(c)
+    if (diff < bestDiff || (diff === bestDiff && score > bestScore)) {
+      best = c; bestDiff = diff; bestScore = score
+    }
+  }
+  return best
+}
+
 const COMPILATION_RE = /best of|greatest hits|collection|compilation|essentials|top hits|hits of|superhit|jukebox|romantic hits|love songs|chartbusters|evergreen|unforgettable|golden hits/i
 
 export function recordingPreferenceScore(track) {

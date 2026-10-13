@@ -1339,7 +1339,7 @@ export default function App(){
           let swapped = false
           setQueue(prev=>{ const q=[...prev]; const i=q.findIndex(x=> String(x.id)===key); if(i>=0){ q[i] = { ...q[i], ...fixed, id: q[i].id }; swapped = true } return q })
           setTimeout(()=>{ try{ if(!swapped) return; const a = audioRef.current; if(a && fixed.audio){ a.src = fixed.audio; a.currentTime = 0; if(isPlayingRef.current){ a.play().catch(()=>{}); setIsPlaying(true) } } }catch{} }, 500)
-          showToast('Fixed ✓ ab chal raha hai')
+          showToast('Playing Now')
         } else {
           showToast('Iska source nahi mila — skip; agli baar retry hoga')
           setIsPlaying(false)

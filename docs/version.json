@@ -1,10 +1,11 @@
 {
   "app": "MaxMusic",
   "version": "1.0.0",
-  "build": 126,
-  "apk": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/download/v1.0.0-b126/MaxMusic.apk",
-  "page": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/tag/v1.0.0-b126",
+  "build": 127,
+  "apk": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/download/v1.0.0-b127/MaxMusic.apk",
+  "page": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/tag/v1.0.0-b127",
   "notes": [
+    "Your theme now colours the whole screen \u2014 top bar, search and category tabs match too",
     "A fresh new look: pick from beautiful themes, including a light Daylight mode",
     "Premium colour themes for Pro members \u2014 Aurora, Sunset Ember and Ocean Depth",
     "Lock screen and earbud controls now respond instantly, every time",
@@ -15,6 +16,7 @@
     "Faster, more reliable playback in the background"
   ],
   "features": [
+    "Your theme now colours the whole screen \u2014 top bar, search and category tabs match too",
     "A fresh new look: pick from beautiful themes, including a light Daylight mode",
     "Premium colour themes for Pro members \u2014 Aurora, Sunset Ember and Ocean Depth",
     "Lock screen and earbud controls now respond instantly, every time",

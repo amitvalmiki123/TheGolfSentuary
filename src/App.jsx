@@ -120,8 +120,8 @@ function getCategoryPlaylists(cat){
   return defaultPlaylists.filter(pl=> pl.songs.some(s=> ids.includes(s)))
 }
 
-// Payment pills for the Go Pro modal — simple inline SVG/text marks (no external brand assets).
-function UpiPill({ id }){
+// Payment pills for the Go Pro modal — brand icon images with letter-pill fallback on error.
+function UpiPillFallback({ id }){
   const C = { upi:['#097939','#ED752E','UPI'], gpay:['#4285F4','#34A853','G'], phonepe:['#5F259F','#5F259F','Pe'], paytm:['#00BAF2','#002E6E','P'] }[id] || ['#444','#444','₹']
   return (
     <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
@@ -130,6 +130,12 @@ function UpiPill({ id }){
       <text x="13" y="17" textAnchor="middle" fontSize={C[2].length>2? 8 : 11} fontWeight="800" fill="#fff" fontFamily="system-ui, sans-serif">{C[2]}</text>
     </svg>
   )
+}
+function UpiPill({ id }){
+  const NAMES = { upi:'UPI', gpay:'GPay', phonepe:'PhonePe', paytm:'Paytm' }
+  const [failed, setFailed] = useState(false)
+  if(failed) return <UpiPillFallback id={id}/>
+  return <img src={`${BASE}pay/${id}.png`} alt={NAMES[id]||id} className="w-9 h-9 object-contain" onError={()=> setFailed(true)} />
 }
 
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
@@ -2909,6 +2915,13 @@ export default function App(){
                     {proWebPay && (()=>{ const w = webPayDetails(PRO_PRICE, proUserId()); return (
                       <div className="mt-3 p-3 rounded-2xl bg-black/30 border border-white/10" data-pro-webpay>
                         <p className="text-xs text-white/60">{t('pro_webHint')}</p>
+                        <div className="mt-2 flex items-center gap-2">
+                          {UPI_APPS.map(a=> (
+                            <span key={a.id} className="flex items-center justify-center w-8 h-8 rounded-lg bg-white">
+                              <UpiPill id={a.id}/>
+                            </span>
+                          ))}
+                        </div>
                         <div className="mt-2 flex items-center justify-between gap-2"><div className="min-w-0"><div className="text-[11px] text-white/40">UPI ID</div><div className="text-sm font-bold truncate">{w.upiId}</div></div><button onClick={()=> copyPro(w.upiId)} className="shrink-0 text-xs font-bold px-3 py-1.5 rounded-full bg-[#D5AA55] text-black">{t('pro_copyId')}</button></div>
                         <div className="mt-2 flex items-center justify-between gap-2"><div><div className="text-[11px] text-white/40">Amount</div><div className="text-sm font-bold">{w.amountLabel}</div></div><button onClick={()=> copyPro(String(PRO_PRICE))} className="shrink-0 text-xs font-bold px-3 py-1.5 rounded-full bg-white/15">{t('pro_copyAmt')}</button></div>
                         <ol className="mt-2 list-decimal list-inside text-[11px] text-white/60 space-y-0.5">{w.steps.map(st=> <li key={st}>{st}</li>)}</ol>

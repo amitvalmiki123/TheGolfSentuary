@@ -239,7 +239,12 @@ test('Go Pro modal keeps the ₹79 plan card, adds payment pills, UTR panel and 
   assert.match(modal, /t\('pro_paidQ'\)/)
   assert.match(modal, /onClick=\{submitUtr\}/)
   assert.match(modal, /onClick=\{activatePro\}/)
-  assert.doesNotMatch(modal, /<img /, 'no external brand assets')
+  // UpiPill uses brand icon images with onError fallback to letter-pill
+  const pillFn = app.slice(app.indexOf('function UpiPill('), app.indexOf('function formatTime('))
+  assert.match(pillFn, /<img src=\{`\$\{BASE\}pay\/\$\{id\}\.png`\}/)
+  assert.match(pillFn, /className="w-9 h-9 object-contain"/)
+  assert.match(pillFn, /onError/)
+  assert.match(pillFn, /UpiPillFallback/)
   assert.match(app, /pro_paidQ:'Payment done\?'/)
 })
 

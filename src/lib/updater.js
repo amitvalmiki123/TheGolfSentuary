@@ -1,4 +1,6 @@
 // itrace-27: in-app update checker — compares embedded build no. with the docs/version.json feed.
+import { cleanReleaseNotes } from './releasenotes.js'
+
 const VERSION_URL = 'https://raw.githubusercontent.com/amitvalmiki123/TheGolfSentuary/main/docs/version.json'
 export const APP_BUILD_NO = Number(import.meta.env.VITE_APP_BUILD_NO || 0)
 
@@ -12,9 +14,10 @@ export async function checkAppUpdate(){
     if(!r.ok) return null
     const d = await r.json()
     if(!d || !Number(d.build)) return null
+    const features = cleanReleaseNotes(d.notes, d.features)
     return {
       version: d.version || '', build: Number(d.build), apk: d.apk || '', page: d.page || '',
-      notes: Array.isArray(d.notes) ? d.notes : [], date: d.date || '',
+      notes: features, features, date: d.date || '',
       hasUpdate: Number(d.build) > APP_BUILD_NO
     }
   }catch{ return null }

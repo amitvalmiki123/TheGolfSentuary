@@ -160,9 +160,9 @@ async function searchPiped(query, limit=20, nextpage=null){
 }
 
 const SAavn_ENDPOINTS = [
-  (q, limit) => `https://saavn.dev/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}`,
-  (q, limit) => `https://jiosaavn-api-privatecvc2.vercel.app/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}`,
-  (q, limit) => `https://jiosaavn-api-with-cors.vercel.app/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}`,
+  (q, limit, page=1) => `https://saavn.dev/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}&page=${Math.max(1,Number(page)||1)}`,
+  (q, limit, page=1) => `https://jiosaavn-api-privatecvc2.vercel.app/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}&page=${Math.max(1,Number(page)||1)}`,
+  (q, limit, page=1) => `https://jiosaavn-api-with-cors.vercel.app/api/search/songs?query=${encodeURIComponent(q)}&limit=${limit}&page=${Math.max(1,Number(page)||1)}`,
 ]
 
 // ---- JioSaavn OFFICIAL api.php (no third-party mirrors): search + DES-decrypt ----
@@ -186,9 +186,10 @@ function saavnUrls(decrypted){
   if(!m) return [d]
   return [96,160,320].map(q=> `${m[1]}_${q}.${m[2]}${m[3]||''}`)
 }
-async function searchSaavnOfficial(query, limit=18){
+async function searchSaavnOfficial(query, limit=18, page=1){
   const n = Math.min(Math.max(Number(limit)||18, 1), 30)
-  const url = `https://www.jiosaavn.com/api.php?__call=search.getResults&q=${encodeURIComponent(query)}&p=1&n=${n}&api_version=4&_format=json&_marker=0&ctx=web6dot0`
+  const pg = Math.max(1, Number(page)||1)
+  const url = `https://www.jiosaavn.com/api.php?__call=search.getResults&q=${encodeURIComponent(query)}&p=${pg}&n=${n}&api_version=4&_format=json&_marker=0&ctx=web6dot0`
   const ctrl = new AbortController(); const tm = setTimeout(()=>ctrl.abort(), 7000)
   const qshort = String(query).slice(0,30)
   let dbgStatus = 0, dbgCtype = '', dbgHead = '', dbgKeys = ''
@@ -239,12 +240,17 @@ async function searchSaavnOfficial(query, limit=18){
         const album = (s.album && (s.album.name || (typeof s.album==='string' ? s.album : ''))) || mi.album || s.album_name || 'Single'
         const dur = Number(s.duration) || Number(mi.duration) || 0
         const lang = String(s.language || mi.language || '').trim()
+        const creditNamesRaw = String(artistVal).split(/[,;&/]/).map(x=> x.trim()).filter(Boolean)
+        const creditIdsRaw = String(s.primary_artists_id || mi.primary_artists_id || '').split(/[,&]/).map(x=> x.trim()).filter(Boolean)
         mapped.push({
           id:`saavn-${s.id||title}`.slice(0,60), title, artist:String(artistVal), album:String(album),
           cover: (typeof img==='string' && img.startsWith('http')) ? img : `https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=600&auto=format&fit=crop&q=60`,
           audio, durationLabel: dur? formatSec(dur):'3:30', durationSec: dur||210,
           plays:`${(Math.random()*800+50).toFixed(0)}M`, color:pickColor(),
-          source:'Saavn • Full', isPreview:false, category:[lang || 'Hindi']
+          source:'Saavn • Full', isPreview:false, category:[lang || 'Hindi'],
+          language: lang.toLowerCase(), year: Number(s.year || mi.year) || 0,
+          providerId: s.id ? `saavn-${s.id}` : '', isrc: String(s.isrc || mi.isrc || ''),
+          artistCredits: creditNamesRaw.map((name,i)=> ({ name, id: creditIdsRaw[i] || '' })), artistIds: creditIdsRaw
         })
       }catch(e){ continue }
     }
@@ -257,15 +263,15 @@ async function searchSaavnOfficial(query, limit=18){
   } finally { clearTimeout(tm) }
 }
 
-async function searchSaavn(query, limit=18){
+async function searchSaavn(query, limit=18, page=1){
   // Official API FIRST (ours, no dead mirrors); raced mirrors only as backup.
   try{
-    const off = await searchSaavnOfficial(query, limit)
+    const off = await searchSaavnOfficial(query, limit, page)
     if(off && off.length) return off
   }catch(e){ /* detailed line already logged inside */ }
   // RACED: all mirrors at once, first with results wins (dead mirrors don't serialize delay)
   const one = async (buildUrl)=>{
-      const url = buildUrl(query, limit)
+      const url = buildUrl(query, limit, page)
       const data = await fetchJson(url, 3000)
       let songs = []
       if(Array.isArray(data?.data?.results)) songs = data.data.results
@@ -289,7 +295,7 @@ async function searchSaavn(query, limit=18){
         const dur=Number(s.duration)||0
         const cat = s.language ? [s.language] : ["Hindi"]
         if(typeof audio==='string' && audio.startsWith('http') && !audio.includes('encrypted')){
-          return { id:`saavn-${s.id}`, title, artist:artistVal, album, cover: img||`https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=600&auto=format&fit=crop&q=60`, audio, durationLabel: dur? formatSec(dur):"3:30", durationSec:dur||210, plays:`${(Math.random()*800+50).toFixed(0)}M`, color:pickColor(), source:'Saavn • Full', isPreview:false, category: cat }
+          return { id:`saavn-${s.id}`, title, artist:artistVal, album, cover: img||`https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=600&auto=format&fit=crop&q=60`, audio, durationLabel: dur? formatSec(dur):"3:30", durationSec:dur||210, plays:`${(Math.random()*800+50).toFixed(0)}M`, color:pickColor(), source:'Saavn • Full', isPreview:false, category: cat, language: String(s.language||'').toLowerCase(), year: Number(s.year)||0, providerId: s.id ? `saavn-${s.id}` : '', isrc: String(s.isrc||''), artistCredits: (s.artists?.primary||[]).map(a=> ({ id:String(a.id||''), name:String(a.name||'') })), artistIds: (s.artists?.primary||[]).map(a=> String(a.id||'')).filter(Boolean) }
         }
         return null
       }).filter(Boolean)
@@ -298,6 +304,32 @@ async function searchSaavn(query, limit=18){
   }
   try{ return await Promise.any(SAavn_ENDPOINTS.map(one)) }catch(e){ return [] }
 }
+
+// Category membership from provider metadata only (language/year), never
+// guessed from artist names. Unknown language never enters a language feed.
+function serverTrackLang(t){
+  const direct = String((t && t.language) || '').trim().toLowerCase()
+  if(direct) return direct
+  const cats = Array.isArray(t && t.category) ? t.category : []
+  const known = ['hindi','punjabi','bengali','english','tamil','telugu','marathi','gujarati','kannada','malayalam','haryanvi','rajasthani','bhojpuri','urdu']
+  for(const c of cats){ const l = String(c||'').trim().toLowerCase(); if(known.includes(l)) return l }
+  return ''
+}
+function filterServerCategory(tracks, cat){
+  return (tracks||[]).filter(t=>{
+    if(!t) return false
+    const lang = serverTrackLang(t)
+    const year = Number(t.year) || 0
+    const cats = (Array.isArray(t.category)? t.category: []).map(x=> String(x||'').toLowerCase())
+    if(cat === 'Hindi') return lang === 'hindi'
+    if(cat === 'Punjabi') return lang === 'punjabi'
+    if(cat === 'Bollywood') return lang === 'hindi' || cats.includes('bollywood')
+    if(cat === '90s') return year >= 1990 && year <= 1999
+    if(cat === 'New' && year && year < new Date().getFullYear()-1) return false
+    return true
+  })
+}
+function encSrvCursor(o){ try{ return 'mx1.'+encodeURIComponent(JSON.stringify(o)) }catch{ return null } }
 
 // --- Auth helper ---
 function auth(req,res,next){
@@ -316,28 +348,35 @@ app.get('/health', (req,res)=> res.json({ ok:true, clone:'YouTube Music via Pipe
 app.get('/api/search', async (req,res)=>{
   const q = (req.query.q || '').toString().trim()
   const limit = Math.min(parseInt(req.query.limit||'24'), 40)
-  const nextpage = req.query.nextpage || null
+  const page = Math.max(1, parseInt(req.query.page||'1') || 1)
+  let pipedCursor = req.query.nextpage || null
+  let saavnPage = page
+  if(pipedCursor && String(pipedCursor).startsWith('mx1.')){
+    try{ const o = JSON.parse(decodeURIComponent(String(pipedCursor).slice(4))); pipedCursor = o.p || null; if(o.s) saavnPage = Math.max(1, Number(o.s)||page) }catch{}
+  }
   if(!q) return res.json({ tracks: [], nextpage: null })
-  const sk = `sr:${q.toLowerCase()}:${limit}`
+  const sk = `sr:${q.toLowerCase()}:${limit}:p${saavnPage}:c${pipedCursor ? String(pipedCursor).slice(0,40) : '-'}`
   const smemo = memoGet(sk)
   if(smemo) return res.json(smemo)
   // Try DB first if ready
   if(dbReady && Track){
     try{
-      let dbTracks = await Track.find({ $text: { $search: q } }).limit(limit).lean()
-      if(!dbTracks.length){
+      let dbTracks = await Track.find({ $text: { $search: q } }).skip((page-1)*limit).limit(limit).lean()
+      if(!dbTracks.length && page === 1){
         // $regex fallback (chhote DB ke liye fine) — title/artist/album teeno me, case-insensitive
         const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), 'i')
-        dbTracks = await Track.find({ $or:[{title:rx},{artist:rx},{album:rx}] }).limit(limit).lean()
+        dbTracks = await Track.find({ $or:[{title:rx},{artist:rx},{album:rx}] }).skip((page-1)*limit).limit(limit).lean()
       }
-      if(dbTracks.length) return res.json({ tracks: dbTracks, nextpage: null, source: 'db' })
+      if(dbTracks.length) return res.json({ tracks: dbTracks, nextpage: dbTracks.length >= limit ? encSrvCursor({ s: page+1, p: null }) : null, source: 'db', paging:'provider-v1', page })
     }catch{}
   }
   // Live sources IN PARALLEL (Saavn priority for Indian) — faster + no sequential timeout waits
   const isIndian = /[\u0900-\u097F]|arijit|punjab|hindi|sidhu|diljit|love|90s|bollywood|anuv|singh|kaur|yo ?yo|honey|rafter|dhillon|gill|heera|waraam|bohra/i.test(q.toLowerCase())
-  const [sr, pr] = await Promise.allSettled([ searchSaavn(q, isIndian? limit : 12), searchPiped(q, isIndian? 10 : limit) ])
+  const [sr, pr] = await Promise.allSettled([ searchSaavn(q, isIndian? limit : 12, saavnPage), searchPiped(q, isIndian? 10 : limit, pipedCursor) ])
   const sTr = sr.status==='fulfilled' ? (sr.value||[]) : []
   const pTr = pr.status==='fulfilled' ? ((pr.value&&pr.value.tracks)||[]) : []
+  const pipedNext = pr.status==='fulfilled' ? ((pr.value&&pr.value.nextpage)||null) : null
+  const saavnHasMore = sTr.length >= (isIndian? limit : 12)
   const seen = new Set(); let tracks = []
   for(const x of (isIndian? [...sTr, ...pTr] : [...pTr, ...sTr])){
     const k = ((x.title||'')+'|'+(x.artist||'')).toLowerCase().replace(/[^a-z0-9\u0900-\u097F]/g,'')
@@ -347,7 +386,7 @@ app.get('/api/search', async (req,res)=>{
   if(!tracks.length && process.env.ALLOW_FALLBACK==='1'){
     tracks = fallbackTracks.slice(0, limit)
   }
-  const sout = { tracks: tracks.slice(0,limit), nextpage: null }
+  const sout = { tracks: tracks.slice(0,limit), nextpage: (saavnHasMore || pipedNext) ? encSrvCursor({ s: saavnPage+1, p: pipedNext || null }) : null, paging:'provider-v1', page: saavnPage, total: null }
   if(sout.tracks.length) memoSet(sk, sout)
   res.json(sout)
 })
@@ -565,14 +604,16 @@ app.get('/api/audiourl', async (req,res)=>{
 app.get('/api/tracks', async (req,res)=>{
   const cat = (req.query.category || 'All').toString()
   const limit = Math.min(parseInt(req.query.limit||'20'), 40)
-  const ck = `tk:${cat}:${limit}`
+  const page = Math.max(1, parseInt(req.query.page||'1') || 1)
+  const offset = Math.max(0, parseInt(req.query.offset||String((page-1)*limit)) || 0)
+  const ck = `tk:${cat}:${limit}:p${page}:o${offset}`
   const memo = memoGet(ck)
   if(memo) return res.json(memo)
   if(dbReady && Track){
     try{
       const filter = cat==='All' ? {} : { category: cat }
-      const dbTracks = await Track.find(filter).limit(limit).lean()
-      if(dbTracks.length) return res.json({ tracks: dbTracks })
+      const dbTracks = await Track.find(filter).skip(offset).limit(limit).lean()
+      if(dbTracks.length) return res.json({ tracks: filterServerCategory(dbTracks, cat), nextpage: dbTracks.length >= limit ? encSrvCursor({ s: page+1, p: null }) : null, paging:'provider-v1', page, total: null })
     }catch{}
   }
   // Live fallback
@@ -588,16 +629,17 @@ app.get('/api/tracks', async (req,res)=>{
   }
   const q = qmap[cat] || cat
   // Saavn pehle (CDN Mumbai, ~300-600ms), Piped sirf supplement (wo host dead hone pe 2s waste karta tha)
-  let tracks = await searchSaavn(q, limit).catch(()=>[])
+  let tracks = await searchSaavn(q, limit, page).catch(()=>[])
+  tracks = filterServerCategory(tracks, cat)
   if(tracks.length < 6){
     const p = await searchPiped(q, Math.max(12, limit - tracks.length)).catch(()=>({tracks:[]}))
-    tracks = [...tracks, ...(p.tracks||[])]
+    tracks = [...tracks, ...filterServerCategory((p.tracks||[]), cat)]
   }
   if(!tracks.length && process.env.ALLOW_FALLBACK==='1'){
     tracks = fallbackTracks.filter(t=> cat==='All' || (t.category||[]).includes(cat)).slice(0, limit)
     if(!tracks.length) tracks = fallbackTracks.slice(0, limit)
   }
-  const out = { tracks: tracks.slice(0,limit) }
+  const out = { tracks: tracks.slice(0,limit), nextpage: tracks.length >= limit ? encSrvCursor({ s: page+1, p: null }) : null, paging:'provider-v1', page, total: null }
   if(out.tracks.length) memoSet(ck, out)
   res.json(out)
 })
@@ -723,12 +765,32 @@ app.post('/api/playlists/sync', auth, async (req,res)=>{
 app.get('/api/trending', async (req,res)=>{
   const cat = (req.query.cat||'Trending').toString()
   const limit = Math.min(parseInt(req.query.limit||'24'), 40)
-  const qmap = { Punjabi: "Punjabi hit songs", Hindi: "Hindi hit songs", Love: "Romantic Hindi songs", "90s": "90s Hindi hits", Bollywood: "Bollywood hits", Indie: "Indie Anuv Jain", Trending: "Trending India", All: "Top songs India" }
+  const page = Math.max(1, parseInt(req.query.page||'1') || 1)
+  let pipedCursor = req.query.nextpage || null
+  let saavnPage = page
+  if(pipedCursor && String(pipedCursor).startsWith('mx1.')){
+    try{ const o = JSON.parse(decodeURIComponent(String(pipedCursor).slice(4))); pipedCursor = o.p || null; if(o.s) saavnPage = Math.max(1, Number(o.s)||page) }catch{}
+  }
+  const ck = `tr:${cat}:${limit}:p${saavnPage}:c${pipedCursor ? String(pipedCursor).slice(0,40) : '-'}`
+  const memo = memoGet(ck)
+  if(memo) return res.json(memo)
+  const qmap = { Punjabi: "Punjabi hit songs", Hindi: "Hindi hit songs", Love: "Romantic Hindi songs", "90s": "90s Hindi hits", Bollywood: "Bollywood hits", Indie: "Indie Anuv Jain", Trending: "Trending India", New: "New Hindi Punjabi songs", All: "Top songs India" }
   const q = qmap[cat] || cat
-  const s = await searchSaavn(q, limit).catch(()=>[])
-  if(s.length >= 6) return res.json({ tracks: s.slice(0,limit), nextpage: null, cat })
-  const p = await searchPiped(q, limit).catch(()=>({tracks:[]}))
-  res.json({ tracks: (p.tracks||[]).slice(0,limit), nextpage: p.nextpage||null, cat })
+  const [sr, pr] = await Promise.allSettled([ searchSaavn(q, limit, saavnPage), searchPiped(q, limit, pipedCursor) ])
+  const sRaw = sr.status==='fulfilled' ? (sr.value||[]) : []
+  const pRaw = pr.status==='fulfilled' ? ((pr.value&&pr.value.tracks)||[]) : []
+  const pipedNext = pr.status==='fulfilled' ? ((pr.value&&pr.value.nextpage)||null) : null
+  const seen = new Set(); let tracks = []
+  for(const x of [...sRaw, ...pRaw]){
+    if(!x || !x.title) continue
+    const k = ((x.title||'')+'|'+(x.artist||'')).toLowerCase().replace(/[^a-z0-9\u0900-\u097F]/g,'')
+    if(seen.has(k)) continue
+    seen.add(k); tracks.push(x)
+  }
+  tracks = filterServerCategory(tracks, cat)
+  const out = { tracks: tracks.slice(0,limit), nextpage: (sRaw.length >= limit || pipedNext) ? encSrvCursor({ s: saavnPage+1, p: pipedNext || null }) : null, paging:'provider-v1', page: saavnPage, total: null, cat }
+  if(out.tracks.length) memoSet(ck, out)
+  res.json(out)
 })
 
 app.get('/', (req,res)=>{

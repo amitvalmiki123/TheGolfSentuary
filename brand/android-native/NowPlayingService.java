@@ -62,8 +62,9 @@ public class NowPlayingService extends Service {
             if (!t.isEmpty()) title = t;
             if (!a.isEmpty()) artist = a;
             playing = pl;
-            if (changed) { reposts++; lastCause = "tick1"; if (trackChanged) { posSec = 0; durSec = 0; durPosted = -1; updateSession(); startForegroundNow(); } else updateStateOnly(); }
+            if (changed) { reposts++; lastCause = "tick1"; if (trackChanged) { onTrackChangedNative(); updateSession(); startForegroundNow(); } else updateStateOnly(); }
             setWake(playing);
+            reconcilePendingTransport(pl);
           }
         }
       } catch (Exception ignored) {}
@@ -81,12 +82,14 @@ public class NowPlayingService extends Service {
               String art = o.optString("art");
               String t = normT(o.optString("t"));
               String a0 = normA(o.optString("a"));
+              npEngine = o.optString("e");
               if (!t.isEmpty()) { String a = a0; boolean pl = o.optBoolean("p");
                 boolean trackChanged = !t.equals(title) || (!a.isEmpty() && !a.equals(artist));
                 boolean changed = trackChanged || pl != playing;
                 title = t; if (!a.isEmpty()) artist = a; album = al; playing = pl;
-                if (changed) { reposts++; lastCause = "tick2"; if (trackChanged) { posSec = 0; durSec = 0; durPosted = -1; updateSession(); startForegroundNow(); } else updateStateOnly(); }
+                if (changed) { reposts++; lastCause = "tick2"; if (trackChanged) { onTrackChangedNative(); updateSession(); startForegroundNow(); } else updateStateOnly(); }
                 setWake(playing);
+                reconcilePendingTransport(pl);
               }
               double jpos = o.optDouble("pos", -1); double jdur = o.optDouble("dur", -1);
               if (jpos >= 0 && jdur >= 0) ingestPos(jpos, jdur);
@@ -116,6 +119,10 @@ public class NowPlayingService extends Service {
                 if (s.length() > 1 && s.charAt(0) == '"') s = s.substring(1, s.length() - 1);
                 String[] pp = s.split("\\|");
                 if (pp.length < 2) return;
+                // YT-iframe tracks: window.__np already carries the iframe's
+                // real pos/dur (tick2); the <audio> element can still hold the
+                // PREVIOUS song, and scraping it resurrected stale dur/pos.
+                if ("yt".equals(npEngine)) return;
                 double np = Double.parseDouble(pp[0]); double nd = Double.parseDouble(pp[1]);
                 ingestPos(np, nd);
               } catch (Exception ignored) {}
@@ -166,6 +173,14 @@ public class NowPlayingService extends Service {
   // so pause/resume never restarts the title marquee.
   private void updateStateOnly() { updatePos(); startForegroundNow(); }
 
+  // REAL track change only: reset position/duration and drop the previous
+  // song's bitmap immediately — showing another song's art while the new one
+  // loads (or when it has none) is worse than a brief placeholder.
+  private void onTrackChangedNative() {
+    posSec = 0; durSec = 0; durPosted = -1; durAnnouncedFor = -1;
+    artGen++; art = null; artWanted = ""; artUrlLoaded = ""; artFailUrl = "";
+  }
+
 
   public interface ActionListener { void onAction(String action); }
   public static volatile ActionListener listener;
@@ -178,10 +193,26 @@ public class NowPlayingService extends Service {
   private android.os.PowerManager.WakeLock wakeLock;
   private volatile Bitmap art;
   private volatile String artUrlLoaded = "";
+  // Artwork generation guard (itrace-29): a bitmap is published ONLY if its URL
+  // is still the wanted one for the current track generation — late replies
+  // from a previous song can never overwrite the new track. artUrlLoaded is
+  // set ONLY after a successful decode, so failures retry (with backoff).
+  private volatile String artWanted = "";
+  private volatile String artLoading = "";
+  private volatile String artFailUrl = "";
+  private volatile long artFailAt = 0;
+  private volatile int artGen = 0;
+  private volatile String npEngine = "";
   private volatile String title = "MaxMusic";
   private volatile String artist = "Music";
   private volatile String album = "";
   private volatile boolean playing = false;
+  // A play/pause requested through a media-session callback or a notification
+  // button is retried briefly until the WebView's own state mirror confirms it.
+  // This closes the earbuds case: the first eval/bridge delivery can race a
+  // background-throttled WebView, after which the old code never re-sent Play.
+  private volatile String pendingTransportAction = "";
+  private volatile long pendingTransportUntil = 0;
   private volatile double posSec = 0;
   private volatile double durSec = 0;
   private volatile double durPosted = -1;
@@ -207,10 +238,10 @@ public class NowPlayingService extends Service {
       mediaSession = new MediaSession(this, "sur-sangam");
       mediaSession.setActive(true);
       mediaSession.setCallback(new MediaSession.Callback() {
-        @Override public void onPlay()              { send("play"); }
-        @Override public void onPause()             { send("pause"); }
-        @Override public void onSkipToNext()        { send("next"); }
-        @Override public void onSkipToPrevious()    { send("prev"); }
+        @Override public void onPlay()              { dispatchTransportAction("play"); }
+        @Override public void onPause()             { dispatchTransportAction("pause"); }
+        @Override public void onSkipToNext()        { dispatchTransportAction("next"); }
+        @Override public void onSkipToPrevious()    { dispatchTransportAction("prev"); }
         @Override public void onSeekTo(long pos) { seekTo(pos); }
       });
       audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
@@ -221,7 +252,21 @@ public class NowPlayingService extends Service {
     }
   }
 
+  private void wakeWebView() {
+    try {
+      android.webkit.WebView w = MainActivity.npWebView;
+      if (w == null) return;
+      try { w.resumeTimers(); } catch (Throwable ignored) {}
+      try { w.onResume(); } catch (Throwable ignored) {}
+    } catch (Throwable ignored) {}
+  }
+
   private void send(String a) {
+    // A user transport action must be delivered even when Chromium has
+    // throttled/frozen the background page while paused. Wake it BEFORE both
+    // delivery channels; the old send() only eval'd into the possibly-frozen
+    // page and never knew whether the action ran.
+    wakeWebView();
     ActionListener l = listener;
     if (l != null) { try { l.onAction(a); } catch (Exception ignored) {} }
     // Zero-bridge path: talk straight to the page. Notification buttons keep working even
@@ -231,6 +276,48 @@ public class NowPlayingService extends Service {
       if (w != null && ("play".equals(a) || "pause".equals(a) || "next".equals(a) || "prev".equals(a) || "stop".equals(a)))
         w.evaluateJavascript("try{window.__npAct&&window.__npAct('" + a + "')}catch(e){}", null);
     } catch (Throwable ignored) {}
+  }
+
+  // Media-session callbacks (earbuds/Bluetooth, lock-screen and QS transport
+  // controls) and notification action buttons share this path. Play/pause
+  // update the native session + posted notification IMMEDIATELY, exactly as
+  // notification-button intents already did: previously the callback only
+  // forwarded the action to JS and left PlaybackState/native `playing`
+  // untouched until a later JS round-trip, so an external pause could leave
+  // the panel advertising (and toggling from) the wrong state.
+  private void dispatchTransportAction(String a) {
+    if ("play".equals(a) || "pause".equals(a)) {
+      playing = "play".equals(a);
+      pendingTransportAction = a;
+      pendingTransportUntil = SystemClock.elapsedRealtime() + 4000;
+      try { if (mediaSession != null) mediaSession.setActive(true); } catch (Throwable ignored) {}
+      send(a);
+      reposts++; lastCause = "transport";
+      updateStateOnly();
+      setWake(playing);
+    } else {
+      send(a);
+    }
+  }
+
+  // Called with each state the WebView reports about itself. If an external
+  // transport request has not been reflected by JS within the bounded window,
+  // re-deliver it (the first delivery may have raced a frozen page); stop as
+  // soon as JS confirms the requested state, or when the window expires.
+  private void reconcilePendingTransport(boolean jsPlaying) {
+    String pending = pendingTransportAction;
+    if (pending == null || pending.isEmpty()) return;
+    boolean wantPlaying = "play".equals(pending);
+    if (jsPlaying == wantPlaying || SystemClock.elapsedRealtime() > pendingTransportUntil) {
+      pendingTransportAction = "";
+      pendingTransportUntil = 0;
+      return;
+    }
+    playing = wantPlaying;
+    lastCause = "transport-retry";
+    send(pending);
+    updateStateOnly();
+    setWake(playing);
   }
 
   // Notification/lockscreen seekbar drag → seek the WebView player (audio or YT iframe).
@@ -262,22 +349,25 @@ public class NowPlayingService extends Service {
     }
     // Notification buttons land here as plain startService intents — without these,
     // prev/play/next taps fell through to the generic update path and did NOTHING.
-    if (ACTION_PLAY.equals(a))  { playing = true;  send("play");  reposts++; lastCause = "act"; updateStateOnly(); return START_NOT_STICKY; }
-    if (ACTION_PAUSE.equals(a)) { playing = false; send("pause"); reposts++; lastCause = "act"; updateStateOnly(); return START_NOT_STICKY; }
-    if (ACTION_PREV.equals(a))  { send("prev"); return START_NOT_STICKY; }
-    if (ACTION_NEXT.equals(a))  { send("next"); return START_NOT_STICKY; }
+    if (ACTION_PLAY.equals(a))  { dispatchTransportAction("play"); return START_NOT_STICKY; }
+    if (ACTION_PAUSE.equals(a)) { dispatchTransportAction("pause"); return START_NOT_STICKY; }
+    if (ACTION_PREV.equals(a))  { dispatchTransportAction("prev"); return START_NOT_STICKY; }
+    if (ACTION_NEXT.equals(a))  { dispatchTransportAction("next"); return START_NOT_STICKY; }
     if (intent != null) {
       // DEDUP: JS re-pushes identical meta every 2.6s (watchdog) — re-posting each time
       // restarts the notification title marquee ("same song sliding again and again").
-      boolean metaChanged = false, playChanged = false;
+      boolean metaChanged = false, playChanged = false, identityChanged = false;
       String t = normX(intent.getStringExtra("title"), 60);
-      if (t != null && !t.equals(title)) { title = t; metaChanged = true; }
+      if (t != null && !t.equals(title)) { title = t; metaChanged = true; identityChanged = true; }
       String s = normX(intent.getStringExtra("artist"), 40);
-      if (s != null && !s.equals(artist)) { artist = s; metaChanged = true; }
+      if (s != null && !s.equals(artist)) { artist = s; metaChanged = true; identityChanged = true; }
       String m = normX(intent.getStringExtra("album"), 140);
       if (m != null && !m.equals(album)) { album = m; metaChanged = true; }
       boolean pl = intent.getBooleanExtra("playing", playing);
       if (pl != playing) { playing = pl; playChanged = true; }
+      // Identity reset BEFORE artwork: bump the generation first so the new
+      // track's load below is captured under the new generation (itrace-29).
+      if (identityChanged) onTrackChangedNative();
       String url = intent.getStringExtra("artUrl");
       if (url != null && !url.isEmpty() && !url.equals(artUrlLoaded)) loadArt(url);
       if (metaChanged) { reposts++; lastCause = "push"; updateSession(); startForegroundNow(); }
@@ -343,12 +433,54 @@ public class NowPlayingService extends Service {
     updatePos();
   }
 
+  // First-valid-duration publication for THIS track (build-113 follow-up).
+  // Build 112/113 already reposted the notification when the duration first
+  // became known, yet on the phone the panel seekbar still appeared only
+  // after a pause/resume tapped IN the panel. That toggle does two things
+  // our single repost did not: it publishes a NEW PlaybackState AFTER the
+  // notification repost, and it happens seconds later — after SystemUI's
+  // notification listener has bound this session. So on first duration we
+  // now, guarded once per track (durAnnouncedFor):
+  //   1. publish metadata + playback state,
+  //   2. repost the foreground notification,
+  //   3. re-publish the playback state AFTER the repost,
+  //   4. schedule ONE delayed full refresh (~1.2s, a single tick) that
+  //      repeats 1-3 only if this is still the current track and the same
+  //      duration — never the previous song's duration, never a loop.
+  private volatile long durAnnouncedFor = -1;
+  private void publishSeekbarOnce() {
+    if (mediaSession == null || durSec <= 0) return;
+    final long token = (long)(durSec * 1000);
+    durAnnouncedFor = token;
+    updateSession();
+    startForegroundNow();
+    updatePos();
+    try {
+      new Handler(Looper.getMainLooper()).postDelayed(() -> {
+        try {
+          if (mediaSession == null || durSec <= 0) return;
+          if (durAnnouncedFor != (long)(durSec * 1000)) return; // new track/value already announced itself
+          updateSession();
+          startForegroundNow();
+          updatePos();
+        } catch (Exception ignored) {}
+      }, 1200);
+    } catch (Exception ignored) {}
+  }
+
   // Position-only refresh for the seekbar tick — NEVER re-delivers metadata, so
   // system UI doesn't re-bind the title (marquee restart) every ~2s. Duration is
   // delivered via a full post when first known or refined by >1s (micro-jitter ignored).
   private void updatePos() {
     if (mediaSession == null) return;
-    if (durSec > 0 && (durPosted < 0 || Math.abs(durSec - durPosted) > 1.0)) { updateSession(); return; }
+    if (durSec > 0 && (durPosted < 0 || Math.abs(durSec - durPosted) > 1.0)) {
+      // First/materially-refined duration for this track: full seekbar
+      // publication (metadata + repost + post-repost state + one delayed
+      // refresh). See publishSeekbarOnce. Later position ticks below keep
+      // the state fresh without re-delivering metadata.
+      publishSeekbarOnce();
+      return;
+    }
     try {
     long posMs = durSec > 0 ? (long)(posSec * 1000) : PlaybackState.PLAYBACK_POSITION_UNKNOWN;
     mediaSession.setPlaybackState(new PlaybackState.Builder()
@@ -356,7 +488,7 @@ public class NowPlayingService extends Service {
         | PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_SKIP_TO_NEXT
         | PlaybackState.ACTION_SKIP_TO_PREVIOUS | PlaybackState.ACTION_SEEK_TO)
       .setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED,
-        posMs, 1f, SystemClock.elapsedRealtime())
+        posMs, playing ? 1f : 0f, SystemClock.elapsedRealtime())
       .build());
     } catch (Exception ignored) {}
   }
@@ -450,39 +582,70 @@ public class NowPlayingService extends Service {
     return (Build.VERSION.SDK_INT >= 26) ? b.build() : b.getNotification();
   }
 
-  private void loadArt(final String url) {
-    artUrlLoaded = url;
+  private void loadArt(final String rawUrl) {
+    if (rawUrl == null) return;
+    String u = rawUrl.trim();
+    // Native bitmap decode needs a plain https raster URL — never a data:/SVG
+    // URI, blob: or cleartext http (upgraded, matching the JS normalizer).
+    if (u.startsWith("http://")) u = "https://" + u.substring(7);
+    if (!u.startsWith("https://")) return;
+    if (u.toLowerCase().contains(".svg")) return;
+    final String want = u;
+    if (want.equals(artLoading)) return; // already in flight
+    if (want.equals(artFailUrl) && System.currentTimeMillis() - artFailAt < 15000) return; // failure backoff
+    artWanted = want;
+    artLoading = want;
+    final int gen = artGen;
     new Thread(() -> {
       HttpURLConnection c = null;
+      Bitmap bmp = null;
       try {
-        c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(4000);
-        c.setReadTimeout(4000);
-        c.setInstanceFollowRedirects(true);
-        c.connect();
+        c = openArt(want);
         InputStream in = c.getInputStream();
         BitmapFactory.Options opts = new BitmapFactory.Options();
         opts.inJustDecodeBounds = true;
         BitmapFactory.decodeStream(in, null, opts);
-        in.close();
+        try { in.close(); } catch (Exception ignored) {}
+        c.disconnect();
         int sample = 1;
         while (opts.outWidth / sample > 512) sample *= 2;
-        c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(4000);
-        c.setReadTimeout(4000);
-        c.connect();
+        c = openArt(want);
         BitmapFactory.Options o2 = new BitmapFactory.Options();
         o2.inSampleSize = sample;
-        Bitmap bmp = BitmapFactory.decodeStream(c.getInputStream(), null, o2);
-        if (bmp != null) {
-          art = bmp;
-          new Handler(Looper.getMainLooper()).post(() -> { reposts++; lastCause = "art"; updateSession(); startForegroundNow(); });
-        }
+        bmp = BitmapFactory.decodeStream(c.getInputStream(), null, o2);
       } catch (Exception ignored) {
       } finally {
         if (c != null) { try { c.disconnect(); } catch (Exception ignored) {} }
+        if (want.equals(artLoading)) artLoading = "";
+      }
+      final Bitmap got = bmp;
+      if (got != null) {
+        new Handler(Looper.getMainLooper()).post(() -> {
+          // Publish ONLY if this is still the current track's wanted art.
+          if (gen != artGen || !want.equals(artWanted)) return;
+          art = got; artUrlLoaded = want; artFailUrl = "";
+          reposts++; lastCause = "art"; updateSession(); startForegroundNow();
+        });
+      } else if (gen == artGen && want.equals(artWanted)) {
+        // NOT marked loaded: the ticker retries after the backoff above
+        // instead of the old behaviour (failed once = broken forever).
+        artFailUrl = want; artFailAt = System.currentTimeMillis();
       }
     }).start();
+  }
+
+  private HttpURLConnection openArt(String u) throws Exception {
+    HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
+    c.setConnectTimeout(5000);
+    c.setReadTimeout(5000);
+    c.setInstanceFollowRedirects(true);
+    // Several image CDNs refuse the default Java UA / missing Accept.
+    c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13) MaxMusic");
+    c.setRequestProperty("Accept", "image/avif,image/webp,image/jpeg,image/png,*/*");
+    c.connect();
+    int code = c.getResponseCode();
+    if (code < 200 || code >= 300) throw new Exception("http " + code);
+    return c;
   }
 
   @Override

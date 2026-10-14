@@ -11,8 +11,49 @@
 *::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 999px; }
 *::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
 
-html, body { background: #060306; color: #fff; }
+:root {
+  --mx-bg: #060306;
+  --mx-accent: #D5AA55;
+  --mx-accent2: #C35445;
+}
+html, body { background: var(--mx-bg, #060306); color: #fff; }
 body { font-family: 'Outfit', system-ui, sans-serif; overflow-x: hidden; }
+
+/* Daylight theme: the app is authored dark-first, so the light theme
+   remaps the shared dark utility surfaces/text inside the themed root. */
+html[data-theme='daylight'] body { background: #F5EFE7; color: #211827; }
+.theme-light { color: #211827 !important; }
+.theme-light .glass {
+  background: rgba(255,255,255,0.68);
+  border-color: rgba(33,24,39,0.09);
+  box-shadow: 0 10px 35px rgba(93,64,28,0.08);
+}
+.theme-light .glass-strong {
+  background: rgba(255,252,247,0.88);
+  border-color: rgba(33,24,39,0.10);
+  color: #211827;
+}
+.theme-light .text-white { color: #211827 !important; }
+.theme-light .text-white\/90 { color: rgba(33,24,39,0.92) !important; }
+.theme-light .text-white\/85 { color: rgba(33,24,39,0.86) !important; }
+.theme-light .text-white\/80 { color: rgba(33,24,39,0.82) !important; }
+.theme-light .text-white\/70 { color: rgba(33,24,39,0.72) !important; }
+.theme-light .text-white\/60 { color: rgba(33,24,39,0.62) !important; }
+.theme-light .text-white\/50 { color: rgba(33,24,39,0.54) !important; }
+.theme-light .text-white\/40 { color: rgba(33,24,39,0.44) !important; }
+.theme-light .text-white\/30 { color: rgba(33,24,39,0.34) !important; }
+.theme-light .text-white\/25 { color: rgba(33,24,39,0.28) !important; }
+.theme-light .bg-white\/5 { background-color: rgba(33,24,39,0.05) !important; }
+.theme-light .bg-white\/10 { background-color: rgba(33,24,39,0.08) !important; }
+.theme-light .bg-white\/15 { background-color: rgba(33,24,39,0.12) !important; }
+.theme-light .border-white\/5 { border-color: rgba(33,24,39,0.06) !important; }
+.theme-light .border-white\/10 { border-color: rgba(33,24,39,0.10) !important; }
+.theme-light .border-white\/15 { border-color: rgba(33,24,39,0.14) !important; }
+.theme-light .border-white\/20 { border-color: rgba(33,24,39,0.18) !important; }
+.theme-light .placeholder\:text-white\/30::placeholder { color: rgba(33,24,39,0.35) !important; }
+.theme-light input, .theme-light textarea { color: #211827; }
+html[data-theme='daylight'] * { scrollbar-color: rgba(33,24,39,0.25) transparent; }
+html[data-theme='daylight'] *::-webkit-scrollbar-thumb { background: rgba(33,24,39,0.22); }
 
 .range {
   -webkit-appearance: none;

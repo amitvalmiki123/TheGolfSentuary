@@ -1,10 +1,14 @@
 // itrace-27: in-app update checker — compares embedded build no. with the docs/version.json feed.
 import { cleanReleaseNotes } from './releasenotes.js'
+import { isNativeApp } from './nowplaying.js'
 
 const VERSION_URL = 'https://raw.githubusercontent.com/amitvalmiki123/TheGolfSentuary/main/docs/version.json'
-export const APP_BUILD_NO = Number(import.meta.env.VITE_APP_BUILD_NO || 0)
+export const APP_BUILD_NO = Number(import.meta.env?.VITE_APP_BUILD_NO || 0)
 
 export async function checkAppUpdate(){
+  // The feed distributes Android APKs, not web/PWA releases. Never compare a
+  // browser build (often 0) with the native build number.
+  if(!isNativeApp()) return null
   try{
     const ctrl = new AbortController()
     const t = setTimeout(()=> ctrl.abort(), 9000)

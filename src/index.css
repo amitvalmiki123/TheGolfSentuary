@@ -51,6 +51,7 @@ html[data-theme='daylight'] body { background: #F5EFE7; color: #211827; }
 .theme-light .border-white\/15 { border-color: rgba(33,24,39,0.14) !important; }
 .theme-light .border-white\/20 { border-color: rgba(33,24,39,0.18) !important; }
 .theme-light .placeholder\:text-white\/30::placeholder { color: rgba(33,24,39,0.35) !important; }
+.theme-light .placeholder\:text-white\/50::placeholder { color: rgba(33,24,39,0.5) !important; }
 .theme-light input, .theme-light textarea { color: #211827; }
 html[data-theme='daylight'] * { scrollbar-color: rgba(33,24,39,0.25) transparent; }
 html[data-theme='daylight'] *::-webkit-scrollbar-thumb { background: rgba(33,24,39,0.22); }

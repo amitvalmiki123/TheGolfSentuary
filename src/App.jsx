@@ -414,7 +414,7 @@ export default function App(){
     }catch{}
   },[authUser])
   const runUpdateCheck = async (manual)=>{
-    if(updChecking) return
+    if(!isNativeApp() || updChecking) return
     setUpdChecking(true)
     try{
       const r = await checkAppUpdate()
@@ -424,7 +424,8 @@ export default function App(){
     }catch{ if(manual) showToast('Could not check for updates. Please check your connection.') }
     setUpdChecking(false)
   }
-  useEffect(()=>{ // itrace-27: auto update check, roz ek baar
+  useEffect(()=>{ // itrace-27: Android APK updates only; the web/PWA updates via its host.
+    if(!isNativeApp()) return
     let alive = true
     const id = setTimeout(()=>{
       if(!alive) return
@@ -1915,8 +1916,8 @@ export default function App(){
 
       <div className="relative flex min-h-screen">
         {/* Sidebar */}
-        <aside className="hidden lg:flex w-[300px] shrink-0 flex-col gap-4 p-3 pr-0 sticky top-0 h-screen">
-          <div className="glass rounded-[24px] p-5">
+        <aside className="hidden lg:flex w-[300px] shrink-0 flex-col gap-4 p-3 pr-0 sticky top-0 h-dvh max-h-dvh min-h-0">
+          <div className="glass rounded-[24px] p-5 shrink min-h-0 overflow-y-auto">
             <div className="flex items-center gap-3 mb-6">
               <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#D5AA55] to-[#C35445] grid place-items-center font-bold text-black">♪</div>
               <div>
@@ -1948,43 +1949,37 @@ export default function App(){
             </div>
           </div>
 
-          <div className="glass rounded-[24px] p-4 flex-1 overflow-hidden flex flex-col">
-            <div className="flex items-center justify-between mb-3 px-1"><h3 className="text-sm font-semibold">Your Mixes</h3><button onClick={()=> setShowCreatePl(true)} className="w-7 h-7 grid place-items-center rounded-full hover:bg-white/10 text-white/60"><PlusIcon/></button></div>
-            <div className="space-y-1 overflow-y-auto pr-1 -mr-1 flex-1">
+          <div className="glass rounded-[24px] p-4 flex-1 shrink min-h-0 overflow-hidden flex flex-col">
+            <div className="flex shrink-0 items-center justify-between mb-3 px-1"><h3 className="text-sm font-semibold">Your Mixes</h3><button onClick={()=> setShowCreatePl(true)} className="w-7 h-7 grid place-items-center rounded-full hover:bg-white/10 text-white/60"><PlusIcon/></button></div>
+            <div className="space-y-1 overflow-y-auto overscroll-contain pr-1 -mr-1 flex-1 min-h-0">
+              {playlists.length === 0 && localSongs.length === 0 && <p className="px-2 py-3 text-sm text-white/50">No mixes yet</p>}
               {playlists.map(pl=> (
                 <button key={pl.id} onClick={()=> openPlaylist(pl)} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 text-left group">
                   <CoverImg track={pl} className="w-12 h-12 rounded-lg object-cover shrink-0"/>
-                  <div className="min-w-0"><div className="text-sm font-medium truncate">{pl.title}</div><div className="text-xs text-white/50 truncate">Playlist • {pl.count || `${(pl.songs||[]).length} songs`}</div></div>
+                  <div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{pl.title}</div><div className="text-xs text-white/50 truncate">Playlist • {pl.count || `${(pl.songs||[]).length} songs`}</div></div>
                 </button>
               ))}
               {localSongs.length>0 && (
                 <button onClick={()=>{ setNav('library'); setLibTab('Local')}} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 text-left mt-2 border-t border-white/5 pt-2">
                   <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-[#D5AA55] to-[#6A418E] grid place-items-center text-lg">♫</div>
-                  <div className="min-w-0"><div className="text-sm font-medium truncate">Local Files</div><div className="text-xs text-white/50 truncate">{localSongs.length} songs on this device</div></div>
+                  <div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">Local Files</div><div className="text-xs text-white/50 truncate">{localSongs.length} songs on this device</div></div>
                 </button>
               )}
-            </div>
-            <div className="mt-3 p-3 rounded-2xl bg-gradient-to-br from-[#543551] to-[#6A418E] relative overflow-hidden">
-              <div className="absolute inset-0 bg-gradient-to-tr from-black/20 to-transparent"/>
-              <div className="relative">
-                <div className="text-sm font-semibold">Go Premium — ₹119/mo</div><div className="text-xs text-white/80 mt-1 leading-relaxed">Ad-free, offline downloads & high quality.</div>
-                <button onClick={()=> setShowSubscribe(true)} className="mt-3 bg-white text-black text-xs font-bold px-4 py-2 rounded-full">Try 1 month free</button>
-              </div>
             </div>
           </div>
         </aside>
 
         <div className="flex-1 min-w-0 flex flex-col">
-          <header className="sticky top-0 z-30 backdrop-blur-xl bg-[#060306]/60 border-b border-white/5">
+          <header className="sticky top-0 z-30 backdrop-blur-xl border-b" style={{ backgroundColor: `${activeTheme.bg}E8`, borderColor: `${activeTheme.accent}33`, boxShadow: `0 8px 28px ${activeTheme.accent}12` }}>
             <div className="flex items-center gap-3 px-4 lg:px-6 py-3">
               <div className="flex-1 flex justify-center min-w-0 lg:mx-1">
                 <div className="relative w-full">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/50"><SearchIcon size={18}/></span>
-                  <input type="search" enterKeyHint="search" inputMode="search" autoComplete="off" autoCorrect="off" autoCapitalize="none" spellCheck={false} value={search} onChange={e=>{ setSearch(e.target.value); setSuggOpen(true); if(e.target.value) setNav('search')}} onFocus={()=>{ setNav('search'); setSuggOpen(true) }} onBlur={()=> setTimeout(()=> setSuggOpen(false), 140)} onKeyDown={e=>{ if(e.key==='Enter'){ e.preventDefault(); commitHistory(search); setSuggOpen(false); e.currentTarget.blur() } if(e.key==='Escape') setSuggOpen(false) }} placeholder={t('searchPh')} className="w-full h-11 pl-10 pr-10 rounded-full bg-white/10 hover:bg-white/[0.14] focus:bg-white text-sm placeholder:text-white/50 focus:placeholder:text-black/40 focus:text-black outline-none border border-white/10 focus:border-white transition"/>
+                  <input type="search" enterKeyHint="search" inputMode="search" autoComplete="off" autoCorrect="off" autoCapitalize="none" spellCheck={false} value={search} onChange={e=>{ setSearch(e.target.value); setSuggOpen(true); if(e.target.value) setNav('search')}} onFocus={()=>{ setNav('search'); setSuggOpen(true) }} onBlur={()=> setTimeout(()=> setSuggOpen(false), 140)} onKeyDown={e=>{ if(e.key==='Enter'){ e.preventDefault(); commitHistory(search); setSuggOpen(false); e.currentTarget.blur() } if(e.key==='Escape') setSuggOpen(false) }} placeholder={t('searchPh')} className="w-full h-11 pl-10 pr-10 rounded-full text-sm placeholder:text-white/50 outline-none border transition" style={{ backgroundColor: activeTheme.mode === 'light' ? '#FFFFFFD9' : `${activeTheme.accent}20`, borderColor: `${activeTheme.accent}55`, color: activeTheme.mode === 'light' ? '#211827' : '#fff' }}/>
                   {search && <button onClick={()=> setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 grid place-items-center rounded-full bg-black/20 hover:bg-black/30 text-white/70"><CloseIcon/></button>}
                   {searching && <span className="absolute right-10 top-1/2 -translate-y-1/2 w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"/>}
                   {suggOpen && (search.trim() ? sugg.length>0 : history.length>0) && (
-                    <div className="absolute left-0 right-0 top-12 z-50 overflow-hidden rounded-2xl border border-white/10 bg-[#0b0709]/95 shadow-2xl backdrop-blur-xl" onMouseDown={e=> e.preventDefault()}>
+                    <div className="absolute left-0 right-0 top-12 z-50 overflow-hidden rounded-2xl border shadow-2xl backdrop-blur-xl" style={{ backgroundColor: `${activeTheme.bg}F5`, borderColor: `${activeTheme.accent}55`, boxShadow: `0 18px 36px ${activeTheme.accent}22` }} onMouseDown={e=> e.preventDefault()}>
                       {!search.trim() ? (
                         <div className="flex items-center justify-between px-3.5 pt-2.5 pb-1">
                           <span className="text-[11px] font-bold uppercase tracking-wider text-white/40">Recent searches</span>
@@ -2009,10 +2004,9 @@ export default function App(){
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={()=> fileInputRef.current?.click()} className="hidden sm:grid w-9 h-9 place-items-center rounded-full bg-white/10 hover:bg-white/15 border border-white/10" title="Add Local Songs"><PlusIcon/></button>
-                <button className="hidden sm:grid w-9 h-9 place-items-center rounded-full bg-white text-black hover:bg-white/90"><BellIcon/></button>
+                <button onClick={()=> fileInputRef.current?.click()} className="hidden sm:flex items-center gap-1.5 px-3 h-9 rounded-full border text-sm font-medium" style={{ backgroundColor: `${activeTheme.accent}20`, borderColor: `${activeTheme.accent}55` }} title="Add local songs from this device" aria-label="Add local songs from this device"><PlusIcon/>Add Local</button>
                 <div className="relative">
-                  <button onClick={()=> setShowProfileMenu(v=>!v)} className="hidden sm:flex items-center gap-2 pl-1 pr-3 py-1 rounded-full bg-white/10 border border-white/10 hover:bg-white/15">
+                  <button onClick={()=> setShowProfileMenu(v=>!v)} className="hidden sm:flex items-center gap-2 pl-1 pr-3 py-1 rounded-full border" style={{ backgroundColor: `${activeTheme.accent}20`, borderColor: `${activeTheme.accent}55` }}>
                     <Avatar src={user.avatar} name={user.name} className="w-7 h-7 rounded-full object-cover"/><span className="text-sm font-medium hidden lg:block">{user.name.split(' ')[0]}</span><ChevronDown/>
                   </button>
                   {showProfileMenu && (
@@ -2031,12 +2025,12 @@ export default function App(){
                     </div>
                   )}
                 </div>
-                <button onClick={()=> setNav('profile')} className="lg:hidden w-9 h-9 rounded-full overflow-hidden border border-white/10"><Avatar src={user.avatar} name={user.name} className="w-full h-full object-cover"/></button>
+                <button onClick={()=> setNav('profile')} className="lg:hidden w-9 h-9 rounded-full overflow-hidden border" style={{ borderColor: `${activeTheme.accent}55` }}><Avatar src={user.avatar} name={user.name} className="w-full h-full object-cover"/></button>
               </div>
             </div>
             <div className="px-4 lg:px-6 pb-3 flex items-center gap-2 overflow-x-auto scrollbar-none">
               {categories.map(c=> (
-                <button key={c.id} onClick={()=>{ setActiveCat(c.id); showToast(c.id==="All"? "All songs • curated" : `Showing ${c.label} • ${homeTracks.length? homeTracks.length: getCategoryTracks(c.id).length} songs — tap Play` ) }} className={`shrink-0 px-4 py-1.5 rounded-full text-sm font-medium border transition flex items-center gap-1.5 ${activeCat===c.id? 'bg-white text-black border-white':'bg-white/10 text-white border-white/10 hover:bg-white/15'}`}><span>{c.icon}</span>{c.label}</button>
+                <button key={c.id} onClick={()=>{ setActiveCat(c.id); showToast(c.id==="All"? "All songs • curated" : `Showing ${c.label} • ${homeTracks.length? homeTracks.length: getCategoryTracks(c.id).length} songs — tap Play` ) }} className="shrink-0 px-4 py-1.5 rounded-full text-sm font-medium border transition flex items-center gap-1.5" style={{ background: activeCat===c.id ? `linear-gradient(135deg, ${activeTheme.accent}, ${activeTheme.accent2})` : `${activeTheme.accent}20`, borderColor: `${activeTheme.accent}55`, color: activeCat===c.id ? '#fff' : (activeTheme.mode==='light' ? '#211827' : '#fff') }}><span>{c.icon}</span>{c.label}</button>
               ))}
               <span className="ml-auto hidden lg:flex items-center gap-2 text-xs text-white/40"><span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"/>Tap category → auto-queue • Offline ready</span>
             </div>
@@ -2044,7 +2038,7 @@ export default function App(){
 
           <main className="flex-1 min-w-0 max-w-full overflow-x-clip px-4 lg:px-6 py-6 pb-28 lg:pb-28 space-y-7">
             {nav==='profile' ? (
-              <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : ("yt-iframe (direct resolve pending/failed)" + (directErr ? " · " + directErr : ""))) : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} x={{ t, lang, setLang, quality, qCycle, langs, toggleLang, sleepMin, cycleSleep, eqOn:eq.on, eqPreset:eq.preset, onOpenEQ:()=>setShowEQ(true), isPro, stats, followedCount:followed.size, onSubscribe:()=>setShowSubscribe(true), onClearHistory, onClearSearches, onShareProfile, autoplay, setAutoplay, onOpenPlaylist:(id)=> setSelectedPlaylist(id), onPlayPlaylist:(pl)=> playPlaylistNow(pl), onCreatePlaylist:()=> setShowCreatePl(true), onPlayTrack:playTrack, recently:recentlyPlayed, followedList:[...followed], updCur:{version:APP_VERSION, build:APP_BUILD_NO}, updInfo:updateInfo, updChecking, onCheckUpdate:()=> runUpdateCheck(true), themes:THEMES, themeId:activeTheme.id, onSelectTheme:selectTheme, onPlayAllRecent:()=>{ if(recentlyPlayed.length){ setQueue(recentlyPlayed); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing recent • ${recentlyPlayed.length}`) } } }} />
+              <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : ("yt-iframe (direct resolve pending/failed)" + (directErr ? " · " + directErr : ""))) : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} x={{ t, lang, setLang, quality, qCycle, langs, toggleLang, sleepMin, cycleSleep, eqOn:eq.on, eqPreset:eq.preset, onOpenEQ:()=>setShowEQ(true), isPro, stats, followedCount:followed.size, onSubscribe:()=>setShowSubscribe(true), onClearHistory, onClearSearches, onShareProfile, autoplay, setAutoplay, onOpenPlaylist:(id)=> setSelectedPlaylist(id), onPlayPlaylist:(pl)=> playPlaylistNow(pl), onCreatePlaylist:()=> setShowCreatePl(true), onPlayTrack:playTrack, recently:recentlyPlayed, followedList:[...followed], updCur:{version:APP_VERSION, build:APP_BUILD_NO}, nativeUpdates:isNativeApp(), updInfo:updateInfo, updChecking, onCheckUpdate:()=> runUpdateCheck(true), themes:THEMES, themeId:activeTheme.id, onSelectTheme:selectTheme, onPlayAllRecent:()=>{ if(recentlyPlayed.length){ setQueue(recentlyPlayed); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing recent • ${recentlyPlayed.length}`) } } }} />
             ) : nav==='search' ? (
               <>
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -2565,27 +2559,29 @@ export default function App(){
           )}
           {/* itrace-27: app update popup */}
           {showUpdate && updateInfo && (()=>{ const highlights = (updateInfo.features && updateInfo.features.length ? updateInfo.features : updateInfo.notes) || []; return (
-            <div className="fixed inset-0 z-[80] grid place-items-center p-4">
-              <div onClick={()=> setShowUpdate(false)} className="absolute inset-0 bg-black/75 backdrop-blur-md"/>
-              <div className="relative w-full max-w-sm glass-strong rounded-[28px] p-6 text-center overflow-hidden shadow-[0_30px_90px_rgba(0,0,0,0.65)]">
-                <div className="absolute -top-20 left-1/2 -translate-x-1/2 w-64 h-40 rounded-full blur-[70px] opacity-30 pointer-events-none" style={{ background:`radial-gradient(circle, ${activeTheme.accent} 0%, transparent 70%)` }}/>
-                <div className="relative">
-                  <div className="mx-auto w-16 h-16 rounded-[22px] grid place-items-center shadow-2xl" style={{ background:`linear-gradient(135deg, ${activeTheme.accent}, ${activeTheme.accent2})` }}><span className="text-3xl text-white drop-shadow">⬆</span></div>
-                  <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-emerald-400/10 border border-emerald-400/25 px-3 py-1 text-[10px] font-extrabold tracking-[0.16em] text-emerald-300 uppercase"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"/>Update available</div>
-                  <h3 className="font-bold text-[22px] leading-tight font-display mt-3">A new version is ready</h3>
-                  <p className="text-sm text-white/60 mt-1">Version {updateInfo.version || '—'} • Build {updateInfo.build}</p>
-                  <p className="text-[11px] text-white/40 mt-1">You are currently on build {APP_BUILD_NO || '—'}</p>
-                  {highlights.length>0 ? (
-                    <div className="text-left mt-5 rounded-[22px] bg-white/[0.06] border border-white/10 p-4">
-                      <div className="text-[10px] font-extrabold tracking-[0.18em] text-white/45 uppercase mb-3">What’s new</div>
-                      <ul className="space-y-2.5">{highlights.slice(0,6).map((n,i)=> <li key={i} className="flex gap-2.5 text-[13px] leading-relaxed text-white/80"><span className="mt-0.5 w-5 h-5 shrink-0 rounded-full grid place-items-center text-[10px] font-black text-black" style={{ background: activeTheme.accent }}>✓</span><span>{n}</span></li>)}</ul>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-white/65 leading-relaxed mt-5 rounded-[22px] bg-white/[0.06] border border-white/10 p-4">This update includes performance improvements and bug fixes.</p>
-                  )}
-                  <button onClick={()=> openExternal(updateInfo.apk)} className="mt-5 w-full py-3.5 rounded-full text-sm font-extrabold text-black shadow-lg active:scale-[0.99] transition" style={{ background:`linear-gradient(135deg, ${activeTheme.accent}, ${activeTheme.accent2})` }}>Download update</button>
-                  <button onClick={()=> setShowUpdate(false)} className="mt-2.5 w-full py-3 rounded-full bg-white/10 border border-white/10 text-sm font-bold hover:bg-white/15">Maybe later</button>
-                  <p className="text-[11px] leading-relaxed text-white/40 mt-4">Open the downloaded file and tap Install. Your library, playlists and downloads will remain intact.</p>
+            <div className="fixed inset-0 z-[80] overflow-y-auto overscroll-contain">
+              <div onClick={()=> setShowUpdate(false)} className="fixed inset-0 bg-black/75 backdrop-blur-md"/>
+              <div className="relative min-h-full flex p-4 sm:p-6">
+                <div className="relative m-auto w-full max-w-sm glass-strong rounded-[28px] p-6 text-center overflow-hidden shadow-[0_30px_90px_rgba(0,0,0,0.65)]">
+                  <div className="absolute -top-20 left-1/2 -translate-x-1/2 w-64 h-40 rounded-full blur-[70px] opacity-30 pointer-events-none" style={{ background:`radial-gradient(circle, ${activeTheme.accent} 0%, transparent 70%)` }}/>
+                  <div className="relative">
+                    <img src={`${BASE}icon-512.png`} alt="MaxMusic app icon" className="mx-auto w-16 h-16 rounded-[22px] object-cover shadow-2xl"/>
+                    <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-emerald-400/10 border border-emerald-400/25 px-3 py-1 text-[10px] font-extrabold tracking-[0.16em] text-emerald-300 uppercase"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"/>Update available</div>
+                    <h3 className="font-bold text-[22px] leading-tight font-display mt-3">A new version is ready</h3>
+                    <p className="text-sm text-white/60 mt-1">Version {updateInfo.version || '—'} • Build {updateInfo.build}</p>
+                    <p className="text-[11px] text-white/40 mt-1">You are currently on build {APP_BUILD_NO || '—'}</p>
+                    {highlights.length>0 ? (
+                      <div className="text-left mt-5 rounded-[22px] bg-white/[0.06] border border-white/10 p-4 max-h-[38dvh] overflow-y-auto overscroll-contain">
+                        <div className="text-[10px] font-extrabold tracking-[0.18em] text-white/45 uppercase mb-3">What’s new</div>
+                        <ul className="space-y-2.5">{highlights.slice(0,6).map((n,i)=> <li key={i} className="flex gap-2.5 text-[13px] leading-relaxed text-white/80"><span className="mt-0.5 w-5 h-5 shrink-0 rounded-full grid place-items-center text-[10px] font-black text-black" style={{ background: activeTheme.accent }}>✓</span><span>{n}</span></li>)}</ul>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-white/65 leading-relaxed mt-5 rounded-[22px] bg-white/[0.06] border border-white/10 p-4">This update includes performance improvements and bug fixes.</p>
+                    )}
+                    <button onClick={()=> openExternal(updateInfo.apk)} className="mt-5 w-full py-3.5 rounded-full text-sm font-extrabold text-black shadow-lg active:scale-[0.99] transition" style={{ background:`linear-gradient(135deg, ${activeTheme.accent}, ${activeTheme.accent2})` }}>Download update</button>
+                    <button onClick={()=> setShowUpdate(false)} className="mt-2.5 w-full py-3 rounded-full bg-white/10 border border-white/10 text-sm font-bold hover:bg-white/15">Maybe later</button>
+                    <p className="text-[11px] leading-relaxed text-white/40 mt-4">Open the downloaded file and tap Install. Your library, playlists and downloads will remain intact.</p>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2932,7 +2928,7 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
             </div>
             {!X.isPro && <button onClick={X.onSubscribe} className="mt-3 w-full py-2.5 rounded-full bg-gradient-to-r from-[#D5AA55] to-[#C35445] text-black text-xs font-extrabold">Unlock custom themes with Pro</button>}
           </div>
-          <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">App updates</div><div className="text-xs text-white/50">v{(X.updCur&&X.updCur.version)||'?'} • build {(X.updCur&&X.updCur.build)||'—'}{X.updInfo&&X.updInfo.hasUpdate?' • Update available':''}</div></div><button onClick={()=> X.onCheckUpdate && X.onCheckUpdate()} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{X.updChecking?'Checking…':'Check'}</button></div>
+          <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">App updates</div><div className="text-xs text-white/50">{X.nativeUpdates ? <>v{(X.updCur&&X.updCur.version)||'?'} • build {(X.updCur&&X.updCur.build)||'—'}{X.updInfo&&X.updInfo.hasUpdate?' • Update available':''}</> : 'The web app updates automatically.'}</div></div>{X.nativeUpdates && <button onClick={()=> X.onCheckUpdate && X.onCheckUpdate()} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{X.updChecking?'Checking…':'Check'}</button>}</div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('onlinemusic')}</div><div className="text-xs text-white/50">JioSaavn + YouTube — full length</div></div><span className="text-xs text-emerald-400">●</span></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('offlinemode')}</div><div className="text-xs text-white/50">{downloaded.length>0? `${downloaded.length} songs saved offline`:'No downloads yet'}</div></div><span className="text-xs text-emerald-400">●</span></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('cloudsync')}</div><div className="text-xs text-white/50">{authUser? `ON — ${authUser.email}`:'Off — sign in to sync'}</div></div>{authUser? <button onClick={onSignOut} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{t('signout')}</button> : <button onClick={onSignIn} className="text-xs font-bold px-3 py-1.5 rounded-full bg-[#D5AA55] text-black">{t('signin')}</button>}</div>
@@ -3034,7 +3030,6 @@ function ChevronRight(){ return <svg width="16" height="16" viewBox="0 0 24 24" 
 function ChevronDown(){ return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6"/></svg> }
 function ChevronDownLarge(){ return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2"><path d="m6 9 6 6 6-6"/></svg> }
 function CloseIcon(){ return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12"/></svg> }
-function BellIcon(){ return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M6 8a6 6 0 0 1 12 0c0 7-6 5-6 5s-6 2-6-5"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg> }
 function PlusIcon(){ return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg> }
 function Heart({ filled, size=18 }){ return <svg width={size} height={size} viewBox="0 0 24 24" fill={filled?"currentColor":"none"} stroke="currentColor" strokeWidth="1.7"><path d="M19.5 5.5a5.2 5.2 0 0 0-7.4 0L12 5.6l-.1-.1a5.2 5.2 0 0 0-7.4 7.4l7.4 7.4 7.4-7.4a5.2 5.2 0 0 0 .2-7.4z"/></svg> }
 function ShuffleIcon({ active }){ return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active?2.2:1.7}><polyline points="16 3 21 3 21 8"/><line x1="4" x2="21" y1="14" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" x2="21" y1="21" y2="16"/><line x1="4" x2="9" y1="10" y2="10"/></svg> }

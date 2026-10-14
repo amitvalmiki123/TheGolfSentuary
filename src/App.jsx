@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
-import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, fetchCategoryPage, fetchArtistProfile, artistSongs, artistSongsPaginated, resolvePipedAudio, resolveDirectAudio, searchSaavn, findSaavnRecording, searchSuggestions, getLastSearchNextpage, fetchLyrics, mergeDedup, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists, apiRedeemPro, apiSetPlan, warmBackend } from './lib/api.js'
+import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, fetchCategoryPage, fetchArtistProfile, artistSongs, artistSongsPaginated, resolvePipedAudio, resolveDirectAudio, searchSaavn, findSaavnRecording, searchSuggestions, getLastSearchNextpage, fetchLyrics, mergeDedup, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists, apiRedeemPro, apiSetPlan, warmBackend, apiBase } from './lib/api.js'
 import { checkAppUpdate, APP_BUILD_NO } from './lib/updater.js'
 import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
 import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npAskBattery, npOpenNotifSettings, npPing, npLastCrash, npSetDisabled, npDisabled, npBridgeMode, hasNativeBridge, wvGuess } from './lib/nowplaying.js'
@@ -8,6 +8,7 @@ import { createPager } from './lib/pager.js'
 import ApkUpdateControls from './components/ApkUpdateControls.jsx'
 import { THEMES, effectiveTheme } from './lib/themes.js'
 import { findArtistForSearch } from './lib/artistsearch.js'
+import { PRO_PRICE, UPI_APPS, intentChain, openUpiChain, browserLaunchDeps, webPayDetails, copyText, getProUserId, loadPending, savePending, createProApi, pollOnce, validateProCode, isValidUtr, normalizeUtr, buildUpiIntent } from './lib/pro.js'
 
 const BASE = import.meta.env.BASE_URL || '/'
 // In the native app (Capacitor WebView) pretend the page is always visible — stops the
@@ -119,6 +120,18 @@ function getCategoryPlaylists(cat){
   return defaultPlaylists.filter(pl=> pl.songs.some(s=> ids.includes(s)))
 }
 
+// Payment pills for the Go Pro modal — simple inline SVG/text marks (no external brand assets).
+function UpiPill({ id }){
+  const C = { upi:['#097939','#ED752E','UPI'], gpay:['#4285F4','#34A853','G'], phonepe:['#5F259F','#5F259F','Pe'], paytm:['#00BAF2','#002E6E','P'] }[id] || ['#444','#444','₹']
+  return (
+    <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
+      <defs><linearGradient id={`upg-${id}`} x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor={C[0]}/><stop offset="1" stopColor={C[1]}/></linearGradient></defs>
+      <rect x="1" y="1" width="24" height="24" rx="7" fill={`url(#upg-${id})`}/>
+      <text x="13" y="17" textAnchor="middle" fontSize={C[2].length>2? 8 : 11} fontWeight="800" fill="#fff" fontFamily="system-ui, sans-serif">{C[2]}</text>
+    </svg>
+  )
+}
+
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
@@ -127,7 +140,7 @@ const APP_VERSION = '2.5'
 const FREE_DL_MAX = 5
 const PRO_CODES = ['MAXMUSIC79']
 const STR = {
-en:{nav_home:'Home',nav_search:'Search',nav_library:'Your Library',nav_profile:'Profile',navb_home:'Home',navb_search:'Search',navb_library:'Library',navb_profile:'You',gm_morning:'Good morning',gm_afternoon:'Good afternoon',gm_evening:'Good evening',searchPh:'Search songs, artists, albums…',curated:'Curated for you',recent:'Recently played',showall:'Show all',playall:'Play All',retry:'Retry',loadmore:'Load more — scroll for auto-load',loadingmore:'Loading more music…',theend:'End of list • try another vibe',showing:'Showing',tracksWd:'tracks',scrollauto:'Scroll down for auto-load (total, not just 20-25)',ylib:'Your Library',wd_liked:'liked',wd_playlists:'playlists',wd_local:'local',wd_offline:'offline',newpl:'New Playlist',addlocal:'Add Local',libtab_Playlists:'Playlists',libtab_Liked:'Liked',libtab_Local:'Local',libtab_Downloads:'Downloads',libtab_Songs:'Songs',tab_Overview:'Overview',tab_Playlists:'Playlists',tab_Listening:'Listening',tab_Settings:'Settings',playlists:'Playlists',downloads:'Downloads',liked:'Liked',listeningstats:'Listening Stats',minutes:'Minutes streamed',songsplayed:'Songs played',topgenre:'Top genre',likedsongs:'Liked songs',offlinesongs:'Offline songs',localfiles:'Local files',recentpl:'Recent Playlists',nopl:'No playlists yet',share:'Share Profile',editp:'Edit Profile',save:'Save',cancel:'Cancel',settings:'Settings',pro:'MaxMusic Pro',goPro:'Go Pro ₹79',quality:'Streaming Quality',eq:'Equalizer',muslang:'Music Languages',applang:'App Language',sleep:'Sleep Timer',off:'Off',onlinemusic:'Online music',offlinemode:'Offline Mode',cloudsync:'Cloud sync',signin:'Sign in',signout:'Sign out',clearhist:'Clear recent history',clearsearch:'Clear recent searches',clearall:'Clear All Data',version:'Version',follow:'Follow',following:'Following',autoplay:'Autoplay',on:'On'},
+en:{nav_home:'Home',nav_search:'Search',nav_library:'Your Library',nav_profile:'Profile',navb_home:'Home',navb_search:'Search',navb_library:'Library',navb_profile:'You',gm_morning:'Good morning',gm_afternoon:'Good afternoon',gm_evening:'Good evening',searchPh:'Search songs, artists, albums…',curated:'Curated for you',recent:'Recently played',showall:'Show all',playall:'Play All',retry:'Retry',loadmore:'Load more — scroll for auto-load',loadingmore:'Loading more music…',theend:'End of list • try another vibe',showing:'Showing',tracksWd:'tracks',scrollauto:'Scroll down for auto-load (total, not just 20-25)',ylib:'Your Library',wd_liked:'liked',wd_playlists:'playlists',wd_local:'local',wd_offline:'offline',newpl:'New Playlist',addlocal:'Add Local',libtab_Playlists:'Playlists',libtab_Liked:'Liked',libtab_Local:'Local',libtab_Downloads:'Downloads',libtab_Songs:'Songs',tab_Overview:'Overview',tab_Playlists:'Playlists',tab_Listening:'Listening',tab_Settings:'Settings',playlists:'Playlists',downloads:'Downloads',liked:'Liked',listeningstats:'Listening Stats',minutes:'Minutes streamed',songsplayed:'Songs played',topgenre:'Top genre',likedsongs:'Liked songs',offlinesongs:'Offline songs',localfiles:'Local files',recentpl:'Recent Playlists',nopl:'No playlists yet',share:'Share Profile',editp:'Edit Profile',save:'Save',cancel:'Cancel',settings:'Settings',pro:'MaxMusic Pro',goPro:'Go Pro ₹79',quality:'Streaming Quality',eq:'Equalizer',muslang:'Music Languages',applang:'App Language',sleep:'Sleep Timer',off:'Off',onlinemusic:'Online music',offlinemode:'Offline Mode',cloudsync:'Cloud sync',signin:'Sign in',signout:'Sign out',clearhist:'Clear recent history',clearsearch:'Clear recent searches',clearall:'Clear All Data',version:'Version',follow:'Follow',following:'Following',autoplay:'Autoplay',on:'On',pro_choose:'Choose your plan',pro_payWith:'Pay ₹79 with',pro_payHint:'Tap an app — ₹79 opens prefilled. Then come back and submit the UTR.',pro_webHint:'Pay from any UPI app using these details:',pro_copyId:'Copy UPI ID',pro_copyAmt:'Copy amount',pro_copied:'Copied ✓',pro_openUpi:'Open UPI app',pro_paidQ:'Payment done?',pro_paidHint:'Enter the 12-digit UTR / RRN from your UPI app receipt. Pro turns on automatically once the payment is verified.',pro_utrPh:'UTR / reference number',pro_submit:'Submit',pro_pending:'Payment submitted — waiting for verification. Pro will turn on automatically; you can close this window.',pro_rejected:'We could not verify that payment. Please check the UTR and submit again.',pro_haveCode:'Have an activation code?',pro_codeHint:'Enter your Pro code to unlock Pro instantly.',pro_codePh:'ENTER CODE',pro_activate:'Activate Pro',pro_footer:'₹79/month — unlimited downloads, HD audio, equalizer and custom themes.',pro_noApp:'No UPI app opened — use the UPI ID below instead.',pro_checkNow:'Check status'},
 hi:{nav_home:'होम',nav_search:'खोजें',nav_library:'आपकी लाइब्रेरी',nav_profile:'प्रोफ़ाइल',navb_home:'होम',navb_search:'खोजें',navb_library:'लाइब्रेरी',navb_profile:'आप',gm_morning:'सुप्रभात',gm_afternoon:'नमस्ते',gm_evening:'शुभ संध्या',searchPh:'गाने, कलाकार, एल्बम खोजें…',curated:'आपके लिए',recent:'हाल में बजाए',showall:'सभी देखें',playall:'सभी बजाएं',retry:'फिर कोशिश',loadmore:'और लोड करें — स्क्रॉल पे ऑटो',loadingmore:'और गाने आ रहे…',theend:'सूची खत्म • कोई और vibe देखो',showing:'दिख रहे',tracksWd:'गाने',scrollauto:'नीचे स्क्रॉल पे ऑटो-लोड (पूरे, सिर्फ 20-25 नहीं)',ylib:'आपकी लाइब्रेरी',wd_liked:'पसंदीदा',wd_playlists:'प्लेलिस्ट',wd_local:'लोकल',wd_offline:'ऑफ़लाइन',newpl:'नई प्लेलिस्ट',addlocal:'लोकल जोड़ें',libtab_Playlists:'प्लेलिस्ट',libtab_Liked:'पसंदीदा',libtab_Local:'लोकल',libtab_Downloads:'डाउनलोड',libtab_Songs:'गाने',tab_Overview:'झलक',tab_Playlists:'प्लेलिस्ट',tab_Listening:'सुनना',tab_Settings:'सेटिंग्स',playlists:'प्लेलिस्ट',downloads:'डाउनलोड',liked:'पसंदीदा',listeningstats:'सुनने के आंकड़े',minutes:'मिनट सुने',songsplayed:'गाने बजाए',topgenre:'टॉप जॉनर',likedsongs:'पसंदीदा गाने',offlinesongs:'ऑफ़लाइन गाने',localfiles:'लोकल फ़ाइलें',recentpl:'ताज़ा प्लेलिस्ट',nopl:'अभी कोई प्लेलिस्ट नहीं',share:'प्रोफ़ाइल शेयर करें',editp:'प्रोफ़ाइल बदलें',save:'सेव',cancel:'रद्द',settings:'सेटिंग्स',pro:'MaxMusic Pro',goPro:'Pro लें ₹79',quality:'स्ट्रीमिंग क्वालिटी',eq:'इक्वलाइज़र',muslang:'म्यूज़िक भाषाएं',applang:'ऐप भाषा',sleep:'स्लीप टाइमर',off:'बंद',onlinemusic:'ऑनलाइन म्यूज़िक',offlinemode:'ऑफ़लाइन मोड',cloudsync:'क्लाउड सिंक',signin:'साइन इन',signout:'साइन आउट',clearhist:'हाल की हिस्ट्री साफ़ करें',clearsearch:'हाल की खोज साफ़ करें',clearall:'सारा डेटा साफ़ करें',version:'वर्ज़न',follow:'फ़ॉलो',following:'फ़ॉलोइंग',autoplay:'ऑटोप्ले',on:'चालू'}}
 const EQ_PRESETS = { Flat:[0,0,0,0,0], Pop:[3,1,0,1,3], Rock:[5,3,-1,2,4], Bass:[7,5,1,0,0], Dance:[5,3,0,2,4], Vocal:[-1,1,3,4,2], Treble:[-1,0,1,4,6] }
 const EQ_FREQS = ['60 Hz','230 Hz','910 Hz','3.6 kHz','14 kHz']
@@ -350,13 +363,20 @@ export default function App(){
   const [proStep, setProStep] = useState('plans')
   const [proCode, setProCode] = useState('')
   const [proErr, setProErr] = useState('')
+  // UPI semi-auto Pro flow (src/lib/pro.js): pay → UTR → owner approves → one-time code auto-redeemed
+  const [proPending, setProPending] = useState(()=> loadPending())
+  const [proUtr, setProUtr] = useState('')
+  const [proPayErr, setProPayErr] = useState('')
+  const [proBusy, setProBusy] = useState(false)
+  const [proWebPay, setProWebPay] = useState(false)
+  const proApi = useMemo(()=>{ const b = apiBase(); return b===null ? null : createProApi({ base: b }) },[])
   useEffect(()=>{ try{ localStorage.setItem('sur_lang', lang) }catch{} },[lang])
   useEffect(()=>{ try{ localStorage.setItem('sur_quality', quality) }catch{} },[quality])
   useEffect(()=>{ try{ localStorage.setItem('sur_langs', JSON.stringify(langs)) }catch{} },[langs])
   useEffect(()=>{ try{ localStorage.setItem('sur_sleep', String(sleepMin)) }catch{} },[sleepMin])
   useEffect(()=>{ try{ localStorage.setItem('sur_autoplay', autoplay?'1':'0') }catch{} },[autoplay])
   useEffect(()=>{ try{ localStorage.setItem('sur_eq', JSON.stringify(eq)) }catch{} },[eq])
-  useEffect(()=>{ if(showSubscribe){ setProStep('plans'); setProErr(''); setProCode('') } },[showSubscribe])
+  useEffect(()=>{ if(showSubscribe){ setProStep(loadPending()? 'pay' : 'plans'); setProErr(''); setProCode(''); setProPayErr(''); setProWebPay(false) } },[showSubscribe])
   const [authForm, setAuthForm] = useState({ mode:'login', name:'', email:'', password:'' })
   const [authBusy, setAuthBusy] = useState(false)
   // First-run welcome gate: login/signup/guest. Fresh install (bhi delete-karke-waapas)
@@ -1777,10 +1797,23 @@ export default function App(){
     }catch{}
     return null
   }
+  // Local Pro grant (owner code / approved one-time code / legacy list) + push to the account when signed in.
+  const grantProLocal = (code, msg)=>{
+    const em = String((authUser&&authUser.email)||user.email||'').toLowerCase()
+    setUser(u=> ({...u, plan:'Pro'}))
+    try{ localStorage.setItem('sur_pro', JSON.stringify({ email:em, plan:'Pro', code, ts:Date.now() })) }catch{}
+    setProErr(''); setShowSubscribe(false); showToast(msg || 'MaxMusic Pro activated ✓ — unlimited + HD + EQ')
+    pushLocalProToServer(em).catch(()=>{})
+  }
+  const proUserId = ()=> getProUserId(authUser)
   const activatePro = async ()=>{
     const c = String(proCode||'').trim().toUpperCase()
-    if(!c){ setProErr('Code dalo pehle'); return }
+    if(!c){ setProErr('Please enter a code first'); return }
     setProErr('')
+    // 0) OWNER_CODE (permanent, multi-use, never consumed) + one-time UPI codes — top priority
+    const v = await validateProCode(c, { api: proApi, userId: proUserId() })
+    if(v.ok){ if(v.kind==='onetime'){ savePending(null); setProPending(null) } grantProLocal(c, v.kind==='owner' ? 'MaxMusic Pro activated ✓ — owner code' : 'MaxMusic Pro activated ✓ — payment verified'); return }
+    if(v.kind==='onetime'){ setProErr(v.error); return }
     // 1) server redeem (logged in) — asli validation server pe, har device pe Pro
     if(authUser || getAuthToken()){
       try{
@@ -1789,15 +1822,48 @@ export default function App(){
       }catch{}
     }
     // 2) local fallback (guest / server abhi purana) — + turant server pe push
-    if(PRO_CODES.includes(c)){
-      const em = String((authUser&&authUser.email)||user.email||'').toLowerCase()
-      setUser(u=> ({...u, plan:'Pro'}))
-      try{ localStorage.setItem('sur_pro', JSON.stringify({ email:em, plan:'Pro', code:c, ts:Date.now() })) }catch{}
-      setProErr(''); setShowSubscribe(false); showToast('MaxMusic Pro activated ✓ — unlimited + HD + EQ')
-      pushLocalProToServer(em).catch(()=>{})
-    }
-    else setProErr('Galat code — dobara check karo')
+    if(PRO_CODES.includes(c)) grantProLocal(c)
+    else setProErr('That code is not valid — please check and try again')
   }
+  // Payment pill tap: Android app → UPI intent chain (app-specific → generic upi://); web/PWA → copy panel.
+  const payWithUpi = async (appId)=>{
+    setProPayErr('')
+    if(!isNativeApp()){ setProWebPay(true); return }
+    const deps = browserLaunchDeps()
+    try{
+      const r = await openUpiChain(intentChain(appId, PRO_PRICE, '', proUserId()), deps)
+      if(!r.ok){ setProWebPay(true); showToast(t('pro_noApp')) }
+    }finally{ deps.dispose() }
+  }
+  const copyPro = async (text)=>{ const ok = await copyText(text); showToast(ok ? `${t('pro_copied')} ${text}` : text) }
+  const submitUtr = async ()=>{
+    const utr = normalizeUtr(proUtr)
+    if(!isValidUtr(utr)){ setProPayErr('Enter the 12-digit UTR / reference number from your UPI app'); return }
+    if(!proApi){ setProPayErr('Server not configured — please use an activation code'); return }
+    setProBusy(true); setProPayErr('')
+    try{
+      const userId = proUserId()
+      const r = await proApi.submitRequest({ userId, utr, amount: PRO_PRICE })
+      if(!r.ok){ setProPayErr(r.error || 'Could not submit — please try again'); return }
+      const rec = { userId, utr, id: r.data && r.data.request && r.data.request.id, ts: Date.now(), status:'pending' }
+      savePending(rec); setProPending(rec); setProUtr('')
+      showToast('Payment submitted ✓ — Pro turns on after verification')
+    }finally{ setProBusy(false) }
+  }
+  const proPollTick = async ()=>{
+    const p = loadPending()
+    if(!p || !proApi) return
+    const r = await pollOnce(proApi, p.userId)
+    if(r.state==='activated'){ savePending(null); setProPending(null); grantProLocal(r.code || 'UPI', 'MaxMusic Pro is active ✓ — thank you for your payment!') }
+    else if(r.state==='rejected'){ const rec = { ...p, status:'rejected' }; savePending(rec); setProPending(rec) }
+  }
+  // Poll for the owner's approval while a request is pending (also with the modal closed).
+  useEffect(()=>{
+    if(!proPending || proPending.status==='rejected' || isPro || !proApi) return
+    const first = setTimeout(()=>{ proPollTick().catch(()=>{}) }, 2500)
+    const iv = setInterval(()=>{ proPollTick().catch(()=>{}) }, 20000)
+    return ()=>{ clearTimeout(first); clearInterval(iv) }
+  },[proPending && proPending.utr, proPending && proPending.status, isPro, proApi])
   const handleCreatePlaylist = ()=>{
     if(!newPlName.trim()) return
     const pl = { id:`pl-${Date.now()}`, title:newPlName.trim(), subtitle:"Custom playlist • "+user.name, cover:`https://images.unsplash.com/photo-1511379938547-c1f69419868d?w=600&auto=format&fit=crop&q=60&random=${Date.now()}`, color:"from-[#6A418E] to-[#543551]", count:"0 songs", songs:[] }
@@ -2811,7 +2877,7 @@ export default function App(){
               <div onClick={()=> setShowSubscribe(false)} className="absolute inset-0 bg-black/70 backdrop-blur-sm"/>
               <div className="relative w-full max-w-lg glass-strong rounded-[24px] p-6 max-h-[90vh] overflow-y-auto">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-xl font-bold font-display">Choose your plan</h3>
+                  <h3 className="text-xl font-bold font-display">{t('pro_choose')}</h3>
                   <button onClick={()=> setShowSubscribe(false)} className="w-8 h-8 grid place-items-center rounded-full bg-white/10"><CloseIcon/></button>
                 </div>
                 <div className="grid gap-3">
@@ -2824,19 +2890,53 @@ export default function App(){
                       <ul className="mt-3 space-y-1 text-sm">
                         {p.feats.map(f=> <li key={f} className="flex gap-2"><span className={p.highlight? 'text-emerald-600':'text-emerald-400'}>✓</span>{f}</li>)}
                       </ul>
-                      <button onClick={()=>{ if(p.id==='free' || p.active) setShowSubscribe(false); else setProStep('code') }} className={`mt-4 w-full py-2.5 rounded-full font-bold ${p.highlight? 'bg-black text-white': p.active? 'bg-white/10 text-white border border-white/20':'bg-white text-black'}`}>{p.active? 'Active ✓': p.cta}</button>
+                      <button onClick={()=>{ if(p.id==='free' || p.active) setShowSubscribe(false); else setProStep('pay') }} className={`mt-4 w-full py-2.5 rounded-full font-bold ${p.highlight? 'bg-black text-white': p.active? 'bg-white/10 text-white border border-white/20':'bg-white text-black'}`}>{p.active? 'Active ✓': p.cta}</button>
                     </div>
                   ))}
                 </div>
-                {proStep==='code' && !isPro && (
+                {proStep==='pay' && !isPro && (
+                  <div className="mt-3 p-4 rounded-2xl bg-white/5 border border-white/10" data-pro-pay>
+                    <div className="text-sm font-bold">{t('pro_payWith')}</div>
+                    <p className="text-xs text-white/50 mt-1">{t('pro_payHint')}</p>
+                    <div className="mt-3 grid grid-cols-4 gap-2">
+                      {UPI_APPS.map(a=> (
+                        <button key={a.id} onClick={()=> payWithUpi(a.id)} aria-label={`Pay ₹${PRO_PRICE} with ${a.label}`} className="h-16 rounded-2xl bg-white text-black flex flex-col items-center justify-center gap-1 active:scale-95 transition">
+                          <UpiPill id={a.id}/>
+                          <span className="text-[11px] font-bold leading-none">{a.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                    {proWebPay && (()=>{ const w = webPayDetails(PRO_PRICE, proUserId()); return (
+                      <div className="mt-3 p-3 rounded-2xl bg-black/30 border border-white/10" data-pro-webpay>
+                        <p className="text-xs text-white/60">{t('pro_webHint')}</p>
+                        <div className="mt-2 flex items-center justify-between gap-2"><div className="min-w-0"><div className="text-[11px] text-white/40">UPI ID</div><div className="text-sm font-bold truncate">{w.upiId}</div></div><button onClick={()=> copyPro(w.upiId)} className="shrink-0 text-xs font-bold px-3 py-1.5 rounded-full bg-[#D5AA55] text-black">{t('pro_copyId')}</button></div>
+                        <div className="mt-2 flex items-center justify-between gap-2"><div><div className="text-[11px] text-white/40">Amount</div><div className="text-sm font-bold">{w.amountLabel}</div></div><button onClick={()=> copyPro(String(PRO_PRICE))} className="shrink-0 text-xs font-bold px-3 py-1.5 rounded-full bg-white/15">{t('pro_copyAmt')}</button></div>
+                        <ol className="mt-2 list-decimal list-inside text-[11px] text-white/60 space-y-0.5">{w.steps.map(st=> <li key={st}>{st}</li>)}</ol>
+                        <a href={buildUpiIntent(PRO_PRICE, '', proUserId())} className="mt-2 inline-block text-[11px] font-bold text-[#D5AA55] underline">{t('pro_openUpi')}</a>
+                      </div>
+                    ) })()}
+                    <div className="mt-4 pt-3 border-t border-white/10">
+                      <div className="text-sm font-bold">{t('pro_paidQ')}</div>
+                      {proPending && proPending.status!=='rejected' ? (
+                        <div className="mt-2 text-xs text-emerald-300" role="status">{t('pro_pending')} <span className="text-white/40">UTR {proPending.utr}</span> <button onClick={()=> proPollTick().catch(()=>{})} className="ml-1 underline text-white/70">{t('pro_checkNow')}</button></div>
+                      ) : (<>
+                        <p className="text-xs text-white/50 mt-1">{t('pro_paidHint')}</p>
+                        {proPending && proPending.status==='rejected' && <div className="text-xs text-amber-300 mt-1">{t('pro_rejected')}</div>}
+                        <div className="mt-2 flex gap-2"><input value={proUtr} onChange={e=> setProUtr(e.target.value)} inputMode="numeric" placeholder={t('pro_utrPh')} className="min-w-0 flex-1 h-11 px-4 rounded-2xl bg-white/10 border border-white/10 text-sm outline-none"/><button disabled={proBusy} onClick={submitUtr} className="shrink-0 h-11 px-5 rounded-2xl bg-emerald-500 text-black text-sm font-bold disabled:opacity-50">{proBusy? '…' : t('pro_submit')}</button></div>
+                        {proPayErr && <div className="text-xs text-red-300 mt-2">{proPayErr}</div>}
+                      </>)}
+                    </div>
+                  </div>
+                )}
+                {(proStep==='code' || proStep==='pay') && !isPro && (
                   <div className="mt-3 p-4 rounded-2xl bg-white/5 border border-white/10">
-                    <div className="text-sm font-bold">Activation code dalo</div>
-                    <p className="text-xs text-white/50 mt-1">₹79 wala Pro code yahan dalo — Pro turant khul jayega.</p>
-                    <div className="mt-2 flex flex-col gap-2"><input value={proCode} onChange={e=> setProCode(e.target.value)} placeholder="ENTER CODE" className="w-full h-11 px-4 rounded-2xl bg-white/10 border border-white/10 text-sm outline-none uppercase"/><button onClick={activatePro} className="w-full h-11 rounded-2xl bg-emerald-500 text-black text-sm font-bold">Activate Pro</button></div>
+                    <div className="text-sm font-bold">{t('pro_haveCode')}</div>
+                    <p className="text-xs text-white/50 mt-1">{t('pro_codeHint')}</p>
+                    <div className="mt-2 flex flex-col gap-2"><input value={proCode} onChange={e=> setProCode(e.target.value)} placeholder={t('pro_codePh')} className="w-full h-11 px-4 rounded-2xl bg-white/10 border border-white/10 text-sm outline-none uppercase"/><button onClick={activatePro} className="w-full h-11 rounded-2xl bg-emerald-500 text-black text-sm font-bold">{t('pro_activate')}</button></div>
                     {proErr && <div className="text-xs text-red-300 mt-2">{proErr}</div>}
                   </div>
                 )}
-                <p className="text-xs text-white/40 mt-4 text-center">Pro code nahi hai? ₹79 me lo — unlimited + HD + EQ • Google Play Billing jald aa raha hai</p>
+                <p className="text-xs text-white/40 mt-4 text-center">{t('pro_footer')}</p>
               </div>
             </div>
           )}

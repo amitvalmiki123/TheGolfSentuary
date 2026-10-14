@@ -16,6 +16,8 @@ services:
         generateValue: true      # Render khud ek strong secret bana dega
       - key: MONGO_URI
         sync: false              # ye khod bharna hai: Environment tab me (Atlas ki URI)
+      - key: PRO_ADMIN_SECRET
+        sync: false              # Pro UPI approvals ka secret — Render Environment tab me khud set karo
       - key: CORS_ORIGIN
         value: https://amitvalmiki123.github.io,https://thegolfsentuary.onrender.com,https://localhost,http://localhost
       - key: ALLOW_FALLBACK

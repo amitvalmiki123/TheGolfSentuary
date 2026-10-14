@@ -20,7 +20,7 @@ export async function checkAppUpdate(){
     if(!d || !Number(d.build)) return null
     const features = cleanReleaseNotes(d.notes, d.features)
     return {
-      version: d.version || '', build: Number(d.build), apk: d.apk || '', page: d.page || '',
+      version: d.version || '', build: Number(d.build), apk: d.apk || '', apk_mirror: d.apk_mirror || '', page: d.page || '',
       notes: features, features, date: d.date || '',
       hasUpdate: Number(d.build) > APP_BUILD_NO
     }

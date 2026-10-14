@@ -64,6 +64,12 @@ async function loadApp(){
   const artistSearchFile=path.join(cache,'lib','artistsearch.js')
   await writeFile(artistSearchFile,artistSearchSrc)
   source=source.replace("'./lib/artistsearch.js'",JSON.stringify(pathToFileURL(artistSearchFile).href))
+  const controls=await readFile(new URL('../src/components/ApkUpdateControls.jsx',import.meta.url),'utf8')
+  const controlsSource=controls.replace("'../lib/apkupdate.js'",JSON.stringify(new URL('../src/lib/apkupdate.js',import.meta.url).href))
+  const compiledControls=await transformWithEsbuild(controlsSource,'ApkUpdateControls.jsx',{loader:'jsx',jsx:'automatic'})
+  const controlsFile=path.join(cache,'ApkUpdateControls.mjs')
+  await writeFile(controlsFile,compiledControls.code)
+  source=source.replace("'./components/ApkUpdateControls.jsx'",JSON.stringify(pathToFileURL(controlsFile).href))
   const {code}=await transformWithEsbuild(source,'App.jsx',{
     loader:'jsx',jsx:'automatic',jsxImportSource:'react',
     define:{'import.meta.env':'{"BASE_URL":"/","VITE_APP_BUILD_NO":"108"}'}

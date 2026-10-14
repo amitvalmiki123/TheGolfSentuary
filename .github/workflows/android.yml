@@ -2,7 +2,7 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ "arena/f257d954-thegolfsentuary", "arena/dbc69e5f-thegolfsentuary", "arena/904fd888-thegolfsentuary", "arena/45833986-thegolfsentuary", "main" ]
+    branches: [ "main" ]
     paths-ignore: [ "**.md" ]
   workflow_dispatch:
 
@@ -122,15 +122,40 @@ jobs:
           gh release delete latest -y || true
           gh release create latest MaxMusic.apk --title "MaxMusic (latest)" --notes "$NOTES" --target "${{ github.sha }}"
 
+      - name: Mirror APK (optional Cloudflare R2)
+        id: mirror
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          # No secrets configured: skip quietly, GitHub remains the primary URL.
+          if [ -z "$R2_ACCOUNT_ID" ] || [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ] || [ -z "$R2_BUCKET" ] || [ -z "$R2_PUBLIC_BASE" ]; then
+            exit 0
+          fi
+          VER=$(node -p "require('./package.json').version")
+          KEY="updates/v${VER}-b${{ github.run_number }}/MaxMusic.apk"
+          aws s3 cp MaxMusic.apk "s3://$R2_BUCKET/$KEY" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --content-type application/vnd.android.package-archive --only-show-errors
+          echo "apk_mirror=${R2_PUBLIC_BASE%/}/$KEY" >> "$GITHUB_OUTPUT"
+
       - name: Bump docs/version.json (in-app updater feed)
         if: github.ref == 'refs/heads/main'
+        env:
+          APK_MIRROR: ${{ steps.mirror.outputs.apk_mirror }}
         run: |
           VER=$(node -p "require('./package.json').version")
           RUN=${{ github.run_number }}
           NOTES_JSON=$(git log -3 --pretty=format:'%s' | python3 -c "import sys,json; print(json.dumps([l.strip() for l in sys.stdin if l.strip()][:3]))")
           FEATURES_JSON=$(python3 -c "import json; print(json.dumps(json.load(open('docs/release-features.json'))))" 2>/dev/null || echo '[]')
           write_feed() {
-            python3 - "$VER" "$RUN" "$NOTES_JSON" "$FEATURES_JSON" <<'PYEOF'
+            python3 - "$VER" "$RUN" "$NOTES_JSON" "$FEATURES_JSON" "$APK_MIRROR" <<'PYEOF'
           import sys, json, datetime
           ver, run, notes = sys.argv[1], int(sys.argv[2]), json.loads(sys.argv[3])
           features = json.loads(sys.argv[4]) if len(sys.argv) > 4 else []
@@ -149,6 +174,8 @@ jobs:
             "features": features,
             "date": datetime.date.today().isoformat()
           }
+          if len(sys.argv) > 5 and sys.argv[5]:
+              data['apk_mirror'] = sys.argv[5]
           open('docs/version.json','w').write(json.dumps(data, indent=2) + "\n")
           print(open('docs/version.json').read())
           PYEOF

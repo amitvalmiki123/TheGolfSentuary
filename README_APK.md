@@ -70,3 +70,34 @@ Top pill bar: All ✨, Hindi 🇮🇳, Punjabi 🔥, Love 💜, 90s Hits 📻, B
 Click any pill → auto-queues that category's songs, "Play All" banner appears, curated playlists filter too.
 
 Enjoy!
+
+
+## Native APK updates (Build 129 onward)
+
+- Android downloads HTTPS release assets directly into `cacheDir/updates`, follows
+  GitHub asset redirects, reports live progress, and opens Android's installer via
+  FileProvider. Cancel removes the partial file; Retry starts a fresh transfer.
+- If Android requires “Install unknown apps”, allow it for MaxMusic and return to
+  **Install / settings**. The cached APK is reused; that button also reopens the
+  installer if its prompt was dismissed. Installer success is not assumed: Android
+  owns the final confirmation.
+- Download errors expose **Browser me kholo**. Web/PWA update gating is unchanged;
+  old APKs without the plugin keep their existing browser fallback.
+- **Compatibility:** Build 128 cannot acquire a Java plugin through a feed update.
+  Its 128 → 129 update still uses the old browser flow. Native downloading becomes
+  available after installing 129, for subsequent updates.
+- Optional R2 mirroring requires repository secrets `R2_ACCOUNT_ID`,
+  `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, and `R2_PUBLIC_BASE`.
+  Configure the bucket's public HTTPS base URL. With missing secrets the step skips
+  silently; unsuccessful uploads never put a mirror URL in the feed. The primary
+  GitHub release always remains available. No third-party APK store is used.
+- `Native APK PR check` runs all tests and Gradle `assembleRelease` (unsigned) before
+  merging, without consuming the Android release workflow's build counter. Main
+  then produces the normally signed release and writes `docs/version.json` itself.
+  Do not hand-edit that feed.
+
+Phone smoke test: check the update popup on 128, install 129, ensure the app icon
+and centred popup styling remain intact; on the next available update verify live
+percentage/progress bar, Cancel → Retry, installer prompt, unknown-app settings →
+Install / settings, and error → browser fallback. Mirror is visible only when a
+successful mirror URL exists in the release feed.

@@ -1,11 +1,12 @@
 {
   "app": "MaxMusic",
   "version": "1.0.0",
-  "build": 130,
-  "apk": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/download/v1.0.0-b130/MaxMusic.apk",
-  "page": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/tag/v1.0.0-b130",
+  "build": 131,
+  "apk": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/download/v1.0.0-b131/MaxMusic.apk",
+  "page": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/tag/v1.0.0-b131",
   "notes": [
     "Repeat one song on every playback source, repeat the queue, or stop when it ends",
+    "Go Pro with UPI \u2014 pay \u20b979 in GPay, PhonePe or Paytm and Pro turns on automatically once verified",
     "Shuffle now visibly rearranges upcoming songs in Queue, with clear on/off feedback",
     "Shared shuffle and repeat controls across the mini player and full player",
     "Your theme now colours the whole screen \u2014 top bar, search and category tabs match too",
@@ -20,6 +21,7 @@
   ],
   "features": [
     "Repeat one song on every playback source, repeat the queue, or stop when it ends",
+    "Go Pro with UPI \u2014 pay \u20b979 in GPay, PhonePe or Paytm and Pro turns on automatically once verified",
     "Shuffle now visibly rearranges upcoming songs in Queue, with clear on/off feedback",
     "Shared shuffle and repeat controls across the mini player and full player",
     "Your theme now colours the whole screen \u2014 top bar, search and category tabs match too",

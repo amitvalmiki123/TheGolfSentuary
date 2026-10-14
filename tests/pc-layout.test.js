@@ -50,7 +50,7 @@ test('native update popup uses app icon and remains centred with independent not
   assert.match(popup, /max-h-\[38dvh\] overflow-y-auto overscroll-contain/)
   assert.match(popup, /Download update/)
   assert.match(popup, /Maybe later/)
-  assert.equal(features[0], 'Your theme now colours the whole screen — top bar, search and category tabs match too')
+  assert.equal(features[0], 'Repeat one song on every playback source, repeat the queue, or stop when it ends')
 })
 
 test('web/PWA never offers an Android APK; native updater retains the curated feed', async () => {

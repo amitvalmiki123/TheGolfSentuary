@@ -2,7 +2,8 @@
 """Patches the CI-generated android/ project (fresh from `cap add android`) to wire
 the NowPlaying foreground-service plugin: crash-reporting MainActivity, manifest
 permissions + service. Idempotent."""
-import os, sys
+import os, sys, shutil
+import xml.etree.ElementTree as ET
 
 def log(msg): print('[patch_android]', msg)
 
@@ -87,6 +88,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         try { installCrashReporter(getApplication()); } catch (Throwable ignored) {}
         registerPlugin(NowPlayingPlugin.class);
+        registerPlugin(ApkDownloaderPlugin.class);
         super.onCreate(savedInstanceState);
         bindNpWebView();
         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
@@ -149,4 +151,39 @@ if os.path.exists(mf):
     open(mf, 'w').write(s)
     log('Manifest patched')
 
-log('OK')
+# Capacitor already supplies a FileProvider in fresh projects. Reuse it rather
+# than declaring another provider with the same authority.
+shutil.copyfile(os.path.join(os.path.dirname(__file__), 'ApkDownloaderPlugin.java'),
+                os.path.join(PKG, 'ApkDownloaderPlugin.java'))
+NS = 'http://schemas.android.com/apk/res/android'
+ET.register_namespace('android', NS)
+def attr(name): return '{' + NS + '}' + name
+tree = ET.parse(mf)
+root = tree.getroot()
+if not any(p.get(attr('name')) == 'android.permission.REQUEST_INSTALL_PACKAGES'
+           for p in root.findall('uses-permission')):
+    ET.SubElement(root, 'uses-permission', {attr('name'): 'android.permission.REQUEST_INSTALL_PACKAGES'})
+app = root.find('application')
+providers = [p for p in app.findall('provider')
+             if p.get(attr('authorities')) == '${applicationId}.fileprovider']
+provider = providers[0] if providers else ET.SubElement(app, 'provider')
+for duplicate in providers[1:]: app.remove(duplicate)
+provider.set(attr('name'), 'androidx.core.content.FileProvider')
+provider.set(attr('authorities'), '${applicationId}.fileprovider')
+provider.set(attr('exported'), 'false')
+provider.set(attr('grantUriPermissions'), 'true')
+metadata = next((m for m in provider.findall('meta-data')
+                 if m.get(attr('name')) == 'android.support.FILE_PROVIDER_PATHS'), None)
+if metadata is None: metadata = ET.SubElement(provider, 'meta-data')
+metadata.set(attr('name'), 'android.support.FILE_PROVIDER_PATHS')
+metadata.set(attr('resource'), '@xml/file_paths')
+ET.indent(tree, space='    ')
+tree.write(mf, encoding='utf-8', xml_declaration=True)
+paths_file = os.path.join(BASE, 'res', 'xml', 'file_paths.xml')
+os.makedirs(os.path.dirname(paths_file), exist_ok=True)
+paths = ET.parse(paths_file) if os.path.exists(paths_file) else ET.ElementTree(ET.Element('paths'))
+if not any(p.tag == 'cache-path' and p.get('name') == 'updates' for p in paths.getroot()):
+    ET.SubElement(paths.getroot(), 'cache-path', {'name': 'updates', 'path': 'updates/'})
+ET.indent(paths, space='    ')
+paths.write(paths_file, encoding='utf-8', xml_declaration=True)
+log('OK (APK plugin + install permission + FileProvider)')

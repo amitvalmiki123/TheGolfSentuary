@@ -58,7 +58,7 @@ test('web/PWA never offers an Android APK; native updater retains the curated fe
   const oldFetch = globalThis.fetch
   let requests = 0
   globalThis.window = { Capacitor: { isNativePlatform: () => false } }
-  globalThis.fetch = async () => { requests++; return { ok: true, json: async () => ({ build: 99999, apk: 'https://example.com/app.apk', features: ['New songs'] }) } }
+  globalThis.fetch = async () => { requests++; return { ok: true, json: async () => ({ build: 99999, apk: 'https://example.com/app.apk', apk_mirror: 'https://mirror.example/app.apk', features: ['New songs'] }) } }
   try {
     assert.equal(await checkAppUpdate(), null)
     assert.equal(requests, 0)
@@ -66,6 +66,7 @@ test('web/PWA never offers an Android APK; native updater retains the curated fe
     const result = await checkAppUpdate()
     assert.equal(requests, 1)
     assert.equal(result.hasUpdate, true)
+    assert.equal(result.apk_mirror, 'https://mirror.example/app.apk')
     assert.deepEqual(result.features, ['New songs.'])
     assert.match(app, /if\(!isNativeApp\(\) \|\| updChecking\) return/)
     assert.match(app, /if\(!isNativeApp\(\)\) return\n    let alive/)

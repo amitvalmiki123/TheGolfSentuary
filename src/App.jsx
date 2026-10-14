@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
 import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, fetchCategoryPage, fetchArtistProfile, artistSongs, artistSongsPaginated, resolvePipedAudio, resolveDirectAudio, searchSaavn, findSaavnRecording, searchSuggestions, getLastSearchNextpage, fetchLyrics, mergeDedup, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists, apiRedeemPro, apiSetPlan, warmBackend } from './lib/api.js'
-import { checkAppUpdate, openExternal, APP_BUILD_NO } from './lib/updater.js'
+import { checkAppUpdate, APP_BUILD_NO } from './lib/updater.js'
 import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
 import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npAskBattery, npOpenNotifSettings, npPing, npLastCrash, npSetDisabled, npDisabled, npBridgeMode, hasNativeBridge, wvGuess } from './lib/nowplaying.js'
 import { trackKeyOf, createTrackTracker, buildSnapshot, activeEngine, nativeArtUrl, coverCandidates } from './lib/trackmeta.js'
 import { createPager } from './lib/pager.js'
+import ApkUpdateControls from './components/ApkUpdateControls.jsx'
 import { THEMES, effectiveTheme } from './lib/themes.js'
 import { findArtistForSearch } from './lib/artistsearch.js'
 
@@ -2578,9 +2579,9 @@ export default function App(){
                     ) : (
                       <p className="text-sm text-white/65 leading-relaxed mt-5 rounded-[22px] bg-white/[0.06] border border-white/10 p-4">This update includes performance improvements and bug fixes.</p>
                     )}
-                    <button onClick={()=> openExternal(updateInfo.apk)} className="mt-5 w-full py-3.5 rounded-full text-sm font-extrabold text-black shadow-lg active:scale-[0.99] transition" style={{ background:`linear-gradient(135deg, ${activeTheme.accent}, ${activeTheme.accent2})` }}>Download update</button>
+                    <ApkUpdateControls info={updateInfo} accent={activeTheme.accent} accent2={activeTheme.accent2} showToast={showToast} primaryLabel="Download update"/>
                     <button onClick={()=> setShowUpdate(false)} className="mt-2.5 w-full py-3 rounded-full bg-white/10 border border-white/10 text-sm font-bold hover:bg-white/15">Maybe later</button>
-                    <p className="text-[11px] leading-relaxed text-white/40 mt-4">Open the downloaded file and tap Install. Your library, playlists and downloads will remain intact.</p>
+                    <p className="text-[11px] leading-relaxed text-white/40 mt-4">Download stays inside MaxMusic, then Android asks you to install. Your library, playlists and downloads will remain intact.</p>
                   </div>
                 </div>
               </div>

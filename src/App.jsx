@@ -201,6 +201,8 @@ export default function App(){
   const [isMuted, setIsMuted] = useState(false)
   const [shuffle, setShuffle] = useState(false)
   const [repeat, setRepeat] = useState(0)
+  // SDK listeners mount once; transport decisions must read the latest render.
+  const endTransportRef = useRef(null)
   const [liked, setLiked] = useState(()=> {
     try{ const v = JSON.parse(localStorage.getItem('sur_liked')||'null'); return v? new Set(v): new Set() }catch{ return new Set() }
   })
@@ -938,7 +940,7 @@ export default function App(){
           onStateChange: (e)=>{
             if(!alive) return
             const YTState = window.YT.PlayerState
-            if(e.data === YTState.ENDED){ handleNext() }
+            if(e.data === YTState.ENDED){ advanceOnEnd('youtube') }
             if(e.data === YTState.PLAYING){ setIsPlaying(true); setAudioError(null) }
             // PAUSED handled via toggle
           },
@@ -1003,7 +1005,7 @@ export default function App(){
     const a=audioRef.current; if(!a) return
     const onTime=()=>{ const ct=a.currentTime; if(Math.abs(ct-lastProgRef.current)>0.75){ lastProgRef.current=ct; setProgress(ct) } }
     const onLoaded=()=> { setDuration(a.duration||0); setAudioError(null); liveKeyRef.current.audio = npKeyRef.current; try{ pushNpMeta() }catch{} }
-    const onEnded=()=>{ if(repeat===2){ a.currentTime=0; a.play().catch(()=>{}) } else handleNext() }
+    const onEnded=()=> advanceOnEnd('audio')
     const onErr=()=>{
       const src = a.currentSrc || a.src || ""
       console.error("audio error", src)
@@ -1399,6 +1401,61 @@ export default function App(){
     if(!queue.length) return
     if(shuffle){ let n; do{ n=Math.floor(Math.random()*queue.length)}while(n===currentIndex && queue.length>1); setCurrentIndex(n) }
     else setCurrentIndex(i=> (i+1)%queue.length)
+  }
+  endTransportRef.current = { repeat, shuffle, queue, currentIndex, handleNext }
+  // Both engines share end semantics, including direct/Piped streams on <audio>.
+  // This function is safe to capture at mount: everything mutable is read via refs.
+  function advanceOnEnd(engine){
+    const state = endTransportRef.current
+    if(!state?.queue.length) return
+    const active = currentRef.current?.videoId && !directForRef.current ? 'youtube' : 'audio'
+    if(engine !== active) return // ignore a late ENDED from the inactive engine
+    const resetPosition = ()=>{
+      lastProgRef.current = 0
+      setProgress(0)
+      if(active === 'youtube') ytPlayerRef.current?.seekTo(0, true)
+      else if(audioRef.current) audioRef.current.currentTime = 0
+    }
+    const replay = ()=>{
+      resetPosition()
+      setIsPlaying(true)
+      if(active === 'youtube') ytPlayerRef.current?.playVideo()
+      else audioRef.current?.play().catch(()=>{})
+    }
+    if(state.repeat === 2){ replay(); return }
+    if(state.repeat === 0 && !state.shuffle && state.currentIndex === state.queue.length - 1){
+      setIsPlaying(false)
+      resetPosition()
+      return
+    }
+    // A single-item queue cannot trigger a track-change effect by changing index.
+    if(state.queue.length === 1){ replay(); return }
+    state.handleNext()
+  }
+  const toggleRepeat = ()=>{
+    const next = (endTransportRef.current.repeat + 1) % 3
+    setRepeat(next)
+    showToast(['Repeat off', 'Repeat queue', 'Repeat this song'][next])
+  }
+  const toggleShuffle = ()=>{
+    const { shuffle: enabled, currentIndex: index } = endTransportRef.current
+    setShuffle(!enabled)
+    if(!enabled){
+      setQueue(previous=>{
+        const next = previous.slice()
+        // Fisher-Yates only touches upcoming tracks: history/current stay put.
+        for(let i=next.length-1; i>index+1; i--){
+          const j = index+1 + Math.floor(Math.random() * (i-index))
+          ;[next[i], next[j]] = [next[j], next[i]]
+        }
+        // A random permutation can be identical. Make ON visibly meaningful.
+        if(next.length-index-1 > 1 && next.every((track,i)=>track === previous[i])){
+          ;[next[index+1], next[index+2]] = [next[index+2], next[index+1]]
+        }
+        return next
+      })
+    }
+    showToast(enabled ? 'Shuffle off' : 'Shuffle on — next tracks random')
   }
   const handlePrev = ()=>{
     if(!queue.length) return
@@ -2426,26 +2483,26 @@ export default function App(){
               <div className="relative glass-strong rounded-[20px] lg:rounded-[18px] overflow-hidden shadow-[0_20px_60px_rgba(0,0,0,0.5)]">
                 <div className="absolute top-0 left-0 right-0 h-[3px] bg-white/10"><div className="h-full bg-[#D5AA55] rounded-r-full transition-all" style={{ width:`${duration? Math.min(100,(progress/duration)*100):0}%`}}/></div>
                 <div className="flex items-center gap-3 px-3 py-3 lg:px-4">
-                  <button onClick={()=> setShowFull(true)} className="flex items-center gap-3 min-w-0 flex-1 text-left">
+                  <button aria-label="Open full player" onClick={()=> setShowFull(true)} className="flex items-center gap-3 min-w-0 flex-1 text-left">
                     <div className="relative w-12 h-12 lg:w-14 lg:h-14 rounded-xl overflow-hidden shrink-0"><CoverImg track={current} className="w-full h-full object-cover"/><div className="absolute inset-0 ring-1 ring-white/10 rounded-xl"/></div>
                     <div className="min-w-0"><div className="text-sm font-semibold leading-tight truncate pr-2">{current.title} {current.source && <span className="text-[10px] bg-white/10 px-1.5 py-0.5 rounded-full border border-white/10 ml-1">{current.source}</span>}</div><div className="text-xs text-white/60 truncate pr-2 flex items-center gap-2">{current.artist}<span className="hidden sm:inline-flex items-center gap-1 text-[11px] bg-white/10 px-2 py-0.5 rounded-full"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"/> {downloaded.find(d=> String(d.id)===String(current.id))? 'Offline':'Live'}</span></div></div>
                   </button>
                   <button onClick={()=> toggleLike(current.id, current)} className={`hidden sm:grid w-9 h-9 place-items-center rounded-full border ${liked.has(current.id)? 'bg-[#C35445] border-[#C35445] text-white':'border-white/10 text-white/60 hover:text-white hover:bg-white/10'}`}><Heart filled={liked.has(current.id)}/></button>
                   <div className="hidden md:flex items-center gap-1">
-                    <button onClick={()=> setShuffle(!shuffle)} className={`w-8 h-8 grid place-items-center rounded-full ${shuffle? 'text-[#D5AA55] bg-[#D5AA55]/15':'text-white/60 hover:text-white'}`}><ShuffleIcon active={shuffle}/></button>
+                    <button aria-label="Shuffle" aria-pressed={shuffle} onClick={toggleShuffle} className={`w-8 h-8 grid place-items-center rounded-full ${shuffle? 'text-[#D5AA55] bg-[#D5AA55]/15':'text-white/60 hover:text-white'}`}><ShuffleIcon active={shuffle}/></button>
                     <button onClick={handlePrev} className="w-9 h-9 grid place-items-center text-white hover:bg-white/10 rounded-full"><PrevIcon/></button>
-                    <button onClick={togglePlay} className="w-10 h-10 rounded-full bg-white text-black grid place-items-center hover:scale-105 transition shadow-lg">{isPlaying? <PauseIcon dark/>:<PlayIcon dark/>}</button>
-                    <button onClick={handleNext} className="w-9 h-9 grid place-items-center text-white hover:bg-white/10 rounded-full"><NextIcon/></button>
-                    <button onClick={()=> setRepeat(r=> (r+1)%3)} className={`w-8 h-8 grid place-items-center rounded-full ${repeat!==0? 'text-[#D5AA55] bg-[#D5AA55]/15':'text-white/60 hover:text-white'}`}><RepeatIcon mode={repeat}/></button>
+                    <button aria-label="Play or pause" onClick={togglePlay} className="w-10 h-10 rounded-full bg-white text-black grid place-items-center hover:scale-105 transition shadow-lg">{isPlaying? <PauseIcon dark/>:<PlayIcon dark/>}</button>
+                    <button aria-label="Next track" onClick={handleNext} className="w-9 h-9 grid place-items-center text-white hover:bg-white/10 rounded-full"><NextIcon/></button>
+                    <button aria-label="Repeat" aria-pressed={repeat!==0} onClick={toggleRepeat} className={`w-8 h-8 grid place-items-center rounded-full ${repeat!==0? 'text-[#D5AA55] bg-[#D5AA55]/15':'text-white/60 hover:text-white'}`}><RepeatIcon mode={repeat}/></button>
                   </div>
-                  <div className="flex md:hidden items-center gap-2"><button onClick={togglePlay} className="w-9 h-9 rounded-full bg-white text-black grid place-items-center">{isPlaying? <PauseMini/>:<PlayMini/>}</button><button onClick={handleNext} className="w-9 h-9 grid place-items-center text-white/80"><NextIcon/></button></div>
+                  <div className="flex md:hidden items-center gap-1 shrink-0"><button aria-label="Shuffle" aria-pressed={shuffle} onClick={toggleShuffle} className={`w-8 h-8 grid place-items-center ${shuffle? 'text-[#D5AA55]':'text-white/60'}`}><ShuffleIcon active={shuffle}/></button><button aria-label="Repeat" aria-pressed={repeat!==0} onClick={toggleRepeat} className={`w-8 h-8 grid place-items-center ${repeat? 'text-[#D5AA55]':'text-white/60'}`}><RepeatIcon mode={repeat}/></button><button aria-label="Play or pause" onClick={togglePlay} className="w-9 h-9 rounded-full bg-white text-black grid place-items-center">{isPlaying? <PauseMini/>:<PlayMini/>}</button><button aria-label="Next track" onClick={handleNext} className="w-9 h-9 grid place-items-center text-white/80"><NextIcon/></button></div>
                   <div className="hidden lg:flex items-center gap-3 pl-3 border-l border-white/10">
                     <button onClick={()=> setShowLyrics(!showLyrics)} className={`hidden xl:grid w-8 h-8 place-items-center rounded-full ${showLyrics? 'bg-white text-black':'text-white/60 hover:text-white hover:bg-white/10'}`}><MicIcon/></button>
                     <button onClick={()=> setShowQueue(!showQueue)} className={`w-8 h-8 grid place-items-center rounded-full ${showQueue? 'bg-white text-black':'text-white/60 hover:text-white hover:bg-white/10'}`}><QueueIcon/></button>
                     <div className="hidden xl:flex items-center gap-2"><button onClick={()=> setIsMuted(!isMuted)} className="w-8 h-8 grid place-items-center text-white/60 hover:text-white"><VolumeIcon muted={isMuted} volume={volume}/></button><input type="range" min={0} max={1} step={0.01} value={isMuted?0:volume} onChange={e=>{ setVolume(Number(e.target.value)); setIsMuted(false)}} className="range w-20 accent-white"/></div>
-                    <button onClick={()=> setShowFull(true)} className="w-8 h-8 grid place-items-center text-white/60 hover:text-white hover:bg-white/10 rounded-full"><ExpandIcon/></button>
+                    <button aria-label="Open full player" onClick={()=> setShowFull(true)} className="w-8 h-8 grid place-items-center text-white/60 hover:text-white hover:bg-white/10 rounded-full"><ExpandIcon/></button>
                   </div>
-                  <button onClick={()=> setShowFull(true)} className="lg:hidden w-8 h-8 grid place-items-center text-white/60"><ExpandIcon/></button>
+                  <button aria-label="Open full player" onClick={()=> setShowFull(true)} className="lg:hidden w-8 h-8 grid place-items-center text-white/60"><ExpandIcon/></button>
                 </div>
               </div>
             </div>
@@ -2629,7 +2686,7 @@ export default function App(){
                           <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-[6px] rounded-full bg-white/15 overflow-hidden"><div className="h-full bg-gradient-to-r from-[#D5AA55] to-white rounded-full" style={{width:`${duration? Math.min(100,(progress/duration)*100):0}%`}}/></div>
                           <div className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-[14px] h-[14px] rounded-full bg-white shadow-[0_0_0_3px_rgba(255,255,255,0.25),0_2px_8px_rgba(0,0,0,0.6)]" style={{left:`${duration? Math.min(100,(progress/duration)*100):0}%`}}/>
                         </div><span className="text-xs font-medium tabular-nums text-white/70 w-10">-{formatTime(Math.max(0,(duration||0)-progress))}</span></div>
-                      <div className="flex items-center justify-between mt-6"><button onClick={()=> setShuffle(!shuffle)} className={`w-10 h-10 grid place-items-center rounded-full ${shuffle? 'text-[#D5AA55] bg-[#D5AA55]/15':'text-white/60 hover:text-white'}`}><ShuffleIcon active={shuffle}/></button><button onClick={handlePrev} className="w-12 h-12 grid place-items-center text-white hover:bg-white/10 rounded-full"><PrevIcon large/></button><button onClick={togglePlay} className="w-[72px] h-[72px] rounded-full bg-white text-black grid place-items-center shadow-[0_10px_30px_rgba(255,255,255,0.25)] hover:scale-[1.02] active:scale-[0.98] transition">{isPlaying? <PauseIcon large dark/>:<PlayIcon large dark/>}</button><button onClick={handleNext} className="w-12 h-12 grid place-items-center text-white hover:bg-white/10 rounded-full"><NextIcon large/></button><button onClick={()=> setRepeat(r=> (r+1)%3)} className={`w-10 h-10 grid place-items-center rounded-full ${repeat!==0? 'text-[#D5AA55] bg-[#D5AA55]/15':'text-white/60 hover:text-white'}`}><RepeatIcon mode={repeat}/></button></div>
+                      <div className="flex items-center justify-between mt-6"><button aria-label="Shuffle" aria-pressed={shuffle} onClick={toggleShuffle} className={`w-10 h-10 grid place-items-center rounded-full ${shuffle? 'text-[#D5AA55] bg-[#D5AA55]/15':'text-white/60 hover:text-white'}`}><ShuffleIcon active={shuffle}/></button><button onClick={handlePrev} className="w-12 h-12 grid place-items-center text-white hover:bg-white/10 rounded-full"><PrevIcon large/></button><button aria-label="Play or pause" onClick={togglePlay} className="w-[72px] h-[72px] rounded-full bg-white text-black grid place-items-center shadow-[0_10px_30px_rgba(255,255,255,0.25)] hover:scale-[1.02] active:scale-[0.98] transition">{isPlaying? <PauseIcon large dark/>:<PlayIcon large dark/>}</button><button aria-label="Next track" onClick={handleNext} className="w-12 h-12 grid place-items-center text-white hover:bg-white/10 rounded-full"><NextIcon large/></button><button aria-label="Repeat" aria-pressed={repeat!==0} onClick={toggleRepeat} className={`w-10 h-10 grid place-items-center rounded-full ${repeat!==0? 'text-[#D5AA55] bg-[#D5AA55]/15':'text-white/60 hover:text-white'}`}><RepeatIcon mode={repeat}/></button></div>
                       <div className="flex items-center justify-between mt-8 gap-3"><button onClick={()=> setShowLyrics(!showLyrics)} className={`flex-1 py-3 rounded-full text-sm font-bold border transition ${showLyrics? 'bg-white text-black border-white':'bg-white/10 text-white border-white/10 hover:bg-white/15'}`}>{lyricsLoading? 'Lyrics…' : showLyrics? 'Hide Lyrics':'View Lyrics'}</button><button onClick={()=> setShowQueue(!showQueue)} className={`px-5 py-3 rounded-full text-sm font-bold border shrink-0 ${showQueue? 'bg-white text-black border-white':'bg-white/10 text-white border-white/10'}`}>Queue</button></div>
                       <div className="hidden lg:flex items-center gap-3 mt-6"><VolumeIcon muted={isMuted} volume={volume}/><input type="range" min={0} max={1} step={0.01} value={isMuted?0:volume} onChange={e=>{ setVolume(Number(e.target.value)); setIsMuted(false)}} className="range flex-1 accent-white"/><button onClick={()=> setIsMuted(!isMuted)} className="text-xs font-semibold text-white/60 hover:text-white">{isMuted? 'Muted':'Volume'}</button></div>
                     </div>

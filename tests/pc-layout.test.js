@@ -31,6 +31,15 @@ test('header uses the active theme for all chrome, and has labelled local picker
   assert.match(css, /\.theme-light \.placeholder\\:text-white\\\/50::placeholder \{ color: rgba\(33,24,39,0\.5\) !important; \}/)
 })
 
+test('category chips row hint never squeezes and native scrollbar is hidden', () => {
+  const hintLine = app.split('\n').find(l => l.includes('Tap category → auto-queue'))
+  assert.ok(hintLine, 'chips row hint span is present')
+  assert.match(hintLine, /<span className="ml-auto shrink-0 whitespace-nowrap hidden lg:flex items-center gap-2 text-xs text-white\/40">/)
+  assert.match(app, /pb-3 flex items-center gap-2 overflow-x-auto scrollbar-none/)
+  assert.match(css, /\.scrollbar-none \{ scrollbar-width: none; -ms-overflow-style: none; \}/)
+  assert.match(css, /\.scrollbar-none::-webkit-scrollbar \{ display: none; \}/)
+})
+
 test('native update popup uses app icon and remains centred with independent notes scroll', () => {
   assert.match(popup, /fixed inset-0 z-\[80\] overflow-y-auto overscroll-contain/)
   assert.match(popup, /fixed inset-0 bg-black\/75 backdrop-blur-md/)

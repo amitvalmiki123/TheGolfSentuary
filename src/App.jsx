@@ -2032,7 +2032,7 @@ export default function App(){
               {categories.map(c=> (
                 <button key={c.id} onClick={()=>{ setActiveCat(c.id); showToast(c.id==="All"? "All songs • curated" : `Showing ${c.label} • ${homeTracks.length? homeTracks.length: getCategoryTracks(c.id).length} songs — tap Play` ) }} className="shrink-0 px-4 py-1.5 rounded-full text-sm font-medium border transition flex items-center gap-1.5" style={{ background: activeCat===c.id ? `linear-gradient(135deg, ${activeTheme.accent}, ${activeTheme.accent2})` : `${activeTheme.accent}20`, borderColor: `${activeTheme.accent}55`, color: activeCat===c.id ? '#fff' : (activeTheme.mode==='light' ? '#211827' : '#fff') }}><span>{c.icon}</span>{c.label}</button>
               ))}
-              <span className="ml-auto hidden lg:flex items-center gap-2 text-xs text-white/40"><span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"/>Tap category → auto-queue • Offline ready</span>
+              <span className="ml-auto shrink-0 whitespace-nowrap hidden lg:flex items-center gap-2 text-xs text-white/40"><span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"/>Tap category → auto-queue • Offline ready</span>
             </div>
           </header>
 

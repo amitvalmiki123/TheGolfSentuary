@@ -14,6 +14,7 @@ async function loadApp(){
   await mkdir(cache,{recursive:true})
   let source=await readFile(new URL('../src/App.jsx',import.meta.url),'utf8')
   const api={
+    apiBase:'()=>null',
     trendingByCategory:'async()=>globalThis.__playbackFixture.home',
     unifiedSearch:'async()=>[globalThis.__playbackFixture.result]',
     searchSuggestions:'async()=>["rajasthani songs"]',
@@ -64,6 +65,10 @@ async function loadApp(){
   const artistSearchFile=path.join(cache,'lib','artistsearch.js')
   await writeFile(artistSearchFile,artistSearchSrc)
   source=source.replace("'./lib/artistsearch.js'",JSON.stringify(pathToFileURL(artistSearchFile).href))
+  const proSrc=await readFile(new URL('../src/lib/pro.js',import.meta.url),'utf8')
+  const proFile=path.join(cache,'lib','pro.js')
+  await writeFile(proFile,proSrc)
+  source=source.replace("'./lib/pro.js'",JSON.stringify(pathToFileURL(proFile).href))
   const controls=await readFile(new URL('../src/components/ApkUpdateControls.jsx',import.meta.url),'utf8')
   const controlsSource=controls.replace("'../lib/apkupdate.js'",JSON.stringify(new URL('../src/lib/apkupdate.js',import.meta.url).href))
   const compiledControls=await transformWithEsbuild(controlsSource,'ApkUpdateControls.jsx',{loader:'jsx',jsx:'automatic'})

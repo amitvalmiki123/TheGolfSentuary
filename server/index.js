@@ -5,6 +5,7 @@ import mongoose from 'mongoose'
 import jwt from 'jsonwebtoken'
 import bcrypt from 'bcryptjs'
 import CryptoJS from 'crypto-js'
+import { createProStore, resolveAdminSecret, secretOk, requestsHtml, OWNER_CODE } from './prostore.js'
 
 dotenv.config()
 
@@ -25,13 +26,14 @@ if (MONGO_URI) {
 }
 
 // Models (import after mongoose)
-let Track, User, Playlist
+let Track, User, Playlist, ProRequest
 if (MONGO_URI) {
   // dynamic import to avoid errors when mongoose not connected
   const t = await import('./models/Track.js').then(m=>m.default).catch(()=>null)
   const u = await import('./models/User.js').then(m=>m.default).catch(()=>null)
   const p = await import('./models/Playlist.js').then(m=>m.default).catch(()=>null)
-  Track = t; User = u; Playlist = p
+  const pr = await import('./models/ProRequest.js').then(m=>m.default).catch(()=>null)
+  Track = t; User = u; Playlist = p; ProRequest = pr
 }
 
 // --- Middleware ---
@@ -711,7 +713,8 @@ app.get('/api/auth/me', auth, async (req,res)=>{
 })
 
 // ---- Pro subscription (codes live on SERVER, never in the app) ----
-const PRO_CODES_SRV = String(process.env.PRO_CODES||'MAXMUSIC79').split(',').map(s=>s.trim().toUpperCase()).filter(Boolean)
+// OWNER_CODE (MAXMUSIC79) is permanent + multi-use and always accepted, even if PRO_CODES is overridden.
+const PRO_CODES_SRV = [...new Set([OWNER_CODE, ...String(process.env.PRO_CODES||'').split(',').map(s=>s.trim().toUpperCase()).filter(Boolean)])]
 app.post('/api/auth/redeem', auth, async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error: 'DB not ready' })
   const c = String((req.body&&req.body.code)||'').trim().toUpperCase()
@@ -727,6 +730,53 @@ app.post('/api/auth/plan', auth, async (req,res)=>{
   const u = await User.findByIdAndUpdate(req.user.id, { plan:p }, { new:true }).lean()
   if(!u) return res.status(404).json({ error: 'no user' })
   res.json({ user: { id: String(u._id), name: u.name, email: u.email, avatar: u.avatar, plan: u.plan||'Free', bio: u.bio||'' } })
+})
+
+// ---- Pro via UPI: request → owner approve → one-time code → app auto-redeems ----
+// Storage: in-memory Map, mirrored to MongoDB (ProRequest model) when connected.
+const proDbOn = ()=> !!(ProRequest && mongoose.connection.readyState === 1)
+const proStore = createProStore({ persist: {
+  save: async (r)=>{ if(proDbOn()) await ProRequest.updateOne({ id: r.id }, { $set: r }, { upsert: true }) },
+  loadAll: async ()=> proDbOn() ? ProRequest.find({}).sort({ ts: -1 }).limit(5000).lean() : []
+} })
+const proLoad = ()=> proStore.load().then(n=> console.log(`Pro requests loaded: ${n}`)).catch(()=>{})
+if (MONGO_URI){ if (mongoose.connection.readyState === 1) proLoad(); else mongoose.connection.once('open', proLoad) }
+const PRO_ADMIN_SECRET = resolveAdminSecret()
+if (!process.env.PRO_ADMIN_SECRET) console.log(PRO_ADMIN_SECRET ? '⚠️  PRO_ADMIN_SECRET not set — using dev fallback secret' : '⚠️  PRO_ADMIN_SECRET not set — Pro admin routes locked')
+function proAdmin(req,res,next){
+  if(!PRO_ADMIN_SECRET) return res.status(503).json({ error: 'Set PRO_ADMIN_SECRET on the server' })
+  if(!secretOk(req.query.secret, PRO_ADMIN_SECRET)) return res.status(401).json({ error: 'Bad secret' })
+  next()
+}
+const wantsHtml = (req)=> req.query.format === 'html' || (req.query.format !== 'json' && req.accepts(['json','html']) === 'html')
+app.post('/api/pro/request', async (req,res)=>{
+  const b = req.body || {}
+  const r = await proStore.request({ userId: b.userId, utr: b.utr, amount: b.amount })
+  if(!r.ok) return res.status(r.status).json({ error: r.error })
+  res.status(r.status).json({ ok: true, request: r.request, duplicate: !!r.duplicate })
+})
+app.get('/api/pro/requests', proAdmin, (req,res)=>{
+  const rows = proStore.requests({ status: req.query.status ? String(req.query.status) : 'all' })
+  if(wantsHtml(req)) return res.type('html').send(requestsHtml(rows, String(req.query.secret)))
+  res.json({ requests: rows })
+})
+const proAdminAction = (fn)=> async (req,res)=>{
+  const r = await proStore[fn](req.query.id || (req.body && req.body.id))
+  if(wantsHtml(req) && r.ok) return res.redirect(`/api/pro/requests?secret=${encodeURIComponent(String(req.query.secret))}`)
+  if(!r.ok) return res.status(r.status).json({ error: r.error })
+  res.json({ ok: true, request: r.request, already: !!r.already })
+}
+app.all('/api/pro/approve', proAdmin, proAdminAction('approve'))
+app.all('/api/pro/reject', proAdmin, proAdminAction('reject'))
+app.get('/api/pro/code', (req,res)=>{
+  const r = proStore.codeFor(req.query.userId)
+  res.set('Cache-Control', 'no-store').status(r.status).json(r.body)
+})
+app.post('/api/pro/redeem', async (req,res)=>{
+  const b = req.body || {}
+  const r = await proStore.redeem({ userId: b.userId, code: b.code })
+  if(!r.ok) return res.status(r.status).json({ ok: false, error: r.error })
+  res.json({ ok: true, plan: 'Pro', kind: r.kind })
 })
 
 app.delete('/api/auth/me', auth, async (req,res)=>{
@@ -803,6 +853,7 @@ app.get('/', (req,res)=>{
       <li><a href="/api/tracks?category=Punjabi&limit=5">/api/tracks?category=Punjabi</a></li>
       <li>POST /api/auth/signup {name,email,password}</li>
       <li>POST /api/playlists (Bearer token)</li>
+      <li>POST /api/pro/request {userId, utr, amount} · GET /api/pro/code?userId=</li>
     </ul>
   `)
 })

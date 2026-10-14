@@ -14,6 +14,7 @@ async function loadApp(){
   await mkdir(cache,{recursive:true})
   let source=await readFile(new URL('../src/App.jsx',import.meta.url),'utf8')
   const api={
+    apiBase:'()=>null',
     trendingByCategory:'async()=>globalThis.__playbackFixture.home',
     unifiedSearch:'async()=>[globalThis.__playbackFixture.result]',
     searchSuggestions:'async()=>["rajasthani songs"]',
@@ -64,6 +65,10 @@ async function loadApp(){
   const artistSearchFile=path.join(cache,'lib','artistsearch.js')
   await writeFile(artistSearchFile,artistSearchSrc)
   source=source.replace("'./lib/artistsearch.js'",JSON.stringify(pathToFileURL(artistSearchFile).href))
+  const proSrc=await readFile(new URL('../src/lib/pro.js',import.meta.url),'utf8')
+  const proFile=path.join(cache,'lib','pro.js')
+  await writeFile(proFile,proSrc)
+  source=source.replace("'./lib/pro.js'",JSON.stringify(pathToFileURL(proFile).href))
   const controls=await readFile(new URL('../src/components/ApkUpdateControls.jsx',import.meta.url),'utf8')
   const controlsSource=controls.replace("'../lib/apkupdate.js'",JSON.stringify(new URL('../src/lib/apkupdate.js',import.meta.url).href))
   const compiledControls=await transformWithEsbuild(controlsSource,'ApkUpdateControls.jsx',{loader:'jsx',jsx:'automatic'})
@@ -252,5 +257,35 @@ test('pending SDK script is reused and duplicate readiness does not replace the 
     assert.equal(players[0].destroyCount,1)
     assert.equal(env.window.onYouTubeIframeAPIReady,newerCallback)
     assert.deepEqual(env.errors,[])
+  }finally{ close(env) }
+})
+
+test('Go Pro modal (web): UPI pill opens the copy panel; owner code activates Pro', async()=>{
+  const {env}=await mount({native:false})
+  const {window,document}=env
+  const click=async el=>act(async()=>el.dispatchEvent(new window.MouseEvent('click',{bubbles:true})))
+  const btn=re=>[...document.querySelectorAll('button')].find(b=>re.test(b.textContent))
+  try{
+    await click(btn(/^You$|^Profile$/))
+    await click(btn(/Go Pro ₹79 — unlimited/))
+    assert.ok(document.body.textContent.includes('Choose your plan'))
+    await click([...document.querySelectorAll('button')].filter(b=>/^Go Pro ₹79$/.test(b.textContent)).at(-1))
+    const pills=[...document.querySelectorAll('[data-pro-pay] button[aria-label^="Pay ₹79 with"]')]
+    assert.deepEqual(pills.map(b=>b.querySelector('span').textContent),['UPI','GPay','PhonePe','Paytm'])
+    assert.equal(document.querySelector('[data-pro-webpay]'),null)
+    await click(pills[3])
+    const web=document.querySelector('[data-pro-webpay]')
+    assert.ok(web,'web/PWA tap shows the copy panel, no intent fired')
+    assert.ok(web.textContent.includes('amitvalmiki502@paytm') && web.textContent.includes('₹79'))
+    assert.ok(document.body.textContent.includes('Payment done?'))
+    const code=document.querySelector('input[placeholder="ENTER CODE"]')
+    await act(async()=>{
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(code,'maxmusic79')
+      code.dispatchEvent(new window.Event('input',{bubbles:true}))
+    })
+    await click(btn(/^Activate Pro$/))
+    await act(async()=>env.clock.tick(50))
+    assert.equal(JSON.parse(window.localStorage.getItem('sur_user')).plan,'Pro')
+    assert.equal(document.querySelector('[data-pro-pay]'),null)
   }finally{ close(env) }
 })

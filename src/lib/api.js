@@ -1298,6 +1298,8 @@ const API_BASE = BACKEND_URL || ''
 export const getAuthToken = ()=> { try{ return localStorage.getItem('sur_token') }catch{ return null } }
 export const setAuthToken = (tok)=>{ try{ if(tok) localStorage.setItem('sur_token', tok); else localStorage.removeItem('sur_token') }catch{} }
 export const isAuthEnabled = ()=> API_ON
+// Base URL for the Pro UPI endpoints (/api/pro/*); null when no backend is configured.
+export const apiBase = ()=> API_ON ? API_BASE : null
 async function apiFetch(path, opts={}){
   if(!API_ON) return null
   try{

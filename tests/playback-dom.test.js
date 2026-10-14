@@ -142,13 +142,17 @@ for(const native of [false,true]){
       assert.equal(window.localStorage.getItem('sur_liked'),'["existing-like"]','No clearing/resetting user data')
       assert.deepEqual(env.errors,[])
       assert.deepEqual(env.network,[])
-      // Profile/settings insertion after the recovery still works; updater unchanged.
-      for(const label of ['You','Settings','Check']){
+      // Profile/settings still work. Only the Android app offers an APK check.
+      for(const label of ['You','Settings', ...(native ? ['Check'] : [])]){
         const button=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===label)
         assert.ok(button,`Missing ${label} button`)
         await act(async()=>button.dispatchEvent(new window.MouseEvent('click',{bubbles:true})))
       }
-      assert.ok(document.body.textContent.includes('You are already on the latest version'))
+      if(native) assert.ok(document.body.textContent.includes('You are already on the latest version'))
+      else {
+        assert.ok(document.body.textContent.includes('The web app updates automatically.'))
+        assert.ok(![...document.querySelectorAll('button')].some(b=>b.textContent.trim()==='Check'))
+      }
       assert.ok(document.body.textContent.includes('Appearance'))
       assert.ok(document.body.textContent.includes('Unlock custom themes with Pro'))
       assert.equal(frame.parentNode,host)

@@ -50,7 +50,9 @@ test('native update popup uses app icon and remains centred with independent not
   assert.match(popup, /max-h-\[38dvh\] overflow-y-auto overscroll-contain/)
   assert.match(popup, /Download update/)
   assert.match(popup, /Maybe later/)
-  assert.equal(features[0], 'Repeat one song on every playback source, repeat the queue, or stop when it ends')
+  // release-features.json is the curated "What's New" feed CI copies into
+  // docs/version.json; its headline must be a user-facing line.
+  assert.equal(features[0], "Songs played from Search now continue with related radio from the song's category — not the rest of the search list")
 })
 
 test('web/PWA never offers an Android APK; native updater retains the curated feed', async () => {

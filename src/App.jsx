@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
 import { unifiedSearch, unifiedSearchPaginated, searchPiped, getRelatedTracks, trendingByCategory, fetchCategoryPage, fetchArtistProfile, artistSongs, artistSongsPaginated, resolvePipedAudio, resolveDirectAudio, searchSaavn, findSaavnRecording, searchSuggestions, getLastSearchNextpage, fetchLyrics, mergeDedup, apiSignup, apiDeleteAccount, apiLogin, apiMe, apiLogout, isAuthEnabled, getAuthToken, apiPushLikes, apiPullLikes, apiPushPlaylists, apiPullPlaylists, apiRedeemPro, apiSetPlan, warmBackend, apiBase } from './lib/api.js'
 import { checkAppUpdate, APP_BUILD_NO } from './lib/updater.js'
-import { saveDownload, getDownloads, deleteDownload } from './lib/db.js'
+import { saveDownload, getDownloads, deleteDownload, savePlaybackState, loadPlaybackState } from './lib/db.js'
 import { npStart, npUpdate, npStop, isNativeApp, npNotifGranted, npAskNotif, npAskBattery, npOpenNotifSettings, npPing, npLastCrash, npSetDisabled, npDisabled, npBridgeMode, hasNativeBridge, wvGuess } from './lib/nowplaying.js'
 import { trackKeyOf, createTrackTracker, buildSnapshot, activeEngine, nativeArtUrl, coverCandidates } from './lib/trackmeta.js'
+import { normalizeAfterSearch, afterSearchStorageValue, normalizeContext, contextForPlay, radioEligible, primaryCategory, trackCategories, radioCategoryOrder, pickRadioTracks, resolvePlaySession, chipLabel, trackSource, insertPlayNext, appendToQueue } from './lib/playbackcontext.js'
 import { createPager } from './lib/pager.js'
 import ApkUpdateControls from './components/ApkUpdateControls.jsx'
 import { THEMES, effectiveTheme } from './lib/themes.js'
@@ -141,8 +142,8 @@ function UpiPill({ id }){
 function formatTime(s){ if(!isFinite(s)) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60).toString().padStart(2,'0'); return `${m}:${sec}` }
 
 // Bump on every player/resolver release — proves WHICH apk build a screenshot came from.
-const APP_BUILD = 'itrace-29'
-const APP_VERSION = '2.5'
+const APP_BUILD = 'itrace-30'
+const APP_VERSION = '2.6'
 const FREE_DL_MAX = 5
 const PRO_CODES = ['MAXMUSIC79']
 const STR = {
@@ -220,6 +221,20 @@ export default function App(){
   const [isMuted, setIsMuted] = useState(false)
   const [shuffle, setShuffle] = useState(false)
   const [repeat, setRepeat] = useState(0)
+  // build 133 — playback context: WHAT the queue is following (search |
+  // category | playlist | album | radio). Radio contexts seed from the played
+  // track's primary category instead of continuing a raw search-result list.
+  const [playbackCtx, setPlaybackCtx] = useState(()=> normalizeContext(null))
+  const playbackCtxRef = useRef(playbackCtx)
+  playbackCtxRef.current = playbackCtx
+  // "After search play: Related radio (default) / Continue search list"
+  const [afterSearch, setAfterSearch] = useState(()=>{ try{ return normalizeAfterSearch(localStorage.getItem('sur_after_search')) }catch{ return 'radio' } })
+  const afterSearchRef = useRef(afterSearch)
+  afterSearchRef.current = afterSearch
+  const queueRef = useRef([])
+  queueRef.current = queue
+  const currentIndexRef = useRef(0)
+  currentIndexRef.current = currentIndex
   // SDK listeners mount once; transport decisions must read the latest render.
   const endTransportRef = useRef(null)
   const [liked, setLiked] = useState(()=> {
@@ -489,6 +504,42 @@ export default function App(){
   useEffect(()=>{ if(!authUser) return; clearTimeout(likeSyncTimer.current); likeSyncTimer.current = setTimeout(()=>{ apiPushLikes(Object.values(likedMetaRef.current)) }, 1500) },[liked, authUser])
   useEffect(()=>{ if(!authUser) return; if(plFirstRun.current){ plFirstRun.current=false; return } clearTimeout(plSyncTimer.current); plSyncTimer.current = setTimeout(()=>{ apiPushPlaylists(playlists) }, 2500) },[playlists, authUser])
   useEffect(()=>{ localStorage.setItem('sur_recent', JSON.stringify(recentlyPlayed.filter(isRealTrack).slice(0,30))) },[recentlyPlayed])
+  // ---- build 133: restore + persist the playback session (queue + context) --
+  // IndexedDB only, and only AFTER the stored record has been read, so a fresh
+  // boot can never clobber the saved queue with an empty one.
+  const sessionHydratedRef = useRef(false)
+  useEffect(()=>{
+    let alive = true
+    ;(async()=>{
+      try{
+        const saved = await loadPlaybackState()
+        if(!alive) return
+        if(saved && Array.isArray(saved.queue) && saved.queue.length){
+          setQueue(saved.queue)
+          setCurrentIndex(Math.min(Math.max(0, Number(saved.index)||0), saved.queue.length - 1))
+          const ctx = normalizeContext(saved.context)
+          playbackCtxRef.current = ctx
+          setPlaybackCtx(ctx)
+          const mode = normalizeAfterSearch(saved.afterSearch)
+          afterSearchRef.current = mode
+          setAfterSearch(mode)
+        }
+      }catch{}
+      finally{ if(alive) sessionHydratedRef.current = true }
+    })()
+    return ()=>{ alive = false }
+  },[])
+  useEffect(()=>{
+    if(!sessionHydratedRef.current) return
+    const id = setTimeout(()=>{
+      // .catch() is required: a rejected promise is not caught by try/catch and
+      // would surface as an unhandled rejection (IndexedDB can be unavailable
+      // in private mode / restricted WebViews).
+      try{ savePlaybackState({ queue, index: currentIndex, context: playbackCtx, afterSearch }).catch(()=>{}) }catch{}
+    }, 1200)
+    return ()=> clearTimeout(id)
+  },[queue, currentIndex, playbackCtx, afterSearch])
+  useEffect(()=>{ try{ localStorage.setItem('sur_after_search', afterSearchStorageValue(afterSearch)) }catch{} },[afterSearch])
   useEffect(()=>{
     getDownloads().then(setDownloaded)
     // online only — no hardcoded fallback
@@ -496,7 +547,8 @@ export default function App(){
     setHomeLoading(true)
     trendingByCategory('Trending', 24).then(t=>{
       if(t && t.length){
-        setQueue(t)
+        // build 133: never clobber a queue restored from the saved session.
+        setQueue(prev=> prev.length ? prev : t)
         setHomeTracks(t.slice(0,12))
       }
       setHomeLoading(false)
@@ -1399,6 +1451,13 @@ export default function App(){
   const greeting = useMemo(()=>{ const h=new Date().getHours(); if(h<12) return "morning"; if(h<17) return "afternoon"; return "evening" },[])
 
   const showToast = (msg)=>{ setToast(msg); setTimeout(()=> setToast(null), 2200) }
+  // build 133 — "After search play" preference (persists across launches).
+  const setAfterSearchMode = (mode)=>{
+    const next = normalizeAfterSearch(mode)
+    afterSearchRef.current = next
+    setAfterSearch(next)
+    showToast(next==='continue' ? 'After search: continue search list' : 'After search: related radio')
+  }
   // Artist portraits come ONLY from genuine provider artist/profile
   // metadata (see fetchArtistProfile). A song/album cover is never used as
   // an artist's face; without a reliable portrait the UI shows initials.
@@ -1423,10 +1482,137 @@ export default function App(){
     }
     setIsPlaying(v=>!v)
   }
+  // ---- build 133: playback context + smart-queue radio --------------------
+  // Session history for radio dedupe: every identity that actually became the
+  // audible track this session, plus the persisted recently-played list.
+  const playedKeysRef = useRef(new Set())
+  const recentlyRef = useRef([])
+  recentlyRef.current = recentlyPlayed
+  useEffect(()=>{
+    if(!npKey) return
+    const keys = playedKeysRef.current
+    keys.add(npKey)
+    if(keys.size > 200){ const first = keys.values().next().value; keys.delete(first) }
+  },[npKey])
+  const radioRef = useRef({ pools:{}, tried:new Set(), inFlight:null })
+  const applyPlaybackContext = (ctx)=>{
+    const next = normalizeContext(ctx)
+    const prev = playbackCtxRef.current
+    const changed = !prev || prev.kind!==next.kind || prev.seed!==next.seed || prev.id!==next.id || (prev.origin&&prev.origin.id)!==(next.origin&&next.origin.id)
+    if(changed) radioRef.current = { pools:{}, tried:new Set(), inFlight:null }
+    playbackCtxRef.current = next
+    setPlaybackCtx(next)
+    return next
+  }
+  // Append radio tracks for the ACTIVE context: the seed category first, then
+  // related categories once it is exhausted. Radio only ever appends, so an
+  // explicit "play next" row keeps its priority, and anything in the recent
+  // history is skipped (dedupe).
+  const ensureRadioAhead = (opts={})=>{
+    const ctx = playbackCtxRef.current
+    if(!radioEligible(ctx, afterSearchRef.current)) return Promise.resolve(false)
+    if(radioRef.current.inFlight) return radioRef.current.inFlight
+    const task = (async()=>{
+      const cur = queueRef.current[currentIndexRef.current] || currentRef.current || null
+      const seed = String(ctx.seed || '').trim() || primaryCategory(cur)
+      const order = radioCategoryOrder(seed, trackCategories(cur))
+      const extra = Array.isArray(opts.exclude) ? opts.exclude : []
+      const history = [...playedKeysRef.current, ...(recentlyRef.current||[]).map(trackKeyOf)]
+      for(const category of order){
+        if(!radioRef.current.pools[category] && !radioRef.current.tried.has(category)){
+          radioRef.current.tried.add(category)
+          let pool = []
+          try{ pool = await trendingByCategory(category, 30) }catch{ pool = [] }
+          radioRef.current.pools[category] = Array.isArray(pool) ? pool : []
+        }
+        const pick = pickRadioTracks({
+          poolByCategory:{ [category]: radioRef.current.pools[category] || [] },
+          order:[category],
+          history,
+          exclude:[...queueRef.current, ...extra],
+          limit: opts.limit || 4,
+          keyOf: trackKeyOf,
+        })
+        if(pick.tracks.length){
+          setQueue(prev=>{
+            const keys = new Set(prev.map(trackKeyOf))
+            const add = pick.tracks.filter(t=> !keys.has(trackKeyOf(t)))
+            return add.length ? [...prev, ...add] : prev
+          })
+          return true
+        }
+      }
+      return false
+    })().catch(()=>false)
+    radioRef.current.inFlight = task.finally(()=>{ radioRef.current.inFlight = null })
+    return radioRef.current.inFlight
+  }
+  // Near the end of a radio context, quietly top the queue up so "Up next"
+  // is never empty while the user is looking at it.
+  useEffect(()=>{
+    if(!current) return
+    if(!radioEligible(playbackCtxRef.current, afterSearchRef.current)) return
+    if(queue.length - 1 - currentIndex >= 3) return
+    ensureRadioAhead().catch(()=>{})
+  },[currentIndex, queue.length, playbackCtx, afterSearch, npKey])
+  // Context for a track played from a known surface (stamped onto every row so
+  // the queue screen can show a source chip).
+  const queueChip = (track)=> chipLabel(track, radioEligible(playbackCtx, afterSearch) ? playbackCtx : null)
+  const playList = (tracks, context, toastText)=>{
+    const list = (tracks||[]).filter(Boolean)
+    if(!list.length) return false
+    const ctx = applyPlaybackContext(context)
+    setQueue(list.map(t=> ({ ...t, __source: trackSource(t) || ctx.label })))
+    setCurrentIndex(0)
+    setIsPlaying(true)
+    if(toastText) showToast(toastText)
+    return true
+  }
+  // Explicit queue actions always outrank auto-radio: "play next" lands
+  // directly after the current row, manual adds go to the back of the queue.
+  const playNextInQueue = (track)=>{
+    if(!track) return
+    const q = queueRef.current
+    const at = q.length ? currentIndexRef.current : 0
+    const base = q.length ? q : (currentRef.current ? [currentRef.current] : [])
+    setQueue(insertPlayNext(base, at, track, 'Play next'))
+    if(!q.length){ setCurrentIndex(0); setIsPlaying(true) }
+    showToast(`Play next • ${track.title}`)
+  }
+  const addToQueueManual = (track)=>{
+    if(!track) return
+    setQueue(prev=> appendToQueue(prev, track, 'Added to queue'))
+    if(!queueRef.current.length){ setCurrentIndex(0); setIsPlaying(true) }
+    showToast(`Added to queue • ${track.title}`)
+  }
+
   const handleNext = ()=>{
-    if(!queue.length) return
-    if(shuffle){ let n; do{ n=Math.floor(Math.random()*queue.length)}while(n===currentIndex && queue.length>1); setCurrentIndex(n) }
-    else setCurrentIndex(i=> (i+1)%queue.length)
+    const state = endTransportRef.current
+    if(!state || !state.queue.length) return
+    const atEnd = !state.shuffle && state.currentIndex >= state.queue.length - 1
+    if(!atEnd){
+      if(state.shuffle){ let n; do{ n=Math.floor(Math.random()*state.queue.length)}while(n===state.currentIndex && state.queue.length>1); setCurrentIndex(n) }
+      else setCurrentIndex(i=> (i+1)%state.queue.length)
+      return
+    }
+    // Repeat-queue is an explicit instruction: wrap, never jump to radio.
+    if(state.repeat === 1 && state.queue.length > 1){
+      setCurrentIndex(0)
+      return
+    }
+    // End of a radio context: fetch the next category track instead of
+    // looping back to the search result list.
+    if(!radioEligible(playbackCtxRef.current, afterSearchRef.current)){
+      setCurrentIndex(i=> (i+1)%Math.max(1,state.queue.length))
+      return
+    }
+    ensureRadioAhead().then(added=>{
+      if(!added){ setIsPlaying(false); return }
+      // radio only ever appends, so the next row is currentIndex + 1 — read it
+      // from the functional update, never from the pre-fetch ref snapshot.
+      setCurrentIndex(i=> i + 1)
+      setIsPlaying(true)
+    }).catch(()=>{})
   }
   endTransportRef.current = { repeat, shuffle, queue, currentIndex, handleNext }
   // Both engines share end semantics, including direct/Piped streams on <audio>.
@@ -1449,13 +1635,27 @@ export default function App(){
       else audioRef.current?.play().catch(()=>{})
     }
     if(state.repeat === 2){ replay(); return }
+    const radioReady = radioEligible(playbackCtxRef.current, afterSearchRef.current)
+    const advanceRadio = (fallback)=>{
+      ensureRadioAhead().then(added=>{
+        if(!added){ fallback(); return }
+        setCurrentIndex(i=> i + 1)
+        setIsPlaying(true)
+      }).catch(()=> fallback())
+    }
     if(state.repeat === 0 && !state.shuffle && state.currentIndex === state.queue.length - 1){
+      // A radio context keeps going with the next category track; a list
+      // context ends exactly as before.
+      if(radioReady){ advanceRadio(()=>{ setIsPlaying(false); resetPosition() }); return }
       setIsPlaying(false)
       resetPosition()
       return
     }
     // A single-item queue cannot trigger a track-change effect by changing index.
-    if(state.queue.length === 1){ replay(); return }
+    if(state.queue.length === 1){
+      if(radioReady){ advanceRadio(replay); return }
+      replay(); return
+    }
     state.handleNext()
   }
   const toggleRepeat = ()=>{
@@ -1613,12 +1813,24 @@ export default function App(){
   const handleSignOut = ()=>{ apiLogout(); setAuthUser(null); try{ localStorage.removeItem('sur_auth_user') }catch{}; try{ localStorage.setItem('sur_auth_choice','guest') }catch{}; showToast('Signed out — local data safe hai') }
   const handleDeleteAccount = async ()=>{ const ok = await apiDeleteAccount(); setAuthUser(null); try{ localStorage.removeItem('sur_auth_user') }catch{}; try{ localStorage.setItem('sur_auth_choice','guest') }catch{}; showToast(ok? 'Account cloud se delete ho gaya' : 'Server reachable nahi — session sign out kiya') }
 
-  const playTrack = async (track, list)=>{
+  const playTrack = async (track, list, context)=>{
     kickEq()
-    const targetList = list || queue
-    let newQueue, newIdx
-    const idxInQueue = targetList.findIndex(x=> String(x.id)===String(track.id))
-    if(idxInQueue>=0){ newQueue=targetList; newIdx=idxInQueue } else { newQueue=[track, ...targetList]; newIdx=0; showToast(`Playing • ${track.title} ${track.source? `· ${track.source}`:''}`) }
+    // build 133 — the queue a tap creates depends on WHERE the row was tapped:
+    //   search        -> this track only, then radio on its primary category
+    //   playlist/cat  -> that list, auto-advance continues inside it
+    //   no context    -> pre-133 behaviour (continue whatever queue/list)
+    const session = resolvePlaySession({
+      track,
+      list: list || queue,
+      context: context || null,
+      afterSearch: afterSearchRef.current,
+      keyOf: trackKeyOf,
+    })
+    const ctx = applyPlaybackContext(session.context)
+    let newQueue = session.tracks
+    let newIdx = session.index
+    if(session.mode === 'radio') showToast(`Playing • ${track.title} • ${ctx.label}`)
+    else if(session.prepended) showToast(`Playing • ${track.title} ${track.source? `· ${track.source}`:''}`)
     // OFFLINE check — if offline and not downloaded, guide to Downloads
     if(typeof navigator!== 'undefined' && !navigator.onLine){
       const dl = downloaded.find(d=> String(d.id)===String(track.id) || String(d.track?.id)===String(track.id))
@@ -1643,17 +1855,17 @@ export default function App(){
     let resolvedTrack = track
     if(blobUrl){
       resolvedTrack = {...track, audio: blobUrl, source: 'Offline • Downloaded', videoId: null}
-      newQueue = newQueue.map(x=> String(x.id)===String(track.id)? resolvedTrack: x)
+      newQueue = newQueue.map(x=> String(x.id)===String(track.id)? { ...resolvedTrack, __source: x.__source || resolvedTrack.__source }: x)
     } else if(track.videoId){
       // YouTube • Full — will be handled by YT player (needs online)
       resolvedTrack = {...track, source: track.source || 'YouTube • Full'}
-      newQueue = newQueue.map(x=> String(x.id)===String(track.id)? resolvedTrack: x)
+      newQueue = newQueue.map(x=> String(x.id)===String(track.id)? { ...resolvedTrack, __source: x.__source || resolvedTrack.__source }: x)
     } else if(!track.audio && track.videoId){
       showToast("Loading full audio…")
       const url = await resolvePipedAudio(track)
       if(url){
         resolvedTrack = {...track, audio: url, source: 'Piped • Full'}
-        newQueue = newQueue.map(x=> String(x.id)===String(track.id)? resolvedTrack: x)
+        newQueue = newQueue.map(x=> String(x.id)===String(track.id)? { ...resolvedTrack, __source: x.__source || resolvedTrack.__source }: x)
       } else {
         showToast("Full audio not found — try another track")
         return
@@ -1664,7 +1876,7 @@ export default function App(){
     } else if(track.audioQ){
       const q = quality==='eco' ? track.audioQ.eco : (quality==='hd' && isPro) ? track.audioQ.hd : track.audioQ.std
       resolvedTrack = {...track, audio: q || track.audio}
-      newQueue = newQueue.map(x=> String(x.id)===String(track.id)? resolvedTrack: x)
+      newQueue = newQueue.map(x=> String(x.id)===String(track.id)? { ...resolvedTrack, __source: x.__source || resolvedTrack.__source }: x)
     } else {
       resolvedTrack = track
     }
@@ -1901,13 +2113,13 @@ export default function App(){
       const real = await trendingByCategory(pl.title.includes("Punjabi")?"Punjabi": pl.title.includes("Indie")?"Indie": pl.title.includes("90s")?"90s": pl.title.includes("Chill")?"Indie":"All", 20)
       let tracks = real
       if(!tracks.length){ tracks = await searchSaavn(q, 20) }
-      if(tracks.length){ setQueue(tracks); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing • ${pl.title} • ${tracks.length} real`) }
+      if(tracks.length){ playList(tracks, contextForPlay('playlist', { id: pl.id, label: pl.title }), `Playing • ${pl.title} • ${tracks.length} real`) }
       else showToast("Network nahi mila — thodi der baad try karo")
     }catch{ showToast("Network nahi mila — retry karo") }
   }
   const playPlaylistNow = async (pl)=>{
     const tracks = playlistTracks(pl)
-    if(tracks.length){ setQueue(tracks); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing • ${pl.title} • ${tracks.length} songs`); return }
+    if(tracks.length){ playList(tracks, contextForPlay('playlist', { id: pl.id, label: pl.title }), `Playing • ${pl.title} • ${tracks.length} songs`); return }
     await playThemedPlaylist(pl)
   }
   const openPlaylist = (pl)=>{
@@ -2168,7 +2380,7 @@ export default function App(){
 
           <main className="flex-1 min-w-0 max-w-full overflow-x-clip px-4 lg:px-6 py-6 pb-28 lg:pb-28 space-y-7">
             {nav==='profile' ? (
-              <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : ("yt-iframe (direct resolve pending/failed)" + (directErr ? " · " + directErr : ""))) : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} x={{ t, lang, setLang, quality, qCycle, langs, toggleLang, sleepMin, cycleSleep, eqOn:eq.on, eqPreset:eq.preset, onOpenEQ:()=>setShowEQ(true), isPro, stats, followedCount:followed.size, onSubscribe:()=>setShowSubscribe(true), onClearHistory, onClearSearches, onShareProfile, autoplay, setAutoplay, onOpenPlaylist:(id)=> setSelectedPlaylist(id), onPlayPlaylist:(pl)=> playPlaylistNow(pl), onCreatePlaylist:()=> setShowCreatePl(true), onPlayTrack:playTrack, recently:recentlyPlayed, followedList:[...followed], updCur:{version:APP_VERSION, build:APP_BUILD_NO}, nativeUpdates:isNativeApp(), updInfo:updateInfo, updChecking, onCheckUpdate:()=> runUpdateCheck(true), themes:THEMES, themeId:activeTheme.id, onSelectTheme:selectTheme, onPlayAllRecent:()=>{ if(recentlyPlayed.length){ setQueue(recentlyPlayed); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing recent • ${recentlyPlayed.length}`) } } }} />
+              <ProfileView npEngine={(current && current.videoId) ? (directFor ? "mp3 (direct) ✓ background-safe" : ("yt-iframe (direct resolve pending/failed)" + (directErr ? " · " + directErr : ""))) : "mp3"} user={user} setUser={setUser} editUser={editUser} setEditUser={setEditUser} liked={liked} playlists={playlists} localSongs={localSongs} downloaded={downloaded} showToast={showToast} authUser={authUser} onSignIn={()=> setShowAuth(true)} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} x={{ t, lang, setLang, quality, qCycle, langs, toggleLang, sleepMin, cycleSleep, eqOn:eq.on, eqPreset:eq.preset, onOpenEQ:()=>setShowEQ(true), isPro, stats, followedCount:followed.size, onSubscribe:()=>setShowSubscribe(true), onClearHistory, onClearSearches, onShareProfile, autoplay, setAutoplay, afterSearch, setAfterSearch: setAfterSearchMode, onOpenPlaylist:(id)=> setSelectedPlaylist(id), onPlayPlaylist:(pl)=> playPlaylistNow(pl), onCreatePlaylist:()=> setShowCreatePl(true), onPlayTrack:playTrack, recently:recentlyPlayed, followedList:[...followed], updCur:{version:APP_VERSION, build:APP_BUILD_NO}, nativeUpdates:isNativeApp(), updInfo:updateInfo, updChecking, onCheckUpdate:()=> runUpdateCheck(true), themes:THEMES, themeId:activeTheme.id, onSelectTheme:selectTheme, onPlayAllRecent:()=>{ if(recentlyPlayed.length){ playList(recentlyPlayed, contextForPlay('playlist', { id:'recent', label:'Recently played' }), `Playing recent • ${recentlyPlayed.length}`) } } }} />
             ) : nav==='search' ? (
               <>
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -2239,7 +2451,7 @@ export default function App(){
                               const isDl = !!downloaded.find(d=> String(d.id)===String(t.id))
                               return (
                                 <div key={t.id} className={`group flex items-center gap-3 p-2 rounded-xl transition ${String(current?.id)===String(t.id)? 'bg-white text-black':'hover:bg-white/5 border border-transparent hover:border-white/5'}`}>
-                                  <button onClick={()=> playTrack(t, [...onlineResults, ...queue])} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                                  <button onClick={()=> playTrack(t, [...onlineResults, ...queue], contextForPlay('search', { id: search }))} className="flex items-center gap-3 flex-1 min-w-0 text-left">
                                     <span className="relative block w-12 h-12 rounded-lg overflow-hidden shrink-0">
                                       <CoverImg track={t} className="w-full h-full object-cover"/>
                                       <span className={`absolute inset-0 grid place-items-center bg-black/40 opacity-0 group-hover:opacity-100 ${String(current?.id)===String(t.id)? '!opacity-100 bg-black/20':''}`}>{inQueue? <PauseMini dark/> : <PlayMini dark/>}</span>
@@ -2252,9 +2464,10 @@ export default function App(){
                                   <span className={`hidden md:block text-xs ${String(current?.id)===String(t.id)?'text-black/50':'text-white/30'}`}>{t.durationLabel}</span>
                                   <button onClick={()=> toggleLike(t.id, t)} className={`w-8 h-8 grid place-items-center rounded-full ${liked.has(t.id)? 'text-[#C35445]':'text-white/30 hover:text-white'}`}><Heart filled={liked.has(t.id)} size={16}/></button>
                                   <div className="hidden sm:flex items-center gap-1">
+                                    <QueueActionButtons track={t} onPlayNext={playNextInQueue} onAddToQueue={addToQueueManual} />
                                     <button onClick={()=> setShowAddToPl(t)} className="w-8 h-8 grid place-items-center rounded-full bg-white/10 hover:bg-white/15 text-white/70 hover:text-white"><PlusIcon/></button>
                                     <button onClick={()=> handleDownload(t)} disabled={downloadingId===t.id} className={`w-8 h-8 grid place-items-center rounded-full border ${isDl? 'bg-emerald-500 border-emerald-500 text-white':'border-white/10 text-white/60 hover:text-white'}`}>{downloadingId===t.id? <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"/> : <DownloadIcon size={14}/>}</button>
-                                    <button onClick={()=> playTrack(t, [...onlineResults, ...queue])} className="w-8 h-8 grid place-items-center rounded-full bg-white text-black"><PlayMini size={12}/></button>
+                                    <button onClick={()=> playTrack(t, [...onlineResults, ...queue], contextForPlay('search', { id: search }))} className="w-8 h-8 grid place-items-center rounded-full bg-white text-black"><PlayMini size={12}/></button>
                                   </div>
                                 </div>
                               )
@@ -2271,11 +2484,11 @@ export default function App(){
                             <div className="space-y-2">
                               {localSongs.filter(s=> s.title.toLowerCase().includes(search.toLowerCase()) || s.artist.toLowerCase().includes(search.toLowerCase())).slice(0,5).map(t=>(
                                 <div key={t.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5">
-                                  <button onClick={()=> playTrack(t, [...localSongs, ...queue])} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                                  <button onClick={()=> playTrack(t, [...localSongs, ...queue], contextForPlay('playlist', { id:'local', label:'Local files' }))} className="flex items-center gap-3 flex-1 min-w-0 text-left">
                                     <CoverImg track={t} className="w-12 h-12 rounded-lg object-cover shrink-0"/>
                                     <span className="flex-1 min-w-0 block"><span className="block text-sm font-medium truncate">{t.title}</span><span className="block text-xs text-white/50 truncate">{t.artist} • Local</span></span>
                                   </button>
-                                  <button onClick={()=> playTrack(t, [...localSongs, ...queue])} className="w-8 h-8 grid place-items-center rounded-full bg-white text-black shrink-0"><PlayMini size={12}/></button>
+                                  <button onClick={()=> playTrack(t, [...localSongs, ...queue], contextForPlay('playlist', { id:'local', label:'Local files' }))} className="w-8 h-8 grid place-items-center rounded-full bg-white text-black shrink-0"><PlayMini size={12}/></button>
                                 </div>
                               ))}
                             </div>
@@ -2310,7 +2523,7 @@ export default function App(){
                         <span className="w-12 h-12 rounded-full bg-white text-black grid place-items-center text-2xl">+</span><span className="text-sm font-semibold">Create Playlist</span><span className="text-xs text-white/50">Add your favourite tracks</span>
                       </button>
                       {playlists.map(pl=> (
-                        <div key={pl.id} onClick={()=> openPlaylist(pl)} className="glass rounded-[18px] p-3 hover:bg-white/10 transition group relative cursor-pointer">
+                        <div key={pl.id} data-playlist-id={pl.id} onClick={()=> openPlaylist(pl)} className="glass rounded-[18px] p-3 hover:bg-white/10 transition group relative cursor-pointer">
                           <div className="relative aspect-square rounded-xl overflow-hidden mb-3">
                             <CoverImg track={pl} className="w-full h-full object-cover group-hover:scale-105 transition duration-500"/>
                             <div className={`absolute inset-0 bg-gradient-to-br ${pl.color} opacity-60 mix-blend-overlay`}/>
@@ -2333,7 +2546,7 @@ export default function App(){
                   <div className="glass rounded-[20px] overflow-hidden">
                     <div className="p-5 flex gap-4 items-center bg-gradient-to-br from-[#A154D6]/30 to-[#543551]/30 border-b border-white/5">
                       <div className="w-20 h-20 rounded-xl bg-gradient-to-br from-[#A154D6] to-[#6A418E] grid place-items-center text-3xl">♥</div>
-                      <div><h3 className="text-xl font-bold">Liked Songs</h3><p className="text-sm text-white/60">{likedTracks.length} songs • by {user.name}</p><button onClick={()=>{ if(likedTracks.length){ setQueue(likedTracks); setCurrentIndex(0); setIsPlaying(true) }}} className="mt-3 px-5 py-2 rounded-full bg-[#D5AA55] text-black text-sm font-bold flex items-center gap-2"><PlayMini/> Play all</button></div>
+                      <div><h3 className="text-xl font-bold">Liked Songs</h3><p className="text-sm text-white/60">{likedTracks.length} songs • by {user.name}</p><button onClick={()=>{ if(likedTracks.length){ playList(likedTracks, contextForPlay('playlist', { id:'liked', label:'Liked Songs' })) }}} className="mt-3 px-5 py-2 rounded-full bg-[#D5AA55] text-black text-sm font-bold flex items-center gap-2"><PlayMini/> Play all</button></div>
                     </div>
                     <div className="divide-y divide-white/5">
                       {likedTracks.length===0 ? (
@@ -2342,8 +2555,8 @@ export default function App(){
                         const isCur = String(current?.id)===String(t.id)
                         return (
                           <div key={t.id} className={`flex items-center gap-3 px-4 py-2 hover:bg-white/5 group ${isCur?'bg-white/10':''}`}>
-                            <span className="w-6 text-center text-xs text-white/30 group-hover:hidden">{String(i+1).padStart(2,'0')}</span><button onClick={()=> playTrack(t, likedTracks)} className="w-6 hidden group-hover:grid place-items-center"><PlayMini dark/></button>
-                            <button onClick={()=> playTrack(t, likedTracks)} className="flex items-center gap-3 flex-1 min-w-0 text-left"><CoverImg track={t} className="w-10 h-10 rounded-md object-cover"/><div className="min-w-0"><div className={`text-sm font-medium truncate ${isCur?'text-[#D5AA55]':''}`}>{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div></div></button>
+                            <span className="w-6 text-center text-xs text-white/30 group-hover:hidden">{String(i+1).padStart(2,'0')}</span><button onClick={()=> playTrack(t, likedTracks, contextForPlay('playlist', { id:'liked', label:'Liked Songs' }))} className="w-6 hidden group-hover:grid place-items-center"><PlayMini dark/></button>
+                            <button onClick={()=> playTrack(t, likedTracks, contextForPlay('playlist', { id:'liked', label:'Liked Songs' }))} className="flex items-center gap-3 flex-1 min-w-0 text-left"><CoverImg track={t} className="w-10 h-10 rounded-md object-cover"/><div className="min-w-0"><div className={`text-sm font-medium truncate ${isCur?'text-[#D5AA55]':''}`}>{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div></div></button>
                             <span className="hidden sm:block text-xs text-white/40">{t.plays}</span><span className="text-xs text-white/60">{t.durationLabel}</span>
                             <button onClick={()=> toggleLike(t.id, t)} className="w-8 h-8 grid place-items-center text-[#C35445]"><Heart filled/></button>
                             <button onClick={()=> handleDownload(t)} className="w-8 h-8 grid place-items-center rounded-full border border-white/10 text-white/60"><DownloadIcon size={12}/></button>
@@ -2374,7 +2587,7 @@ export default function App(){
                             <CoverImg track={t} className="w-10 h-10 rounded-md object-cover"/>
                             <div className="flex-1 min-w-0"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist} • Local File</div></div>
                             <span className="text-xs text-emerald-400 bg-emerald-500/10 px-2 py-1 rounded-full border border-emerald-500/20">Local</span>
-                            <button onClick={()=> playTrack(t, localSongs)} className="w-9 h-9 rounded-full bg-white text-black grid place-items-center"><PlayMini size={14}/></button>
+                            <button onClick={()=> playTrack(t, localSongs, contextForPlay('playlist', { id:'local', label:'Local files' }))} className="w-9 h-9 rounded-full bg-white text-black grid place-items-center"><PlayMini size={14}/></button>
                             <button onClick={()=> { setLocalSongs(prev=> prev.filter(x=> x.id!==t.id)); showToast("Removed local song")}} className="w-8 h-8 grid place-items-center rounded-full hover:bg-white/10 text-white/40"><CloseIcon/></button>
                           </div>
                         ))}
@@ -2403,7 +2616,7 @@ export default function App(){
                             <CoverImg track={track} className="w-10 h-10 rounded-md object-cover"/>
                             <div className="flex-1 min-w-0"><div className="text-sm font-medium truncate">{track.title}</div><div className="text-xs text-white/50 truncate">{track.artist} • Offline</div></div>
                             <span className="hidden sm:block text-xs text-emerald-400">Offline ✓</span>
-                            <button onClick={()=> playTrack(track, downloaded.map(d=>d.track))} className="w-9 h-9 rounded-full bg-white text-black grid place-items-center"><PlayMini size={14}/></button>
+                            <button onClick={()=> playTrack(track, downloaded.map(d=>d.track), contextForPlay('playlist', { id:'downloads', label:'Downloads' }))} className="w-9 h-9 rounded-full bg-white text-black grid place-items-center"><PlayMini size={14}/></button>
                             <button onClick={()=> handleRemoveDownload(track.id)} className="w-8 h-8 grid place-items-center rounded-full hover:bg-white/10 text-white/40"><CloseIcon/></button>
                           </div>
                         ))}
@@ -2419,7 +2632,7 @@ export default function App(){
                       {allSongsForLibrary.map((t,i)=>(
                         <div key={t.id} className="flex items-center gap-3 px-4 py-2 hover:bg-white/5">
                           <span className="w-6 text-center text-xs text-white/30">{i+1}</span>
-                          <button onClick={()=> playTrack(t, allSongsForLibrary)} className="flex items-center gap-3 flex-1 min-w-0 text-left"><CoverImg track={t} className="w-10 h-10 rounded-md object-cover"/><div className="min-w-0"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist} {t.isLocal && <span className="ml-1 text-emerald-400">• Local</span>}</div></div></button>
+                          <button onClick={()=> playTrack(t, allSongsForLibrary, contextForPlay('playlist', { id:'library', label:'Your Library' }))} className="flex items-center gap-3 flex-1 min-w-0 text-left"><CoverImg track={t} className="w-10 h-10 rounded-md object-cover"/><div className="min-w-0"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist} {t.isLocal && <span className="ml-1 text-emerald-400">• Local</span>}</div></div></button>
                           <button onClick={()=> setShowAddToPl(t)} className="w-8 h-8 grid place-items-center rounded-full bg-white/10 text-white/60"><PlusIcon/></button>
                           <button onClick={()=> handleDownload(t)} className="w-8 h-8 grid place-items-center rounded-full border border-white/10 text-white/60"><DownloadIcon size={12}/></button>
                         </div>
@@ -2440,7 +2653,7 @@ export default function App(){
                         <button onClick={()=> setActiveCat("All")} className="px-3 py-1.5 rounded-full bg-white/10 border border-white/10 text-xs shrink-0">All</button>
                       </div>
                       <div className="mt-3 flex gap-2">
-                        <button onClick={()=>{ const tk = homeTracks.length? homeTracks : getCategoryTracks(activeCat); if(tk.length){ setQueue(tk); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing ${activeCat} • ${tk.length} tracks`) } else showToast('Pehle tracks load hojne do — Retry dabao') }} className="flex-1 py-2.5 rounded-full bg-white text-black text-sm font-bold flex items-center justify-center gap-2"><PlayMini/> {t('playall')}</button>
+                        <button onClick={()=>{ const tk = homeTracks.length? homeTracks : getCategoryTracks(activeCat); if(tk.length){ playList(tk, contextForPlay('category', { id: activeCat }), `Playing ${activeCat} • ${tk.length} tracks`) } else showToast('Pehle tracks load hojne do — Retry dabao') }} className="flex-1 py-2.5 rounded-full bg-white text-black text-sm font-bold flex items-center justify-center gap-2"><PlayMini/> {t('playall')}</button>
                       </div>
                     </div>
                   )}
@@ -2450,7 +2663,7 @@ export default function App(){
                       const idx=queue.findIndex(x=> String(x.id)===String(t.id))
                       const isReal = t.source && !t.source.includes('tone')
                       return (
-                        <button key={t.id} onClick={()=> playTrack(t, homeTracks)} className={`group flex items-center gap-3 pr-2 rounded-xl overflow-hidden text-left border transition ${idx===currentIndex? 'bg-white text-black border-white':'bg-white/[0.07] hover:bg-white/10 border-white/5'}`}>
+                        <button key={t.id} onClick={()=> playTrack(t, homeTracks, contextForPlay('category', { id: activeCat }))} className={`group flex items-center gap-3 pr-2 rounded-xl overflow-hidden text-left border transition ${idx===currentIndex? 'bg-white text-black border-white':'bg-white/[0.07] hover:bg-white/10 border-white/5'}`}>
                           <div className="relative w-14 h-14 sm:w-[64px] sm:h-[64px] shrink-0 overflow-hidden"><CoverImg track={t} className="w-full h-full object-cover"/><span className={`absolute inset-0 grid place-items-center bg-black/30 opacity-0 group-hover:opacity-100 ${idx===currentIndex && isPlaying? '!opacity-100':''}`}>{idx===currentIndex && isPlaying? <PauseIcon/>:<PlayIcon/>}</span>{!isReal && <span className="absolute bottom-1 left-1 text-[8px] bg-black/60 text-white px-1 py-0.5 rounded">tone</span>}</div>
                           <span className={`text-sm font-semibold leading-tight line-clamp-2 pr-2 ${idx===currentIndex? 'text-black':'text-white'}`}>{t.title}<span className="block text-xs font-normal opacity-60">{t.artist} {t.source? `• ${t.source.replace(" • Full","")}`:""}</span></span>
                           {liked.has(t.id) && <span className="ml-auto hidden sm:block text-[#C35445] mr-2"><Heart filled size={16}/></span>}
@@ -2493,7 +2706,7 @@ export default function App(){
 
                 <div className="grid grid-cols-1 lg:grid-cols-[1.7fr_1fr] gap-6 min-w-0 max-w-full">
                   <section className="glass rounded-[24px] p-4 sm:p-5 min-w-0 max-w-full">
-                    <div className="flex items-center justify-between mb-4"><h3 className="font-bold text-lg">{t('recent')} — {recentlyPlayed.length? `${recentlyPlayed.length} songs`:'Real history'}</h3><button onClick={()=> { if(recentlyPlayed.length){ setQueue(recentlyPlayed); setCurrentIndex(0); setIsPlaying(true) }}} className="w-8 h-8 rounded-full bg-white text-black grid place-items-center"><ChevronRight/></button></div>
+                    <div className="flex items-center justify-between mb-4"><h3 className="font-bold text-lg">{t('recent')} — {recentlyPlayed.length? `${recentlyPlayed.length} songs`:'Real history'}</h3><button onClick={()=> { if(recentlyPlayed.length){ playList(recentlyPlayed, contextForPlay('playlist', { id:'recent', label:'Recently played' })) }}} className="w-8 h-8 rounded-full bg-white text-black grid place-items-center"><ChevronRight/></button></div>
                     {recentlyPlayed.length===0 ? <div className="text-center py-8 text-sm text-white/50">Play any song — it will appear here (like Spotify history, saved to DB)</div> : null}
                     <div className="space-y-1">
                       {(recentlyPlayed.length? recentlyPlayed : queue).filter(isRealTrack).slice(0,7).map((t,i)=>{
@@ -2528,7 +2741,7 @@ export default function App(){
                       <div className="relative">
                         <div className="inline-flex items-center gap-2 text-xs font-bold tracking-widest bg-white/15 backdrop-blur px-3 py-1.5 rounded-full border border-white/10">✨ MAXMUSIC ORIGINALS</div>
                         <h3 className="text-2xl font-bold font-display leading-tight mt-3">Monsoon Mix 2025</h3><p className="text-sm text-white/80 mt-2 leading-relaxed">Baarishein, Heeriye & 30 soulful tracks for chai & late nights.</p>
-                        <div className="flex items-center gap-3 mt-4"><button onClick={()=>{ if(homeTracks.length) playTrack(homeTracks[0], homeTracks); else showToast('Pehle tracks load hojne do…') }} className="px-6 py-2.5 rounded-full bg-white text-black text-sm font-bold flex items-center gap-2"><PlayMini/> Play</button><button onClick={()=>{ if(homeTracks.length){ toggleLike(homeTracks[0].id, homeTracks[0]) } }} className={`w-10 h-10 rounded-full backdrop-blur grid place-items-center border ${homeTracks.length&&liked.has(homeTracks[0].id)? 'bg-[#C35445] border-[#C35445] text-white':'bg-white/15 border-white/15 text-white'}`}><Heart filled={!!(homeTracks.length&&liked.has(homeTracks[0].id))}/></button></div>
+                        <div className="flex items-center gap-3 mt-4"><button onClick={()=>{ if(homeTracks.length) playTrack(homeTracks[0], homeTracks, contextForPlay('category', { id: activeCat })); else showToast('Pehle tracks load hojne do…') }} className="px-6 py-2.5 rounded-full bg-white text-black text-sm font-bold flex items-center gap-2"><PlayMini/> Play</button><button onClick={()=>{ if(homeTracks.length){ toggleLike(homeTracks[0].id, homeTracks[0]) } }} className={`w-10 h-10 rounded-full backdrop-blur grid place-items-center border ${homeTracks.length&&liked.has(homeTracks[0].id)? 'bg-[#C35445] border-[#C35445] text-white':'bg-white/15 border-white/15 text-white'}`}><Heart filled={!!(homeTracks.length&&liked.has(homeTracks[0].id))}/></button></div>
                         <div className="flex -space-x-2 mt-5">{homeTracks.slice(0,4).map(x=> (<CoverImg key={x.id} track={x} className="w-8 h-8 rounded-full object-cover border-2 border-[#6A418E]"/>))}{homeTracks.length>4 && <span className="w-8 h-8 rounded-full bg-black/30 backdrop-blur border-2 border-white/20 grid place-items-center text-xs font-bold">+{homeTracks.length-4}</span>}</div>
                       </div>
                     </section>
@@ -2539,7 +2752,7 @@ export default function App(){
                   <div className="flex items-center justify-between mb-3"><h2 className="text-xl font-bold font-display">{activeCat==="All"? "Jump back in — Online + Local" : `${activeCat} • Jump back in`}</h2><span className="text-xs text-white/40 hidden sm:block">{activeCat==="All"? "Based on your listening + downloads" : `${getCategoryTracks(activeCat).length} songs in ${activeCat}`}</span></div>
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
                     {(activeCat==="All"? (homeTracks.length? homeTracks.slice(0,6) : []) : (homeTracks.length? homeTracks.slice(0,12) : [])).map(t=>(
-                      <button key={t.id} onClick={()=> playTrack(t, activeCat==="All"? (homeTracks.length? homeTracks : localSongs) : getCategoryTracks(activeCat))} className="text-left glass rounded-[18px] p-3 hover:bg-white/10 transition group">
+                      <button key={t.id} onClick={()=> playTrack(t, activeCat==="All"? (homeTracks.length? homeTracks : localSongs) : getCategoryTracks(activeCat), contextForPlay('category', { id: activeCat }))} className="text-left glass rounded-[18px] p-3 hover:bg-white/10 transition group">
                         <div className="relative aspect-square rounded-xl overflow-hidden mb-3"><CoverImg track={t} className="w-full h-full object-cover group-hover:scale-105 transition duration-700"/><span className="absolute bottom-2 right-2 w-9 h-9 rounded-full bg-[#D5AA55] text-black grid place-items-center shadow-lg translate-y-1 opacity-0 group-hover:opacity-100 group-hover:translate-y-0 transition"><PlayMini/></span>{t.isLocal && <span className="absolute top-2 left-2 text-[10px] font-bold bg-emerald-500 text-white px-2 py-0.5 rounded-full">LOCAL</span>}{activeCat!=="All" && <span className="absolute top-2 right-2 text-[10px] font-bold bg-black/60 backdrop-blur text-white px-2 py-0.5 rounded-full border border-white/10">{activeCat}</span>}</div>
                         <div className="text-sm font-semibold leading-tight truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div>
                       </button>
@@ -2570,7 +2783,7 @@ export default function App(){
                   <div className="flex md:hidden items-center gap-1 shrink-0"><button aria-label="Shuffle" aria-pressed={shuffle} onClick={toggleShuffle} className={`w-8 h-8 grid place-items-center ${shuffle? 'text-[#D5AA55]':'text-white/60'}`}><ShuffleIcon active={shuffle}/></button><button aria-label="Repeat" aria-pressed={repeat!==0} onClick={toggleRepeat} className={`w-8 h-8 grid place-items-center ${repeat? 'text-[#D5AA55]':'text-white/60'}`}><RepeatIcon mode={repeat}/></button><button aria-label="Play or pause" onClick={togglePlay} className="w-9 h-9 rounded-full bg-white text-black grid place-items-center">{isPlaying? <PauseMini/>:<PlayMini/>}</button><button aria-label="Next track" onClick={handleNext} className="w-9 h-9 grid place-items-center text-white/80"><NextIcon/></button></div>
                   <div className="hidden lg:flex items-center gap-3 pl-3 border-l border-white/10">
                     <button onClick={()=> setShowLyrics(!showLyrics)} className={`hidden xl:grid w-8 h-8 place-items-center rounded-full ${showLyrics? 'bg-white text-black':'text-white/60 hover:text-white hover:bg-white/10'}`}><MicIcon/></button>
-                    <button onClick={()=> setShowQueue(!showQueue)} className={`w-8 h-8 grid place-items-center rounded-full ${showQueue? 'bg-white text-black':'text-white/60 hover:text-white hover:bg-white/10'}`}><QueueIcon/></button>
+                    <button aria-label="Open queue" onClick={()=> setShowQueue(!showQueue)} className={`w-8 h-8 grid place-items-center rounded-full ${showQueue? 'bg-white text-black':'text-white/60 hover:text-white hover:bg-white/10'}`}><QueueIcon/></button>
                     <div className="hidden xl:flex items-center gap-2"><button onClick={()=> setIsMuted(!isMuted)} className="w-8 h-8 grid place-items-center text-white/60 hover:text-white"><VolumeIcon muted={isMuted} volume={volume}/></button><input type="range" min={0} max={1} step={0.01} value={isMuted?0:volume} onChange={e=>{ setVolume(Number(e.target.value)); setIsMuted(false)}} className="range w-20 accent-white"/></div>
                     <button aria-label="Open full player" onClick={()=> setShowFull(true)} className="w-8 h-8 grid place-items-center text-white/60 hover:text-white hover:bg-white/10 rounded-full"><ExpandIcon/></button>
                   </div>
@@ -2598,7 +2811,7 @@ export default function App(){
                       <div className="text-xs text-white/50 mt-1">{tracks.length} songs</div>
                       <div className="flex gap-2 mt-3">
                         <button onClick={()=> playPlaylistNow(pl)} className="px-6 py-2 rounded-full bg-white text-black text-sm font-bold flex items-center gap-2"><PlayMini/> Play</button>
-                        <button onClick={()=>{ if(!tracks.length) return; const sh=[...tracks].sort(()=>Math.random()-0.5); setQueue(sh); setCurrentIndex(0); setIsPlaying(true); showToast(`Shuffling • ${pl.title}`) }} className="px-5 py-2 rounded-full bg-white/10 border border-white/10 text-sm font-bold">Shuffle</button>
+                        <button onClick={()=>{ if(!tracks.length) return; const sh=[...tracks].sort(()=>Math.random()-0.5); playList(sh, contextForPlay('playlist', { id: pl.id, label: pl.title }), `Shuffling • ${pl.title}`) }} className="px-5 py-2 rounded-full bg-white/10 border border-white/10 text-sm font-bold">Shuffle</button>
                       </div>
                     </div>
                   </div>
@@ -2609,11 +2822,12 @@ export default function App(){
                       return (
                         <div key={String(t.id)+i} className={`flex items-center gap-3 p-2 rounded-xl ${isCur?'bg-white text-black':'hover:bg-white/5'}`}>
                           <span className={`w-6 text-center text-xs font-bold shrink-0 ${isCur?'text-black/40':'text-white/30'}`}>{String(i+1).padStart(2,'0')}</span>
-                          <button onClick={()=> playTrack(t, tracks)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                          <button onClick={()=> playTrack(t, tracks, contextForPlay('playlist', { id: pl.id, label: pl.title }))} className="flex items-center gap-3 flex-1 min-w-0 text-left">
                             <CoverImg track={t} className="w-11 h-11 rounded-lg object-cover shrink-0"/>
                             <span className="min-w-0 flex-1 block"><span className={`block text-sm font-medium truncate ${isCur?'text-black':'text-white'}`}>{t.title}</span><span className={`block text-xs truncate ${isCur?'text-black/60':'text-white/50'}`}>{t.artist}</span></span>
                           </button>
                           <span className={`text-xs hidden sm:block shrink-0 ${isCur?'text-black/60':'text-white/40'}`}>{t.durationLabel}</span>
+                          <QueueActionButtons track={t} onPlayNext={playNextInQueue} onAddToQueue={addToQueueManual} className="hidden sm:flex shrink-0" />
                           <button onClick={()=> toggleLike(t.id, t)} className={`w-8 h-8 grid place-items-center shrink-0 ${liked.has(t.id)?'text-[#C35445]':isCur?'text-black/30':'text-white/30'}`}><Heart filled={liked.has(t.id)} size={16}/></button>
                           <button onClick={()=> handleRemoveFromPlaylist(pl.id, t.id)} title="Remove from playlist" className={`w-8 h-8 grid place-items-center rounded-full shrink-0 ${isCur?'text-black/40 hover:text-black':'text-white/40 hover:text-white'}`}>✕</button>
                         </div>
@@ -2639,8 +2853,8 @@ export default function App(){
                     {artistProfile && artistProfile.followers != null && <div className="text-xs text-white/50 mt-0.5">{artistProfile.followers} followers</div>}
                     <div className="flex gap-2 mt-3 flex-wrap">
                       <button onClick={toggleFollow} className={`px-5 py-2 rounded-full text-sm font-bold border ${followed.has(selectedArtist)?'bg-white text-black border-white':'bg-white/10 border-white/10'}`}>{followed.has(selectedArtist)?'✓ '+t('following'):'+ '+t('follow')}</button>
-                      <button onClick={()=>{ if(artistTracks.length){ setQueue(artistTracks); setCurrentIndex(0); setIsPlaying(true); showToast(`Playing ${selectedArtist}`) } }} className="px-6 py-2 rounded-full bg-white text-black text-sm font-bold flex items-center gap-2"><PlayMini/> Play All</button>
-                      <button onClick={()=>{ if(artistTracks.length){ const sh=[...artistTracks].sort(()=>Math.random()-0.5); setQueue(sh); setCurrentIndex(0); setIsPlaying(true); showToast(`Shuffling • ${selectedArtist}`) } }} className="px-5 py-2 rounded-full bg-white/10 border border-white/10 text-sm font-bold">Shuffle</button>
+                      <button onClick={()=>{ if(artistTracks.length){ playList(artistTracks, contextForPlay('playlist', { id:'artist:'+selectedArtist, label: selectedArtist }), `Playing ${selectedArtist}`) } }} className="px-6 py-2 rounded-full bg-white text-black text-sm font-bold flex items-center gap-2"><PlayMini/> Play All</button>
+                      <button onClick={()=>{ if(artistTracks.length){ const sh=[...artistTracks].sort(()=>Math.random()-0.5); playList(sh, contextForPlay('playlist', { id:'artist:'+selectedArtist, label: selectedArtist }), `Shuffling • ${selectedArtist}`) } }} className="px-5 py-2 rounded-full bg-white/10 border border-white/10 text-sm font-bold">Shuffle</button>
                     </div>
                   </div>
                 </div>
@@ -2652,7 +2866,7 @@ export default function App(){
                     return (
                       <div key={String(tr.id)+i} className={`flex items-center gap-3 p-2 rounded-xl ${isCur?'bg-white text-black':'hover:bg-white/5'}`}>
                         <span className={`w-6 text-center text-xs font-bold shrink-0 ${isCur?'text-black/40':'text-white/30'}`}>{String(i+1).padStart(2,'0')}</span>
-                        <button onClick={()=> playTrack(tr, artistTracks)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                        <button onClick={()=> playTrack(tr, artistTracks, contextForPlay('playlist', { id:'artist:'+selectedArtist, label: selectedArtist }))} className="flex items-center gap-3 flex-1 min-w-0 text-left">
                           <CoverImg track={tr} className="w-11 h-11 rounded-lg object-cover shrink-0"/>
                           <span className="min-w-0 flex-1 block"><span className={`block text-sm font-medium truncate ${isCur?'text-black':'text-white'}`}>{tr.title}</span><span className={`block text-xs truncate ${isCur?'text-black/60':'text-white/50'}`}>{tr.artist}</span></span>
                         </button>
@@ -2759,7 +2973,7 @@ export default function App(){
                           <div className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-[14px] h-[14px] rounded-full bg-white shadow-[0_0_0_3px_rgba(255,255,255,0.25),0_2px_8px_rgba(0,0,0,0.6)]" style={{left:`${duration? Math.min(100,(progress/duration)*100):0}%`}}/>
                         </div><span className="text-xs font-medium tabular-nums text-white/70 w-10">-{formatTime(Math.max(0,(duration||0)-progress))}</span></div>
                       <div className="flex items-center justify-between mt-6"><button aria-label="Shuffle" aria-pressed={shuffle} onClick={toggleShuffle} className={`w-10 h-10 grid place-items-center rounded-full ${shuffle? 'text-[#D5AA55] bg-[#D5AA55]/15':'text-white/60 hover:text-white'}`}><ShuffleIcon active={shuffle}/></button><button onClick={handlePrev} className="w-12 h-12 grid place-items-center text-white hover:bg-white/10 rounded-full"><PrevIcon large/></button><button aria-label="Play or pause" onClick={togglePlay} className="w-[72px] h-[72px] rounded-full bg-white text-black grid place-items-center shadow-[0_10px_30px_rgba(255,255,255,0.25)] hover:scale-[1.02] active:scale-[0.98] transition">{isPlaying? <PauseIcon large dark/>:<PlayIcon large dark/>}</button><button aria-label="Next track" onClick={handleNext} className="w-12 h-12 grid place-items-center text-white hover:bg-white/10 rounded-full"><NextIcon large/></button><button aria-label="Repeat" aria-pressed={repeat!==0} onClick={toggleRepeat} className={`w-10 h-10 grid place-items-center rounded-full ${repeat!==0? 'text-[#D5AA55] bg-[#D5AA55]/15':'text-white/60 hover:text-white'}`}><RepeatIcon mode={repeat}/></button></div>
-                      <div className="flex items-center justify-between mt-8 gap-3"><button onClick={()=> setShowLyrics(!showLyrics)} className={`flex-1 py-3 rounded-full text-sm font-bold border transition ${showLyrics? 'bg-white text-black border-white':'bg-white/10 text-white border-white/10 hover:bg-white/15'}`}>{lyricsLoading? 'Lyrics…' : showLyrics? 'Hide Lyrics':'View Lyrics'}</button><button onClick={()=> setShowQueue(!showQueue)} className={`px-5 py-3 rounded-full text-sm font-bold border shrink-0 ${showQueue? 'bg-white text-black border-white':'bg-white/10 text-white border-white/10'}`}>Queue</button></div>
+                      <div className="flex items-center justify-between mt-8 gap-3"><button onClick={()=> setShowLyrics(!showLyrics)} className={`flex-1 py-3 rounded-full text-sm font-bold border transition ${showLyrics? 'bg-white text-black border-white':'bg-white/10 text-white border-white/10 hover:bg-white/15'}`}>{lyricsLoading? 'Lyrics…' : showLyrics? 'Hide Lyrics':'View Lyrics'}</button><button aria-label="Open queue" onClick={()=> setShowQueue(!showQueue)} className={`px-5 py-3 rounded-full text-sm font-bold border shrink-0 ${showQueue? 'bg-white text-black border-white':'bg-white/10 text-white border-white/10'}`}>Queue</button></div>
                       <div className="hidden lg:flex items-center gap-3 mt-6"><VolumeIcon muted={isMuted} volume={volume}/><input type="range" min={0} max={1} step={0.01} value={isMuted?0:volume} onChange={e=>{ setVolume(Number(e.target.value)); setIsMuted(false)}} className="range flex-1 accent-white"/><button onClick={()=> setIsMuted(!isMuted)} className="text-xs font-semibold text-white/60 hover:text-white">{isMuted? 'Muted':'Volume'}</button></div>
                     </div>
                   </div>
@@ -2782,14 +2996,14 @@ export default function App(){
                   </div>
                 )}
                 {showQueue && (
-                  <div className="mt-8 glass rounded-[24px] p-6"><div className="flex items-center justify-between mb-4"><h3 className="font-bold">Up next</h3><button onClick={()=> setShowQueue(false)} className="text-sm text-white/60 hover:text-white">Close</button></div><div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">{queue.slice(currentIndex+1, currentIndex+6).map(t=> (<button key={t.id} onClick={()=>{ const idx=queue.findIndex(x=> String(x.id)===String(t.id)); setCurrentIndex(idx); setIsPlaying(true)}} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/10 text-left"><CoverImg track={t} className="w-11 h-11 rounded-lg object-cover"/><div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div></div><span className="text-xs text-white/40">{t.durationLabel}</span></button>))}</div></div>
+                  <div className="mt-8 glass rounded-[24px] p-6"><div className="flex items-center justify-between mb-4"><h3 className="font-bold">Up next</h3><button onClick={()=> setShowQueue(false)} className="text-sm text-white/60 hover:text-white">Close</button></div><div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">{queue.slice(currentIndex+1, currentIndex+6).map(t=> (<button key={t.id} onClick={()=>{ const idx=queue.findIndex(x=> String(x.id)===String(t.id)); setCurrentIndex(idx); setIsPlaying(true)}} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/10 text-left"><CoverImg track={t} className="w-11 h-11 rounded-lg object-cover"/><div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div><QueueSourceChip label={queueChip(t)}/></div><span className="text-xs text-white/40 shrink-0">{t.durationLabel}</span></button>))}</div></div>
                 )}
               </div>
             </div>
           </div>}
 
           {current && showQueue && !showFull && (
-            <div className="fixed inset-0 z-40"><div onClick={()=> setShowQueue(false)} className="absolute inset-0 bg-black/60 backdrop-blur-sm"/><div className="absolute bottom-[88px] right-4 left-4 lg:left-auto lg:right-6 w-auto lg:w-[380px] glass-strong rounded-[20px] p-4 max-h-[60vh] flex flex-col shadow-2xl"><div className="flex items-center justify-between mb-3"><h3 className="font-bold">Queue</h3><button onClick={()=> setShowQueue(false)} className="w-8 h-8 grid place-items-center rounded-full hover:bg-white/10"><CloseIcon/></button></div><div className="text-xs font-semibold tracking-widest text-white/40 mb-2">NOW PLAYING</div><div className="flex items-center gap-3 p-2 rounded-xl bg-white text-black mb-3"><CoverImg track={current} className="w-11 h-11 rounded-lg object-cover"/><div className="min-w-0"><div className="text-sm font-semibold truncate">{current.title}</div><div className="text-xs text-black/60 truncate">{current.artist}</div></div><Equalizer dark/></div><div className="text-xs font-semibold tracking-widest text-white/40 mb-2">NEXT UP</div><div className="space-y-1 overflow-y-auto flex-1 pr-1">{queue.slice(currentIndex+1, currentIndex+7).map(t=> (<button key={t.id} onClick={()=>{ const idx=queue.findIndex(x=> String(x.id)===String(t.id)); setCurrentIndex(idx); setIsPlaying(true)}} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 text-left"><CoverImg track={t} className="w-10 h-10 rounded-lg object-cover"/><div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div></div><PlayMini/></button>))}</div><button onClick={()=>{ setShuffle(true); handleNext()}} className="mt-3 w-full py-2.5 rounded-full bg-white text-black text-sm font-bold">Shuffle play</button></div></div>
+            <div className="fixed inset-0 z-40"><div onClick={()=> setShowQueue(false)} className="absolute inset-0 bg-black/60 backdrop-blur-sm"/><div className="absolute bottom-[88px] right-4 left-4 lg:left-auto lg:right-6 w-auto lg:w-[380px] glass-strong rounded-[20px] p-4 max-h-[60vh] flex flex-col shadow-2xl"><div className="flex items-center justify-between mb-3"><h3 className="font-bold">Queue</h3><button onClick={()=> setShowQueue(false)} className="w-8 h-8 grid place-items-center rounded-full hover:bg-white/10"><CloseIcon/></button></div><div className="text-xs font-semibold tracking-widest text-white/40 mb-2">NOW PLAYING</div><div className="flex items-center gap-3 p-2 rounded-xl bg-white text-black mb-3"><CoverImg track={current} className="w-11 h-11 rounded-lg object-cover"/><div className="min-w-0"><div className="text-sm font-semibold truncate">{current.title}</div><div className="text-xs text-black/60 truncate">{current.artist}</div><QueueSourceChip label={queueChip(current)} dark/></div><Equalizer dark/></div><div className="text-xs font-semibold tracking-widest text-white/40 mb-2">NEXT UP</div><div className="space-y-1 overflow-y-auto flex-1 pr-1">{queue.slice(currentIndex+1, currentIndex+7).map(t=> (<button key={t.id} onClick={()=>{ const idx=queue.findIndex(x=> String(x.id)===String(t.id)); setCurrentIndex(idx); setIsPlaying(true)}} className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 text-left"><CoverImg track={t} className="w-10 h-10 rounded-lg object-cover"/><div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{t.title}</div><div className="text-xs text-white/50 truncate">{t.artist}</div><QueueSourceChip label={queueChip(t)}/></div><PlayMini/></button>))}</div><button onClick={()=>{ setShuffle(true); handleNext()}} className="mt-3 w-full py-2.5 rounded-full bg-white text-black text-sm font-bold">Shuffle play</button></div></div>
           )}
 
           {/* itrace-25: npPermBar nag banner removed — permission auto-granted, no popup on open */}
@@ -3072,6 +3286,13 @@ function ProfileView({ npEngine, user, setUser, editUser, setEditUser, liked, pl
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('quality')}</div><div className="text-xs text-white/50">{X.quality==='hd'?'HD 320kbps':X.quality==='eco'?'Eco 96kbps':'Standard 160kbps'} • from next song</div></div><button onClick={X.qCycle} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{X.quality==='hd'?'HD 320':X.quality==='eco'?'Eco 96':'Std 160'}</button></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('eq')}</div><div className="text-xs text-white/50">{X.eqOn?('ON • '+(X.eqPreset||'')):'5-band • streaming songs'}</div></div><button onClick={X.onOpenEQ} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{X.isPro?'Open':'🔒 Pro'}</button></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('autoplay')}</div><div className="text-xs text-white/50">Related songs after queue ends</div></div><button onClick={()=> X.setAutoplay(!X.autoplay)} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${X.autoplay?'bg-emerald-500 text-black border-emerald-500':'bg-white/10 border-white/10'}`}>{X.autoplay?t('on'):t('off')}</button></div>
+          <div className="flex items-center justify-between py-3 border-b border-white/5" data-setting="after-search">
+            <div className="min-w-0 pr-3"><div className="text-sm font-medium">After search play</div><div className="text-xs text-white/50">{X.afterSearch==='continue' ? 'Continues the search results list (old behaviour)' : 'Related radio from the song\'s category (default)'}</div></div>
+            <div className="flex gap-1.5 shrink-0" role="group" aria-label="After search play">
+              <button aria-label="After search: Related radio" aria-pressed={X.afterSearch!=='continue'} onClick={()=> X.setAfterSearch('radio')} className={`text-[11px] font-bold px-3 py-1.5 rounded-full border ${X.afterSearch!=='continue'?'bg-emerald-500 text-black border-emerald-500':'bg-white/10 border-white/10 text-white/70'}`}>Radio</button>
+              <button aria-label="After search: Continue search list" aria-pressed={X.afterSearch==='continue'} onClick={()=> X.setAfterSearch('continue')} className={`text-[11px] font-bold px-3 py-1.5 rounded-full border ${X.afterSearch==='continue'?'bg-white text-black border-white':'bg-white/10 border-white/10 text-white/70'}`}>Search list</button>
+            </div>
+          </div>
           <div className="py-3 border-b border-white/5"><div className="text-sm font-medium">{t('muslang')}</div><div className="text-xs text-white/50 mb-2">Shapes your Home mix</div><div className="flex gap-2">{['hindi','punjabi','english'].map(L=> <button key={L} onClick={()=> X.toggleLang(L)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${(X.langs||[]).includes(L)?'bg-white text-black border-white':'bg-white/10 border-white/10 text-white/60'}`}>{L[0].toUpperCase()+L.slice(1)}</button>)}</div></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('applang')}</div><div className="text-xs text-white/50">Interface language</div></div><div className="flex gap-2">{[['en','English'],['hi','हिंदी']].map(([v,l])=> <button key={v} onClick={()=> X.setLang(v)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${X.lang===v?'bg-white text-black border-white':'bg-white/10 border-white/10 text-white/60'}`}>{l}</button>)}</div></div>
           <div className="flex items-center justify-between py-3 border-b border-white/5"><div><div className="text-sm font-medium">{t('sleep')}</div><div className="text-xs text-white/50">{X.sleepMin?`Stops after ${X.sleepMin} min`:'Music keeps playing'}</div></div><button onClick={X.cycleSleep} className="text-xs font-bold px-3 py-1.5 rounded-full bg-white/10 border border-white/10">{X.sleepMin?X.sleepMin+'m':t('off')}</button></div>
@@ -3207,6 +3428,24 @@ function ShuffleIcon({ active }){ return <svg width="18" height="18" viewBox="0 
 function RepeatIcon({ mode }){ return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={mode?2.2:1.7}><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>{mode===2 && <text x="11" y="14" fontSize="7" fill="currentColor" stroke="none" fontWeight="800">1</text>}</svg> }
 function VolumeIcon({ muted, volume }){ if(muted||volume===0) return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" x2="1" y1="9" y2="23"/></svg>; return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg> }
 function QueueIcon(){ return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M12 12H3"/><path d="M16 6H3"/><path d="M16 18H3"/><path d="M21 12h-4"/><path d="M21 6h-4"/><path d="M21 18h-4"/></svg> }
+// build 133 — the per-row "where did this come from?" chip: "Sad Love radio",
+// "Search: dooriyan", a playlist name, or "Play next".
+function QueueSourceChip({ label, dark }){
+  if(!label) return null
+  const cls = dark
+    ? 'bg-black/5 border-black/15 text-black/60'
+    : 'bg-white/10 border-white/15 text-white/60'
+  return <span data-source-chip={label} title={label} className={`mt-1 inline-flex max-w-full items-center gap-1 truncate rounded-full border px-2 py-[2px] text-[10px] font-semibold leading-tight ${cls}`}><span className="opacity-70">♪</span><span className="truncate">{label}</span></span>
+}
+function QueueActionButtons({ track, onPlayNext, onAddToQueue, className='' }){
+  if(!track) return null
+  return (
+    <div className={`flex items-center gap-1 ${className}`}>
+      <button aria-label="Play next" title="Play next" onClick={()=> onPlayNext(track)} className="w-8 h-8 grid place-items-center rounded-full bg-white/10 hover:bg-white/20 text-white/70 hover:text-white"><NextIcon/></button>
+      <button aria-label="Add to queue" title="Add to queue" onClick={()=> onAddToQueue(track)} className="w-8 h-8 grid place-items-center rounded-full bg-white/10 hover:bg-white/20 text-white/70 hover:text-white"><QueueIcon/></button>
+    </div>
+  )
+}
 function MicIcon(){ return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 10a7 7 0 0 1-14 0"/><line x1="12" x2="12" y1="19" y2="22"/></svg> }
 function ExpandIcon(){ return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></svg> }
 function MoreIcon(){ return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg> }

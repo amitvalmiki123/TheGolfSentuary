@@ -1,38 +1,24 @@
 {
   "app": "MaxMusic",
   "version": "1.0.0",
-  "build": 132,
-  "apk": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/download/v1.0.0-b132/MaxMusic.apk",
-  "page": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/tag/v1.0.0-b132",
+  "build": 133,
+  "apk": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/download/v1.0.0-b133/MaxMusic.apk",
+  "page": "https://github.com/amitvalmiki123/TheGolfSentuary/releases/tag/v1.0.0-b133",
   "notes": [
-    "Repeat one song on every playback source, repeat the queue, or stop when it ends",
-    "Go Pro with UPI \u2014 pay \u20b979 in GPay, PhonePe or Paytm and Pro turns on automatically once verified",
-    "Shuffle now visibly rearranges upcoming songs in Queue, with clear on/off feedback",
-    "Shared shuffle and repeat controls across the mini player and full player",
-    "Your theme now colours the whole screen \u2014 top bar, search and category tabs match too",
-    "A fresh new look: pick from beautiful themes, including a light Daylight mode",
-    "Premium colour themes for Pro members \u2014 Aurora, Sunset Ember and Ocean Depth",
-    "Lock screen and earbud controls now respond instantly, every time",
-    "Notification player redesigned with a working seek bar and song artwork",
-    "More songs load as you scroll, with smarter duplicate removal",
-    "New artist pages with follow, photos and their full song list",
-    "Sharper categories \u2014 Hindi, Punjabi and Love songs sorted the right way",
-    "Faster, more reliable playback in the background"
+    "Songs played from Search now continue with related radio from the song's category \u2014 not the rest of the search list",
+    "Queue shows where each song came from: \u201cSad Love radio\u201d, \u201cSearch: dooriyan\u201d or your playlist name",
+    "New setting \u2014 After search play: Related radio (default) or Continue search list",
+    "Play next and Add to queue always play before auto-radio",
+    "Radio skips songs you already heard, and moves to a related category when one runs out",
+    "Your queue and playback context come back after you reopen the app"
   ],
   "features": [
-    "Repeat one song on every playback source, repeat the queue, or stop when it ends",
-    "Go Pro with UPI \u2014 pay \u20b979 in GPay, PhonePe or Paytm and Pro turns on automatically once verified",
-    "Shuffle now visibly rearranges upcoming songs in Queue, with clear on/off feedback",
-    "Shared shuffle and repeat controls across the mini player and full player",
-    "Your theme now colours the whole screen \u2014 top bar, search and category tabs match too",
-    "A fresh new look: pick from beautiful themes, including a light Daylight mode",
-    "Premium colour themes for Pro members \u2014 Aurora, Sunset Ember and Ocean Depth",
-    "Lock screen and earbud controls now respond instantly, every time",
-    "Notification player redesigned with a working seek bar and song artwork",
-    "More songs load as you scroll, with smarter duplicate removal",
-    "New artist pages with follow, photos and their full song list",
-    "Sharper categories \u2014 Hindi, Punjabi and Love songs sorted the right way",
-    "Faster, more reliable playback in the background"
+    "Songs played from Search now continue with related radio from the song's category \u2014 not the rest of the search list",
+    "Queue shows where each song came from: \u201cSad Love radio\u201d, \u201cSearch: dooriyan\u201d or your playlist name",
+    "New setting \u2014 After search play: Related radio (default) or Continue search list",
+    "Play next and Add to queue always play before auto-radio",
+    "Radio skips songs you already heard, and moves to a related category when one runs out",
+    "Your queue and playback context come back after you reopen the app"
   ],
-  "date": "2026-10-14"
+  "date": "2026-11-02"
 }

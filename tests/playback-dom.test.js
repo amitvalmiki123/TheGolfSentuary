@@ -69,6 +69,12 @@ async function loadApp(){
   const proFile=path.join(cache,'lib','pro.js')
   await writeFile(proFile,proSrc)
   source=source.replace("'./lib/pro.js'",JSON.stringify(pathToFileURL(proFile).href))
+  // build 133: the playback-context model is a real, dependency-free module —
+  // compile the REAL source rather than stubbing it.
+  const pbSrc=await readFile(new URL('../src/lib/playbackcontext.js',import.meta.url),'utf8')
+  const pbFile=path.join(cache,'lib','playbackcontext.js')
+  await writeFile(pbFile,pbSrc)
+  source=source.replace("'./lib/playbackcontext.js'",JSON.stringify(pathToFileURL(pbFile).href))
   const controls=await readFile(new URL('../src/components/ApkUpdateControls.jsx',import.meta.url),'utf8')
   const controlsSource=controls.replace("'../lib/apkupdate.js'",JSON.stringify(new URL('../src/lib/apkupdate.js',import.meta.url).href))
   const compiledControls=await transformWithEsbuild(controlsSource,'ApkUpdateControls.jsx',{loader:'jsx',jsx:'automatic'})
